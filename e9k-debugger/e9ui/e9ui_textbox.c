@@ -7,6 +7,7 @@
  */
 
 #include "e9ui.h"
+#include "debugger.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -1199,7 +1200,7 @@ textbox_onMouseDown(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mous
         return;
     }
     TTF_Font *font = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : ctx->font;
-    Uint32 now = SDL_GetTicks();
+    Uint32 now = debugger_uiTicks();
     if (st->double_click_active) {
         if (now - st->last_click_ms <= 350) {
             st->last_click_ms = now;

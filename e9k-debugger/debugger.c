@@ -30,6 +30,7 @@
 #include "transition.h"
 #include "input_record.h"
 #include "smoke_test.h"
+#include "ui_test.h"
 #include "shader_ui.h"
 #include "memory_track_ui.h"
 #include "crt.h"
@@ -205,6 +206,15 @@ debugger_pathExistsFile(const char *path)
     return S_ISREG(sb.st_mode) ? 1 : 0;
 }
 
+static void
+debugger_captureBootSaveDirs(void)
+{
+    debugger_copyPath(debugger.bootAmigaSaveDir, sizeof(debugger.bootAmigaSaveDir), debugger.config.amiga.libretro.saveDir);
+    debugger_copyPath(debugger.bootAmigaSystemDir, sizeof(debugger.bootAmigaSystemDir), debugger.config.amiga.libretro.systemDir);
+    debugger_copyPath(debugger.bootNeogeoSaveDir, sizeof(debugger.bootNeogeoSaveDir), debugger.config.neogeo.libretro.saveDir);
+    debugger_copyPath(debugger.bootNeogeoSystemDir, sizeof(debugger.bootNeogeoSystemDir), debugger.config.neogeo.libretro.systemDir);
+}
+
 void
 debugger_libretroSelectConfig(void)
 {
@@ -363,6 +373,7 @@ debugger_cleanup(void)
 static void
 debugger_ctor(void)
 {
+  memset(e9ui, 0, sizeof(*e9ui));
   memset(&debugger, 0, sizeof(debugger));
   srand((unsigned)time(NULL));
   debugger_setArgv0();
@@ -390,17 +401,14 @@ debugger_ctor(void)
   debugger.config.neogeo.skipBiosLogo = 0;
   debugger.frameStepPending = 0;
   debugger.vblankCaptureActive = 0;  
+  debugger.uiFrameCounter = 0;
+  debugger.uiRefreshHz = 0;
   debugger.config.crtEnabled = 1;
   snprintf(debugger.config.neogeo.libretro.toolchainPrefix, sizeof(debugger.config.neogeo.libretro.toolchainPrefix), "m68k-neogeo-elf");
   snprintf(debugger.config.amiga.libretro.toolchainPrefix, sizeof(debugger.config.amiga.libretro.toolchainPrefix), "m68k-amigaos-");
   debugger.recordPath[0] = '\0';
   debugger.playbackPath[0] = '\0';
-  debugger.smokeTestPath[0] = '\0';
-  debugger.smokeTestMode = SMOKE_TEST_MODE_NONE;
-  debugger.smokeTestCompleted = 0;
-  debugger.smokeTestFailed = 0;
-  debugger.smokeTestExitCode = -1;
-  debugger.smokeTestOpenOnFail = 0;
+  smoke_test_reset(&debugger);
   debugger.cliWindowOverride = 0;
   debugger.cliWindowW = 0;
   debugger.cliWindowH = 0;
@@ -440,6 +448,7 @@ debugger_main(int argc, char **argv)
   signal_installHandlers();
  
   config_loadConfig();
+  debugger_captureBootSaveDirs();
   cli_parseArgs(argc, argv);
   if (cli_helpRequested()) {
     cli_printUsage(argv && argv[0] ? argv[0] : NULL);
@@ -464,41 +473,18 @@ debugger_main(int argc, char **argv)
   if (debugger.cliCoreSystemOverride) {
     debugger_setCoreSystem(debugger.cliCoreSystem);
   }
-  if (debugger.smokeTestMode != SMOKE_TEST_MODE_NONE || debugger.cliHeadless || debugger.cliDisableRollingRecord) {
+  if (debugger.smokeTestMode != SMOKE_TEST_MODE_NONE || ui_test_getMode() != UI_TEST_MODE_NONE ||
+      debugger.cliHeadless || debugger.cliDisableRollingRecord) {
     state_buffer_setRollingPaused(1);
   }
   if (debugger.cliWarp) {
     debugger.speedMultiplier = 10;
   }
-  if (debugger.smokeTestMode != SMOKE_TEST_MODE_NONE) {
-    if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
-      debugger.speedMultiplier = 10;
-    }
-    if (debugger.smokeTestMode == SMOKE_TEST_MODE_RECORD) {
-      if (debugger.playbackPath[0]) {
-        debug_error("make-smoke: cannot use --playback with --make-smoke");
-        return 1;
-      }
-    } else if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
-      if (debugger.recordPath[0] || debugger.playbackPath[0]) {
-        debug_error("smoke-test: cannot combine with --record or --playback");
-        return 1;
-      }
-    }
-    smoke_test_setFolder(debugger.smokeTestPath);
-    smoke_test_setMode((smoke_test_mode_t)debugger.smokeTestMode);
-    smoke_test_setOpenOnFail(debugger.smokeTestOpenOnFail);
-    if (!smoke_test_init()) {
-      return 1;
-    }
-    char path[PATH_MAX];
-    if (smoke_test_getRecordPath(path, sizeof(path))) {
-      if (debugger.smokeTestMode == SMOKE_TEST_MODE_RECORD) {
-        debugger_copyPath(debugger.recordPath, sizeof(debugger.recordPath), path);
-      } else if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
-        debugger_copyPath(debugger.playbackPath, sizeof(debugger.playbackPath), path);
-      }
-    }
+  if (!smoke_test_bootstrap(&debugger)) {
+    return 1;
+  }
+  if (!ui_test_bootstrap()) {
+    return 1;
   }
   if (debugger.recordPath[0]) {
     input_record_setRecordPath(debugger.recordPath);
@@ -507,13 +493,15 @@ debugger_main(int argc, char **argv)
     input_record_setPlaybackPath(debugger.playbackPath);
   }
   if (!input_record_init()) {
-    smoke_test_shutdown();
+    ui_test_shutdown();
+    smoke_test_cleanup();
     return 1;
   }
 
   if (!e9ui_ctor(debugger_configPath(), debugger.cliWindowOverride, debugger.cliWindowW, debugger.cliWindowH, debugger.cliHeadless)) {
     input_record_shutdown();
-    smoke_test_shutdown();
+    ui_test_shutdown();
+    smoke_test_cleanup();
     {
       int sig = signal_getExitCode();
       return sig ? (128 + sig) : 1;
@@ -605,9 +593,16 @@ debugger_main(int argc, char **argv)
   runtime_runLoop();
   debugger_cleanup();
   input_record_shutdown();
-  smoke_test_shutdown();
-  if (debugger.smokeTestExitCode >= 0) {
-    return debugger.smokeTestExitCode;
+  ui_test_shutdown();
+  smoke_test_cleanup();
+  if (ui_test_getExitCode() >= 0) {
+    return ui_test_getExitCode();
+  }
+  {
+    int smokeExit = smoke_test_getExitCode(&debugger);
+    if (smokeExit >= 0) {
+      return smokeExit;
+    }
   }
   {
     int sig = signal_getExitCode();
@@ -639,4 +634,11 @@ debugger_setAudioEnabled(int enabled)
   } else {
     debugger.config.neogeo.libretro.audioEnabled = enabled;
   }
+}
+
+uint32_t
+debugger_uiTicks(void)
+{
+  int fps = debugger.uiRefreshHz > 0 ? debugger.uiRefreshHz : 60;
+  return (uint32_t)((debugger.uiFrameCounter * 1000ull) / (uint64_t)fps);
 }

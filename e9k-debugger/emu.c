@@ -343,33 +343,6 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
     if (rawMods & KMOD_GUI) {
         mods = (SDL_Keymod)(mods | KMOD_GUI);
     }
-    if (ev->key.keysym.sym == SDLK_F5) {
-        if (pressed) {
-            debugger_toggleSpeed();
-        }
-        return 1;
-    }
-    if (ev->key.keysym.sym == SDLK_f && mods == (SDL_Keymod)(KMOD_CTRL|KMOD_ALT)) {
-        if (pressed) {
-            debugger.frameStepMode = 1;
-            debugger.frameStepPending = 1;
-        }
-        return 1;
-    }
-    if (ev->key.keysym.sym == SDLK_b && mods == (SDL_Keymod)(KMOD_CTRL|KMOD_ALT)) {
-        if (pressed) {
-            debugger.frameStepMode = 1;
-            debugger.frameStepPending = -1;
-        }
-        return 1;
-    }    
-    if (ev->key.keysym.sym == SDLK_g && mods == (SDL_Keymod)(KMOD_CTRL|KMOD_ALT)) {
-        if (pressed) {
-            debugger.frameStepMode = 0;
-            debugger.frameStepPending = 0;
-        }
-        return 1;
-    }
     if (debugger.emu->mapKeyToJoypad(ev->key.keysym.sym, &id)) {
         libretro_host_setJoypadState(emu_joypadPort(), id, pressed);
     } else {

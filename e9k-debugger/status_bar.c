@@ -13,6 +13,7 @@
 #include "libretro_host.h"
 #include "e9ui_text_cache.h"
 #include "gl_composite.h"
+#include "ui_test.h"
 
 #include <SDL.h>
 #include <SDL_ttf.h>
@@ -57,7 +58,7 @@ status_bar_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bound
 static void
 status_bar_render(e9ui_component_t *self, e9ui_context_t *ctx)
 {
-    if (!ctx || !ctx->renderer) {
+    if (ui_test_getMode() != UI_TEST_MODE_NONE || !ctx || !ctx->renderer) {
         return;
     }
     e9ui_rect_t rect = self->bounds;
@@ -116,12 +117,15 @@ status_bar_render(e9ui_component_t *self, e9ui_context_t *ctx)
         snprintf(record, sizeof(record), " RECORDING:PAUSED");
     }
     const char *glLabel = gl_composite_isActive() ? " OPENGL" : "";
-    snprintf(label, sizeof(label), " %s FRAME:%llu%s FPS:%d/%d CYCLES:%llu%s%s %s",
+    char fpsLabel[32] = "";
+    const char *fpsText = "";
+    snprintf(fpsLabel, sizeof(fpsLabel), " FPS:%d/%d", fps, core_fps);
+    fpsText = fpsLabel;    
+    snprintf(label, sizeof(label), " %s FRAME:%llu%s%s CYCLES:%llu%s%s %s",
              stateLabel,
              (unsigned long long)frame,
              record,
-             fps,
-             core_fps,
+             fpsText,
              (unsigned long long)cycles,
              profile,
              glLabel,

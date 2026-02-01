@@ -27,11 +27,26 @@
 #include "debugger.h"
 #include "debug.h"
 #include "libretro_host.h"
+#include "ui_test.h"
 
 static char smoke_test_folder[PATH_MAX];
 static int smoke_test_enabled = 0;
 static smoke_test_mode_t smoke_test_mode = SMOKE_TEST_MODE_NONE;
 static int smoke_test_openOnFail = 0;
+
+static void
+smoke_test_copyPath(char *dest, size_t cap, const char *src)
+{
+    if (!dest || cap == 0) {
+        return;
+    }
+    if (!src || !*src) {
+        dest[0] = '\0';
+        return;
+    }
+    strncpy(dest, src, cap - 1);
+    dest[cap - 1] = '\0';
+}
 
 void
 smoke_test_setFolder(const char *path)
@@ -191,6 +206,79 @@ smoke_test_getRecordPath(char *out, size_t cap)
         return 0;
     }
     return debugger_platform_pathJoin(out, cap, smoke_test_folder, "smoketest.inp");
+}
+
+void
+smoke_test_reset(struct e9k_debugger *dbg)
+{
+    if (!dbg) {
+        return;
+    }
+    dbg->smokeTestPath[0] = '\0';
+    dbg->smokeTestMode = SMOKE_TEST_MODE_NONE;
+    dbg->smokeTestCompleted = 0;
+    dbg->smokeTestFailed = 0;
+    dbg->smokeTestExitCode = -1;
+    dbg->smokeTestOpenOnFail = 0;
+}
+
+int
+smoke_test_bootstrap(struct e9k_debugger *dbg)
+{
+    if (!dbg) {
+        return 0;
+    }
+    if (dbg->smokeTestMode == SMOKE_TEST_MODE_NONE) {
+        return 1;
+    }
+    if (ui_test_getMode() != UI_TEST_MODE_NONE) {
+        debug_error("test: cannot combine --make-test/--test with smoke test options");
+        return 0;
+    }
+    if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+        dbg->speedMultiplier = 10;
+    }
+    if (dbg->smokeTestMode == SMOKE_TEST_MODE_RECORD) {
+        if (dbg->playbackPath[0]) {
+            debug_error("make-smoke: cannot use --playback with --make-smoke");
+            return 0;
+        }
+    } else if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+        if (dbg->recordPath[0] || dbg->playbackPath[0]) {
+            debug_error("smoke-test: cannot combine with --record or --playback");
+            return 0;
+        }
+    }
+    smoke_test_setFolder(dbg->smokeTestPath);
+    smoke_test_setMode((smoke_test_mode_t)dbg->smokeTestMode);
+    smoke_test_setOpenOnFail(dbg->smokeTestOpenOnFail);
+    if (!smoke_test_init()) {
+        return 0;
+    }
+    char path[PATH_MAX];
+    if (smoke_test_getRecordPath(path, sizeof(path))) {
+        if (dbg->smokeTestMode == SMOKE_TEST_MODE_RECORD) {
+            smoke_test_copyPath(dbg->recordPath, sizeof(dbg->recordPath), path);
+        } else if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+            smoke_test_copyPath(dbg->playbackPath, sizeof(dbg->playbackPath), path);
+        }
+    }
+    return 1;
+}
+
+int
+smoke_test_getExitCode(const struct e9k_debugger *dbg)
+{
+    if (!dbg) {
+        return -1;
+    }
+    return dbg->smokeTestExitCode;
+}
+
+void
+smoke_test_cleanup(void)
+{
+    smoke_test_shutdown();
 }
 
 static int

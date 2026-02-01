@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <SDL.h>
 #include <stdint.h>
 
 void
@@ -15,6 +16,12 @@ input_record_setRecordPath(const char *path);
 
 void
 input_record_setPlaybackPath(const char *path);
+
+void
+input_record_setUiEventPath(const char *path);
+
+void
+input_record_setUiEventQueueMode(int enabled);
 
 int
 input_record_init(void);
@@ -31,6 +38,15 @@ input_record_isPlayback(void);
 int
 input_record_isInjecting(void);
 
+int
+input_record_isUiEventRecording(void);
+
+int
+input_record_isUiEventPlaybackComplete(void);
+
+int
+input_record_pollUiEvent(SDL_Event *ev);
+
 void
 input_record_recordJoypad(uint64_t frame, unsigned port, unsigned id, int pressed);
 
@@ -45,9 +61,22 @@ void
 input_record_recordUiKey(uint64_t frame, unsigned keycode, int pressed);
 
 void
+input_record_recordUiKeyEvent(uint64_t frame, unsigned keycode, uint16_t modifiers, int repeat, int pressed);
+
+void
+input_record_recordUiEvent(uint64_t frame, const SDL_Event *ev);
+
+void
+input_record_recordCoreMouseMotion(uint64_t frame, int port, int dx, int dy);
+
+void
+input_record_recordCoreMouseButton(uint64_t frame, int port, unsigned id, int pressed);
+
+void
 input_record_handleUiKey(unsigned keycode, int pressed);
 
 void
 input_record_applyFrame(uint64_t frame);
 
-
+void
+input_record_applyUiFrame(uint64_t frame);

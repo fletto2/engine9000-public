@@ -200,6 +200,12 @@ e9ui_clearFullscreenComponent(void);
 void
 e9ui_showTransientMessage(const char *message);
 
+int
+e9ui_getFpsEnabled(void);
+
+void
+e9ui_setFpsEnabled(int enabled);
+
 void
 e9ui_drawSelectableText(e9ui_context_t *ctx,
                         e9ui_component_t *owner,

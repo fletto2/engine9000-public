@@ -189,19 +189,19 @@ help_showModal(e9ui_context_t *ctx)
     e9ui_text_setFontSize(titleShortcuts, headingSize);
     e9ui_text_setColor(titleShortcuts, headingColor);
 
-    const char *shortcutKeys[] = { "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F11", "F12", "ESC", "TAB", "C", "P", "S", "N", "I", "Ctrl+Alt+B", "Ctrl+Alt+F", "Ctrl+Alt+G", "B", ",", ".", "/" };
+    const char *shortcutKeys[] = { "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F11", "F12", "ESC", "TAB", "C", "P", "S", "N", "I", "b", "f", "g", "Ctrl/Gui+C", ",", ".", "/" };
     const char *shortcutVals[] = { "Help",
                                    "Screenshot to clipboard",
-                                   "Toggle CRT mode",
-                                   "Toggle FPS overlay",
+                                   "Amiga <-> Neo Geo",
+                                   "Toggle rolling state record",
                                    "Speed toggle",
                                    "Toggle audio",
                                    "Save state",
                                    "Restore state",
-				   "Toggle rolling state record",
-				   "Amiga <-> Neo Geo",
+                                   "Toggle hotkeys",
                                    "Toggle fullscreen",
-				   "Activate console",
+                                   "Close modal",
+                                   "Activate console",
                                    "Continue",
                                    "Pause",
                                    "Step",
@@ -210,7 +210,7 @@ help_showModal(e9ui_context_t *ctx)
                                    "Frame step back",
                                    "Frame step",
                                    "Frame continue",
-                                   "Add breakpoint (current)",
+                                   "Copy selection",
                                    "Checkpoint profile toggle",
                                    "Checkpoint reset",
                                    "Checkpoint dump" };

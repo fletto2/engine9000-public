@@ -11,6 +11,7 @@
 #include "debugger.h"
 #include "debug.h"
 #include "smoke_test.h"
+#include "ui_test.h"
 
 static int cli_helpRequestedFlag = 0;
 static int cli_errorFlag = 0;
@@ -359,6 +360,50 @@ cli_parseArgs(int argc, char **argv)
             debugger.smokeTestMode = SMOKE_TEST_MODE_COMPARE;
             continue;
         }
+        if (strcmp(argv[i], "--make-test") == 0 && i + 1 < argc) {
+            char folder[PATH_MAX];
+            folder[0] = '\0';
+            cli_copyPath(folder, sizeof(folder), argv[++i]);
+            ui_test_registerRequestedMode(folder, UI_TEST_MODE_RECORD);
+            continue;
+        }
+        if (strcmp(argv[i], "--make-test") == 0) {
+            cli_setError("make-test: missing folder path");
+            return;
+        }
+        if (strncmp(argv[i], "--make-test=", sizeof("--make-test=") - 1) == 0) {
+            if (argv[i][sizeof("--make-test=") - 1] == '\0') {
+                cli_setError("make-test: missing folder path");
+                return;
+            }
+            char folder[PATH_MAX];
+            folder[0] = '\0';
+            cli_copyPath(folder, sizeof(folder), argv[i] + sizeof("--make-test=") - 1);
+            ui_test_registerRequestedMode(folder, UI_TEST_MODE_RECORD);
+            continue;
+        }
+        if (strcmp(argv[i], "--test") == 0 && i + 1 < argc) {
+            char folder[PATH_MAX];
+            folder[0] = '\0';
+            cli_copyPath(folder, sizeof(folder), argv[++i]);
+            ui_test_registerRequestedMode(folder, UI_TEST_MODE_COMPARE);
+            continue;
+        }
+        if (strcmp(argv[i], "--test") == 0) {
+            cli_setError("test: missing folder path");
+            return;
+        }
+        if (strncmp(argv[i], "--test=", sizeof("--test=") - 1) == 0) {
+            if (argv[i][sizeof("--test=") - 1] == '\0') {
+                cli_setError("test: missing folder path");
+                return;
+            }
+            char folder[PATH_MAX];
+            folder[0] = '\0';
+            cli_copyPath(folder, sizeof(folder), argv[i] + sizeof("--test=") - 1);
+            ui_test_registerRequestedMode(folder, UI_TEST_MODE_COMPARE);
+            continue;
+        }
         if (strcmp(argv[i], "--smoke-open") == 0) {
             debugger.smokeTestOpenOnFail = 1;
             continue;
@@ -435,7 +480,9 @@ cli_printUsage(const char *argv0)
     printf("  --make-smoke PATH            Save frames and inputs to a folder\n");
     printf("  --smoke-test PATH            Replay inputs and compare frames\n");
     printf("  --smoke-open                 Open montage on smoke-test failure\n");
-    printf("  --headless                   Hide main window (useful for --smoke-test)\n");
+    printf("  --make-test PATH             Record inputs + UI test frame captures\n");
+    printf("  --test PATH                  Replay inputs and compare UI test frames\n");
+    printf("  --headless                   Hide main window (useful for --smoke-test/--test)\n");
     printf("  --warp                       Start in speed multiplier mode\n");
     printf("  --fullscreen                 Start in UI fullscreen mode (ESC toggle)\n");
     printf("  --no-rolling-record          Disable rolling state recording\n");

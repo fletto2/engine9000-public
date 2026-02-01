@@ -136,8 +136,8 @@ profile_viewer_build_cmd(char *out, size_t cap, const char *python, const char *
         }
         used += (size_t)n;
     }
-    if (debugger.libretro.elfPath[0]) {
-        n = snprintf(out + used, cap - used, " --elf \"%s\"", debugger.libretro.elfPath);
+    if (debugger.libretro.exePath[0]) {
+        n = snprintf(out + used, cap - used, " --elf \"%s\"", debugger.libretro.exePath);
         if (n <= 0 || (size_t)n >= cap - used) {
             out[cap - 1] = '\0';
             return 0;

@@ -22,6 +22,7 @@
 #include "machine.h"
 #include "protect.h"
 #include "trainer.h"
+#include "ui_test.h"
 
 typedef struct rom_config_bp_entry {
     uint32_t addr;
@@ -91,6 +92,62 @@ rom_config_pathExistsDir(const char *path)
         return 0;
     }
     return S_ISDIR(sb.st_mode) ? 1 : 0;
+}
+
+static const char *
+rom_config_bootSaveDir(void)
+{
+    if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
+        if (debugger.bootAmigaSaveDir[0]) {
+            return debugger.bootAmigaSaveDir;
+        }
+        if (debugger.bootAmigaSystemDir[0]) {
+            return debugger.bootAmigaSystemDir;
+        }
+        return NULL;
+    }
+    if (debugger.bootNeogeoSaveDir[0]) {
+        return debugger.bootNeogeoSaveDir;
+    }
+    if (debugger.bootNeogeoSystemDir[0]) {
+        return debugger.bootNeogeoSystemDir;
+    }
+    return NULL;
+}
+
+static int
+rom_config_copyFile(const char *srcPath, const char *dstPath)
+{
+    if (!srcPath || !*srcPath || !dstPath || !*dstPath) {
+        return 0;
+    }
+    FILE *src = fopen(srcPath, "rb");
+    if (!src) {
+        return 0;
+    }
+    FILE *dst = fopen(dstPath, "wb");
+    if (!dst) {
+        fclose(src);
+        return 0;
+    }
+
+    uint8_t buf[16384];
+    int ok = 1;
+    size_t n = 0;
+    while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+        if (fwrite(buf, 1, n, dst) != n) {
+            ok = 0;
+            break;
+        }
+    }
+    if (ferror(src)) {
+        ok = 0;
+    }
+    if (fclose(dst) != 0) {
+        ok = 0;
+    }
+    fclose(src);
+    return ok ? 1 : 0;
 }
 
 static const char *
@@ -630,11 +687,40 @@ rom_config_loadSettingsForSelectedRom(void)
     char legacyPath[PATH_MAX];
     int haveLegacy = rom_config_buildLegacyJsonPathCore(legacyPath, sizeof(legacyPath), saveDir, romPath);
     const char *pathToRead = NULL;
+
     if (rom_config_pathExistsFile(jsonPath)) {
         pathToRead = jsonPath;
     } else if (haveLegacy && rom_config_pathExistsFile(legacyPath)) {
         pathToRead = legacyPath;
+    } else if (ui_test_getMode() == UI_TEST_MODE_RECORD) {
+        const char *bootSaveDir = rom_config_bootSaveDir();
+        if (bootSaveDir && *bootSaveDir &&
+            rom_config_pathExistsDir(bootSaveDir) &&
+            strcmp(bootSaveDir, saveDir) != 0) {
+            char bootJsonPath[PATH_MAX];
+            if (rom_config_buildJsonPathCore(bootJsonPath, sizeof(bootJsonPath), bootSaveDir, romPath)) {
+                char bootLegacyPath[PATH_MAX];
+                int haveBootLegacy = rom_config_buildLegacyJsonPathCore(bootLegacyPath, sizeof(bootLegacyPath), bootSaveDir, romPath);
+                const char *bootPathToCopy = NULL;
+                int bootIsLegacy = 0;
+                if (rom_config_pathExistsFile(bootJsonPath)) {
+                    bootPathToCopy = bootJsonPath;
+                } else if (haveBootLegacy && rom_config_pathExistsFile(bootLegacyPath)) {
+                    bootPathToCopy = bootLegacyPath;
+                    bootIsLegacy = 1;
+                }
+                if (bootPathToCopy) {
+                    const char *dstPath = bootIsLegacy ? legacyPath : jsonPath;
+                    if (rom_config_copyFile(bootPathToCopy, dstPath) && rom_config_pathExistsFile(dstPath)) {
+                        pathToRead = dstPath;
+                    } else {
+                        pathToRead = bootPathToCopy;
+                    }
+                }
+            }
+        }
     }
+
     if (!pathToRead) {
         rom_config_setActiveDefaultsFromCurrentSystem();
         return;
@@ -824,6 +910,9 @@ rom_config_loadRuntimeStateOnBoot(void)
 void
 rom_config_saveOnExit(void)
 {
+    if (ui_test_getMode() != UI_TEST_MODE_NONE) {
+        return;
+    }
     const char *romPath = rom_config_activeRomPath();
     const char *saveDir = rom_config_saveDir(NULL);
     if (!romPath || !saveDir || !rom_config_pathExistsDir(saveDir)) {

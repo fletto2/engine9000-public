@@ -24,6 +24,7 @@
 #include "protect.h"
 #include "shader_ui.h"
 #include "smoke_test.h"
+#include "ui_test.h"
 #include "state_buffer.h"
 #include "train.h"
 #include "debugger_signal.h"
@@ -125,6 +126,7 @@ runtime_runLoop(void)
                 e9ui->transition.inTransition = 0;
             }
         }
+        input_record_applyUiFrame(debugger.uiFrameCounter + 1);
         if (signal_getExitCode() || e9ui_processEvents()) {
             break;
         }
@@ -270,6 +272,12 @@ runtime_runLoop(void)
             break;
         }
         if (debugger.smokeTestFailed) {
+            break;
+        }
+        if (ui_test_hasFailed()) {
+            break;
+        }
+        if (ui_test_checkPlaybackComplete()) {
             break;
         }
         //  SDL_Delay(16);

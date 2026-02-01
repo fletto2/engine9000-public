@@ -17,6 +17,8 @@ typedef enum smoke_test_mode {
     SMOKE_TEST_MODE_COMPARE = 2
 } smoke_test_mode_t;
 
+struct e9k_debugger;
+
 void
 smoke_test_setFolder(const char *path);
 
@@ -41,7 +43,17 @@ smoke_test_isEnabled(void);
 int
 smoke_test_getRecordPath(char *out, size_t cap);
 
+void
+smoke_test_reset(struct e9k_debugger *dbg);
+
+int
+smoke_test_bootstrap(struct e9k_debugger *dbg);
+
+int
+smoke_test_getExitCode(const struct e9k_debugger *dbg);
+
+void
+smoke_test_cleanup(void);
+
 int
 smoke_test_captureFrame(uint64_t frame);
-
-

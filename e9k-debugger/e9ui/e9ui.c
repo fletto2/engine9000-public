@@ -33,11 +33,13 @@
 #include "debugger.h"
 #include "ui.h"
 #include "config.h"
+#include "hotkeys.h"
 #include "help.h"
 #include "core_options.h"
 #include "file.h"
 #include "debug_font.h"
 #include "e9ui_theme.h"
+#include "ui_test.h"
 #include "state_buffer.h"
 #include "debug.h"
 #include "smoke_test.h"
@@ -65,7 +67,7 @@ static uint32_t e9ui_fullscreenHintStart = 0;
 static TTF_Font *e9ui_fullscreenHintFont = NULL;
 static int e9ui_fullscreenHintSize = 0;
 static const char *e9ui_transientMessage = NULL;
-static const char e9ui_fullscreenMessage[] = "PRESS ESC TO EXIT FULLSCREEN";
+static const char e9ui_fullscreenMessage[] = "PRESS F12 TO EXIT FULLSCREEN";
 static int e9ui_loadingLayout = 0;
 static int e9ui_fpsEnabled = 0;
 static uint32_t e9ui_fpsLastTick = 0;
@@ -74,19 +76,43 @@ static float e9ui_fpsValue = 0.0f;
 static TTF_Font *e9ui_fpsFont = NULL;
 static int e9ui_fpsFontSize = 0;
 
-static void
-e9ui_toggleCoreSystemAndRestart(void)
+int
+e9ui_getFpsEnabled(void)
 {
-    debugger_system_type_t nextSystem = (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) ?
-        DEBUGGER_SYSTEM_NEOGEO : DEBUGGER_SYSTEM_AMIGA;
-    debugger_setCoreSystem(nextSystem);
-    if (nextSystem == DEBUGGER_SYSTEM_AMIGA) {
-        e9ui_showTransientMessage("RESTARTING AS AMIGA");
-    } else {
-        e9ui_showTransientMessage("RESTARTING AS NEO GEO");
+    return e9ui_fpsEnabled ? 1 : 0;
+}
+
+void
+e9ui_setFpsEnabled(int enabled)
+{
+    e9ui_fpsEnabled = enabled ? 1 : 0;
+}
+
+static int
+e9ui_getDisplayRefreshRate(int displayIndex)
+{
+    int refresh = 0;
+    if (displayIndex < 0) {
+        return 0;
     }
-    config_saveConfig();
-    debugger.restartRequested = 1;
+    SDL_DisplayMode mode;
+    if (SDL_GetCurrentDisplayMode(displayIndex, &mode) == 0) {
+        refresh = mode.refresh_rate;
+    }
+    if (refresh <= 0 && SDL_GetDesktopDisplayMode(displayIndex, &mode) == 0) {
+        refresh = mode.refresh_rate;
+    }
+    return refresh;
+}
+
+static void
+e9ui_updateRefreshRate(SDL_Window *win)
+{
+    int displayIndex = SDL_GetWindowDisplayIndex(win);
+    int refresh = e9ui_getDisplayRefreshRate(displayIndex);
+    if (refresh > 0) {
+        debugger.uiRefreshHz = refresh;
+    }
 }
 
 static void
@@ -150,7 +176,7 @@ e9ui_renderTransientMessage(e9ui_context_t *ctx, int w, int h)
   if (!ctx || !ctx->renderer || e9ui_fullscreenHintStart == 0 || !e9ui_transientMessage) {
     return;
   }
-  uint32_t now = SDL_GetTicks();
+  uint32_t now = debugger_uiTicks();
   uint32_t elapsed = now - e9ui_fullscreenHintStart;
   if (elapsed >= 1000) {
     return;
@@ -213,7 +239,7 @@ e9ui_renderFpsOverlay(e9ui_context_t *ctx, int w, int h)
   if (!ctx || !ctx->renderer || !e9ui_fpsEnabled || !e9ui->fullscreen) {
     return;
   }
-  uint32_t now = SDL_GetTicks();
+  uint32_t now = debugger_uiTicks();
   if (e9ui_fpsLastTick == 0) {
     e9ui_fpsLastTick = now;
   }
@@ -398,99 +424,6 @@ e9ui_controllerHandleAxis(SDL_GameControllerAxis axis, int value)
   }
 }
 
-
-static int
-e9ui_registerHotkey(e9ui_context_t *ctx, SDL_Keycode key, SDL_Keymod modMask, SDL_Keymod modValue,
-                    void (*cb)(e9ui_context_t *ctx, void *user), void *user)
-{
-    (void)ctx;
-    if (!cb) {
-        return -1;
-    }
-    e9k_hotkey_registry_t *hk = &e9ui->hotkeys;
-    if (hk->count == hk->cap) {
-        int nc = hk->cap ? hk->cap * 2 : 16;
-        hk->entries = (e9k_hotkey_entry_t*)alloc_realloc(hk->entries, (size_t)nc * sizeof(e9k_hotkey_entry_t));
-        hk->cap = nc;
-    }
-    int id = (hk->next_id ? hk->next_id : 1);
-    hk->next_id = id + 1;
-    hk->entries[hk->count++] = (e9k_hotkey_entry_t){ id, (int)key, (int)modMask, (int)modValue, cb, user, 1 };
-    return id;
-}
-
-static void
-e9ui_unregisterHotkey(e9ui_context_t *ctx, int id)
-{
-    (void)ctx;
-    e9k_hotkey_registry_t *hk = &e9ui->hotkeys;
-    for (int i=0;i<hk->count;i++) {
-        if (hk->entries[i].id == id) {
-            hk->entries[i] = hk->entries[hk->count-1];
-            hk->count--;
-            break;
-        }
-    }
-}
-
-static int
-e9ui_dispatchHotkey(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
-{
-  (void)ctx;
-  if (!kev) {
-    return 0;
-  }
-  SDL_Keycode key = kev->keysym.sym;
-  SDL_Keymod rawMods = kev->keysym.mod;
-  SDL_Keymod mods = 0;
-  if (rawMods & KMOD_CTRL) {
-    mods = (SDL_Keymod)(mods | KMOD_CTRL);
-  }
-  if (rawMods & KMOD_SHIFT) {
-    mods = (SDL_Keymod)(mods | KMOD_SHIFT);
-  }
-  if (rawMods & KMOD_ALT) {
-    mods = (SDL_Keymod)(mods | KMOD_ALT);
-  }
-  if (rawMods & KMOD_GUI) {
-    mods = (SDL_Keymod)(mods | KMOD_GUI);
-  }
-  // If a text-input capable component is focused, prevent bare printable keys from triggering hotkeys
-  if (ctx && (e9ui_getFocus(ctx))) {
-    SDL_Keymod noShiftMods = (SDL_Keymod)(mods & (KMOD_CTRL|KMOD_ALT|KMOD_GUI));
-    int printable = (key >= 32 && key <= 126); // ASCII printable range
-    if (noShiftMods == 0 && printable) {
-      return 0; // let TEXTINPUT path handle it
-    }
-  }
-  if (key == SDLK_TAB && ctx) {
-    if (prompt_isFocused(ctx, e9ui->prompt)) {
-      return 0;
-    }
-    e9ui_component_t *focus = e9ui_getFocus(ctx);
-    if (focus && focus->name && strcmp(focus->name, "e9ui_textbox") == 0) {
-      if (e9ui_textbox_getCompletionMode(focus) != e9ui_textbox_completion_none) {
-        return 0;
-      }
-    }
-  }
-  e9k_hotkey_registry_t *hk = &e9ui->hotkeys;
-  for (int i=0;i<hk->count;i++) {
-    e9k_hotkey_entry_t *e = &hk->entries[i];
-    if (!e->active) {
-      continue;
-    }
-    if ((SDL_Keycode)e->key == key) {
-      if ((mods & (SDL_Keymod)e->mask) == (SDL_Keymod)e->value) {
-	if (e->cb) {
-	  e->cb(ctx, e->user);
-	}
-	return 1;
-      }
-    }
-  }
-  return 0;
-}
 
 static void    
 e9ui_updateDisabledState(e9ui_component_t *comp)
@@ -1173,7 +1106,7 @@ e9ui_setFullscreenComponent(e9ui_component_t *comp)
     }
     e9ui->fullscreen = comp;
     if (comp) {
-        e9ui_fullscreenHintStart = SDL_GetTicks();
+        e9ui_fullscreenHintStart = debugger_uiTicks();
         e9ui_transientMessage = e9ui_fullscreenMessage;
     }
 }
@@ -1216,7 +1149,7 @@ e9ui_showTransientMessage(const char *message)
         return;
     }
     e9ui_transientMessage = message;
-    e9ui_fullscreenHintStart = SDL_GetTicks();
+    e9ui_fullscreenHintStart = debugger_uiTicks();
 }
 
 void
@@ -1295,7 +1228,13 @@ e9ui_renderFrame(void)
 
   e9ui_renderTooltipOverlay();
 
+  uint64_t uiFrameId = debugger.uiFrameCounter + 1;
+  if (!ui_test_hasFailed()) {
+    (void)ui_test_captureWindowFrame(uiFrameId, e9ui->ctx.renderer);
+  }
+
   SDL_RenderPresent(e9ui->ctx.renderer);
+  debugger.uiFrameCounter = uiFrameId;
 }
 
 void
@@ -1488,6 +1427,12 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
         debug_error("SDL_Init failed: %s", SDL_GetError());
         return 0;
     }
+    {
+        int refresh = e9ui_getDisplayRefreshRate(0);
+        if (refresh > 0) {
+            debugger.uiRefreshHz = refresh;
+        }
+    }
     if (TTF_Init() != 0) {
         debug_error("TTF_Init failed: %s", TTF_GetError());
         SDL_Quit();
@@ -1521,6 +1466,7 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
         return 0;
     }
     e9ui_applyWindowIcon(win);
+    e9ui_updateRefreshRate(win);
     SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED |SDL_RENDERER_PRESENTVSYNC);
     if (!ren) {
         debug_error("SDL_CreateRenderer failed: %s", SDL_GetError());
@@ -1548,9 +1494,9 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
   }
   e9ui->ctx.font = font;
   // Initialize root event hooks
-  e9ui->ctx.registerHotkey = e9ui_registerHotkey;
-  e9ui->ctx.unregisterHotkey = e9ui_unregisterHotkey;
-  e9ui->ctx.dispatchHotkey = e9ui_dispatchHotkey;
+  e9ui->ctx.registerHotkey = hotkeys_registerHotkey;
+  e9ui->ctx.unregisterHotkey = hotkeys_unregisterHotkey;
+  e9ui->ctx.dispatchHotkey = hotkeys_dispatchHotkey;
   e9ui->ctx.onSplitChanged = e9ui_onSplitChanged;
   // Load themed fonts (button + text fonts)
   e9ui_theme_loadFonts();
@@ -1590,7 +1536,25 @@ int
 e9ui_processEvents(void)
 {
     SDL_Event ev;
-    while (SDL_PollEvent(&ev)) {
+    int compareMode = ui_test_getMode() == UI_TEST_MODE_COMPARE ? 1 : 0;
+    while (1) {
+        int hasEvent = 0;
+        if (compareMode) {
+	  hasEvent = input_record_pollUiEvent(&ev);
+          SDL_Event dummy;	
+	  SDL_PollEvent(&dummy);
+        } else {
+	  hasEvent = SDL_PollEvent(&ev);
+        }
+        if (!hasEvent) {
+            break;
+        }
+        if (!compareMode) {
+            if (input_record_isUiEventRecording() && !input_record_isInjecting()) {
+                input_record_recordUiEvent(debugger.uiFrameCounter + 1, &ev);
+            }
+        }
+
         uint32_t shaderWindowId = shader_ui_getWindowId();
         uint32_t memoryTrackWindowId = memory_track_ui_getWindowId();
         uint32_t evWindowId = e9ui_eventWindowId(&ev);
@@ -1715,105 +1679,11 @@ e9ui_processEvents(void)
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
             }
-            if (ev.key.keysym.sym == SDLK_ESCAPE) {
-                if (sprite_debug_is_window_id(ev.key.windowID)) {
-                    if (sprite_debug_is_open()) {
-                        sprite_debug_toggle();
-                    }
-                    continue;
-                }
-                if (e9ui->helpModal) {
-                    help_cancelModal();
-                    continue;
-                }
-                if (e9ui->coreOptionsModal) {
-                    core_options_cancelModal();
-                    continue;
-                }
-                if (e9ui->settingsModal) {
-                    debugger_cancelSettingsModal();
-                    continue;
-                }
-                if (e9ui->fullscreen) {
-                    e9ui_clearFullscreenComponent();
-                } else {
-                    e9ui_component_t *geo_box = e9ui_findById(e9ui->root, "libretro_box");
-                    if (geo_box) {
-                        e9ui_setFullscreenComponent(geo_box);
-                    } else {
-                        e9ui_component_t *geo_view = e9ui_findById(e9ui->root, "geo_view");
-                        if (geo_view) {
-                            e9ui_setFullscreenComponent(geo_view);
-                        }
-                    }
-                }
+            if (hotkeys_handleKeydown(&e9ui->ctx, &ev.key)) {
                 continue;
-            }
-            if (ev.key.keysym.sym == SDLK_F1) {
-                e9ui_setFocus(&e9ui->ctx, NULL);
-                if (e9ui->helpModal) {
-                    help_cancelModal();
-                } else {
-                    help_showModal(&e9ui->ctx);
-                }
-                continue;
-            }
-            if (ev.key.keysym.sym == SDLK_F2) {
-                e9ui_setFocus(&e9ui->ctx, NULL);
-                ui_copyFramebufferToClipboard();
-                continue;
-            }
-            if (ev.key.keysym.sym == SDLK_F3) {
-                e9ui_setFocus(&e9ui->ctx, NULL);
-                crt_setEnabled(!crt_isEnabled());
-                debugger.config.crtEnabled = crt_isEnabled() ? 1 : 0;
-                continue;
-            }
-            if (ev.key.keysym.sym == SDLK_F4) {
-                e9ui_fpsEnabled = !e9ui_fpsEnabled;
-                e9ui_setFocus(&e9ui->ctx, NULL);
-                e9ui_showTransientMessage(e9ui_fpsEnabled ? "FPS ON" : "FPS OFF");
-                continue;
-            }
-            if (ev.key.keysym.sym == SDLK_F11 && ev.key.repeat == 0) {
-                int paused = state_buffer_isRollingPaused() ? 0 : 1;
-                state_buffer_setRollingPaused(paused);
-                e9ui_setFocus(&e9ui->ctx, NULL);
-                e9ui_showTransientMessage(paused ? "ROLLING SAVE PAUSED" : "ROLLING SAVE RESUMED");
-                continue;
-            }
-            if (ev.key.keysym.sym == SDLK_F12 && ev.key.repeat == 0) {
-                e9ui_setFocus(&e9ui->ctx, NULL);
-                e9ui_toggleCoreSystemAndRestart();
-                continue;
-            }
-            if (ev.key.keysym.sym == SDLK_c) {
-                SDL_Keymod mods = (SDL_Keymod)(ev.key.keysym.mod & (KMOD_CTRL|KMOD_GUI));
-                if (mods != 0 && e9ui_text_select_hasSelection()) {
-                    e9ui_component_t *focus = e9ui_getFocus(&e9ui->ctx);
-                    if (!focus || !focus->name || strcmp(focus->name, "e9ui_textbox") != 0) {
-                        e9ui_text_select_copyToClipboard();
-                        continue;
-                    }
-                }
-            }
-
-            if (ev.key.keysym.sym == SDLK_COMMA || ev.key.keysym.sym == SDLK_PERIOD || ev.key.keysym.sym == SDLK_SLASH) {
-                SDL_Keymod mods = (SDL_Keymod)(ev.key.keysym.mod & (KMOD_CTRL|KMOD_ALT|KMOD_GUI|KMOD_SHIFT));
-                int has_focus = (e9ui_getFocus(&e9ui->ctx) != NULL);
-                if (mods == 0 && !has_focus) {
-                    if (!input_record_isPlayback()) {
-                        input_record_recordUiKey(debugger.frameCounter + 1, (unsigned)ev.key.keysym.sym, 1);
-                        input_record_handleUiKey((unsigned)ev.key.keysym.sym, 1);
-                    }
-                    continue;
-                }
             }
             // Focused component gets first crack at keydown
             int consumed = 0;
-            if (e9ui->ctx.dispatchHotkey) {
-                consumed = e9ui->ctx.dispatchHotkey(&e9ui->ctx, &ev.key);
-            }
             if (!consumed && e9ui_getFocus(&e9ui->ctx) && e9ui_getFocus(&e9ui->ctx)->handleEvent) {
                 consumed = e9ui_getFocus(&e9ui->ctx)->handleEvent(e9ui_getFocus(&e9ui->ctx), &e9ui->ctx, &ev);
             }
@@ -1864,12 +1734,7 @@ e9ui_shutdown(void)
   e9ui_split_resetCursors();
   e9ui_split_stack_resetCursors();
   e9ui_box_resetCursors();
-  if (e9ui->hotkeys.entries) {
-    alloc_free(e9ui->hotkeys.entries);
-    e9ui->hotkeys.entries = NULL;
-    e9ui->hotkeys.count = e9ui->hotkeys.cap =
-      e9ui->hotkeys.next_id = 0;
-  }
+  hotkeys_shutdown();
   
   if (e9ui->ctx.font) {
     TTF_CloseFont(e9ui->ctx.font);
@@ -1882,11 +1747,30 @@ e9ui_shutdown(void)
   
   e9ui_childDestroy(e9ui->root, &e9ui->ctx);
   e9ui->root = NULL;
+  e9ui->toolbar = NULL;
+  e9ui->profileButton = NULL;
+  e9ui->analyseButton = NULL;
+  e9ui->speedButton = NULL;
+  e9ui->restartButton = NULL;
+  e9ui->resetButton = NULL;
+  e9ui->audioButton = NULL;
+  e9ui->settingsButton = NULL;
+  e9ui->settingsModal = NULL;
+  e9ui->settingsSaveButton = NULL;
+  e9ui->coreOptionsModal = NULL;
+  e9ui->helpModal = NULL;
+  e9ui->prompt = NULL;
+  e9ui->pendingRemove = NULL;
+  e9ui->sourceBox = NULL;
+  e9ui->fullscreen = NULL;
+  e9ui->ctx._focus = NULL;
 
   if (e9ui->ctx.renderer)
     SDL_DestroyRenderer(e9ui->ctx.renderer);
+  e9ui->ctx.renderer = NULL;
   if (e9ui->ctx.window)
     SDL_DestroyWindow(e9ui->ctx.window);
+  e9ui->ctx.window = NULL;
   
   IMG_Quit();
   TTF_Quit();

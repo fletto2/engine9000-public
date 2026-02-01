@@ -1,0 +1,6 @@
+nr_floppies=1
+floppy0=./tests/amiga/smoke/smoke.adf
+puae_cart_file=
+puae_cpu_compatibility=exact
+puae_floppy_speed=0
+puae_model=A500

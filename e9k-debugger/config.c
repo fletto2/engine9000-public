@@ -12,6 +12,7 @@
 #include "e9ui.h"
 #include "sprite_debug.h"
 #include "transition.h"
+#include "ui_test.h"
 
 void
 debugger_platform_setDefaults(e9k_neogeo_config_t *config);
@@ -140,7 +141,7 @@ config_persistConfig(FILE *f)
 void
 config_saveConfig(void)
 {
-  if (debugger.smokeTestMode != 0) {
+  if (debugger.smokeTestMode != 0 || ui_test_getMode() != UI_TEST_MODE_NONE) {
     return;
   }
   e9ui_saveLayout(debugger_configPath());

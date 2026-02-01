@@ -7,6 +7,7 @@
  */
 
 #include "e9ui.h"
+#include "debugger.h"
 
 typedef struct e9ui_text_select_run {
     char *text;
@@ -672,7 +673,7 @@ e9ui_text_select_handleEvent(e9ui_context_t *ctx, const e9ui_event_t *ev)
         if (runIndex >= 0) {
             bucket = text_select_state.runs[runIndex].bucket;
         }
-        Uint32 now = SDL_GetTicks();
+        Uint32 now = debugger_uiTicks();
         int slop = ctx ? e9ui_scale_px(ctx, 4) : 4;
         int dx = mx - text_select_state.lastClickX;
         int dy = my - text_select_state.lastClickY;

@@ -154,24 +154,25 @@ Global debugger hotkeys
 |---|---|
 | `F1` | Help |
 | `F2` | Screenshot to clipboard |
-| `F3` | Toggle CRT mode |
-| `F4` | Toggle FPS overlay |
+| `F3` | Amiga <-> Neo Geo |
+| `F4` | Toggle rolling state record |
 | `F5` | Speed toggle |
 | `F6` | Toggle audio |
 | `F7` | Save state |
 | `F8` | Restore state |
-| `F11` | Toggle rolling record |
-| `F12` | Amiga <-> Neo Geo |
-| `ESC` | Toggle fullscreen |
+| `F11` | Toggle hotkeys |
+| `F12` | Toggle fullscreen |
+| `ESC` | Close modal |
 | `TAB` | Focus the console prompt |
 | `c` | Continue |
 | `p` | Pause |
 | `s` | Step (source line) |
 | `n` | Next (step over) |
 | `i` | Step instruction |
-| `Ctrl+Alt+B` | Frame step back |
-| `Ctrl+Alt+F` | Frame step |
-| `Ctrl+Alt+G` | Frame continue |
+| `b` | Frame step back |
+| `f` | Frame step |
+| `g` | Frame continue |
+| `Ctrl/Gui+C` | Copy selection |
 | `,` | Checkpoint profiler toggle |
 | `.` | Checkpoint profiler reset |
 | `/` | Checkpoint profiler dump to stdout |
@@ -581,7 +582,7 @@ Run `e9k-debugger --help` for the full list. The current options include:
 - `--headless` - hide the main window (also disables rolling state recording by default)
 - `--warp` - start in speed multiplier mode
 - `--fullscreen` (alias: `--start-fullscreen`) - start in UI fullscreen mode (ESC toggle)
-- `--no-rolling-record` - start with rolling state recording paused (can be toggled with `F11`; smoke/headless also pause by default)
+- `--no-rolling-record` - start with rolling state recording paused (can be toggled with `F4`; smoke/headless also pause by default)
 
 #### Neo Geo options (use with `--neogeo`)
 - `--elf PATH`

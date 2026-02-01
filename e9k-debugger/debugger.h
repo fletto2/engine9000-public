@@ -114,8 +114,14 @@ typedef struct e9k_debugger {
     geo_debug_sprite_state_t spriteShadow;
     uint16_t *spriteShadowVram;
     size_t spriteShadowWords;
+    uint64_t uiFrameCounter;
+    int uiRefreshHz;
     char recordPath[PATH_MAX];
     char playbackPath[PATH_MAX];
+    char bootAmigaSaveDir[PATH_MAX];
+    char bootAmigaSystemDir[PATH_MAX];
+    char bootNeogeoSaveDir[PATH_MAX];
+    char bootNeogeoSystemDir[PATH_MAX];
     char smokeTestPath[PATH_MAX];
     int smokeTestMode;
     int smokeTestCompleted;
@@ -193,3 +199,6 @@ debugger_getAudioEnabled(void);
 
 void
 debugger_setAudioEnabled(int enabled);
+
+uint32_t
+debugger_uiTicks(void);

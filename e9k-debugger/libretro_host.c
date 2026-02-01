@@ -1543,6 +1543,7 @@ libretro_host_addMouseMotion(unsigned port, int dx, int dy)
     if (dx == 0 && dy == 0) {
         return;
     }
+    input_record_recordCoreMouseMotion(debugger.frameCounter + 1, (int)port, dx, dy);
     if (port == LIBRETRO_HOST_MAX_PORTS) {
         for (unsigned idx = 0; idx < LIBRETRO_HOST_MAX_PORTS; ++idx) {
             libretro_host.mousePendingX[idx] += dx;
@@ -1566,6 +1567,7 @@ libretro_host_setMouseButton(unsigned port, unsigned id, int pressed)
     if (id > RETRO_DEVICE_ID_MOUSE_BUTTON_5) {
         return;
     }
+    input_record_recordCoreMouseButton(debugger.frameCounter + 1, (int)port, id, pressed);
     uint32_t bit = 1u << id;
     if (port == LIBRETRO_HOST_MAX_PORTS) {
         for (unsigned idx = 0; idx < LIBRETRO_HOST_MAX_PORTS; ++idx) {
