@@ -100,8 +100,13 @@ hotkeys_dispatchHotkey(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
     if (rawMods & KMOD_GUI) {
         mods = (SDL_Keymod)(mods | KMOD_GUI);
     }
-    int allowPrintableHotkey = (mods == 0 && (key == SDLK_f || key == SDLK_b || key == SDLK_g)) ? 1 : 0;
-    if (ctx && (e9ui_getFocus(ctx))) {
+    e9ui_component_t *focus = ctx ? e9ui_getFocus(ctx) : NULL;
+    int focusIsTextbox = 0;
+    if (focus && focus->name && strcmp(focus->name, "e9ui_textbox") == 0) {
+        focusIsTextbox = 1;
+    }
+    int allowPrintableHotkey = (mods == 0 && (key == SDLK_f || key == SDLK_b || key == SDLK_g) && !focusIsTextbox) ? 1 : 0;
+    if (focus) {
         SDL_Keymod noShiftMods = (SDL_Keymod)(mods & (KMOD_CTRL|KMOD_ALT|KMOD_GUI));
         int printable = (key >= 32 && key <= 126);
         if (noShiftMods == 0 && printable && !allowPrintableHotkey) {

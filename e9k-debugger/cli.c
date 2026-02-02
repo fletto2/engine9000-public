@@ -141,6 +141,18 @@ cli_parseArgs(int argc, char **argv)
             cli_copyPath(debugger.cliConfig.neogeo.libretro.exePath, sizeof(debugger.cliConfig.neogeo.libretro.exePath), argv[++i]);
             continue;
         }
+        if (strncmp(argv[i], "--elf=", sizeof("--elf=") - 1) == 0) {
+            if (targetSystem == DEBUGGER_SYSTEM_AMIGA) {
+                cli_setError("elf: only supported for Neo Geo (use --neogeo)");
+                return;
+            }
+            if (argv[i][sizeof("--elf=") - 1] == '\0') {
+                cli_setError("elf: missing file path");
+                return;
+            }
+            cli_copyPath(debugger.cliConfig.neogeo.libretro.exePath, sizeof(debugger.cliConfig.neogeo.libretro.exePath), argv[i] + sizeof("--elf=") - 1);
+            continue;
+        }
         if (strcmp(argv[i], "--hunk") == 0) {
             if (targetSystem != DEBUGGER_SYSTEM_AMIGA) {
                 cli_setError("hunk: only supported for Amiga (use --amiga)");
@@ -256,6 +268,35 @@ cli_parseArgs(int argc, char **argv)
             if (end && end != val && ms > 0 && ms <= INT_MAX) {
                 debugger.cliConfig.neogeo.libretro.audioBufferMs = (int)ms;
             }
+            continue;
+        }
+        if (strcmp(argv[i], "--audio-volume") == 0) {
+            if (i + 1 >= argc) {
+                cli_setError("audio-volume: missing value");
+                return;
+            }
+            char *end = NULL;
+            long volume = strtol(argv[++i], &end, 10);
+            if (!end || *end != '\0' || volume < 0 || volume > 100) {
+                cli_setError("audio-volume: value must be in range 0..100");
+                return;
+            }
+            debugger.cliAudioVolume = (int)volume;
+            continue;
+        }
+        if (strncmp(argv[i], "--audio-volume=", sizeof("--audio-volume=") - 1) == 0) {
+            const char *value = argv[i] + sizeof("--audio-volume=") - 1;
+            if (!value[0]) {
+                cli_setError("audio-volume: missing value");
+                return;
+            }
+            char *end = NULL;
+            long volume = strtol(value, &end, 10);
+            if (!end || *end != '\0' || volume < 0 || volume > 100) {
+                cli_setError("audio-volume: value must be in range 0..100");
+                return;
+            }
+            debugger.cliAudioVolume = (int)volume;
             continue;
         }
         if (strcmp(argv[i], "--window-size") == 0 && i + 1 < argc) {
@@ -474,6 +515,7 @@ cli_printUsage(const char *argv0)
     printf("  --save-dir PATH              Saves directory (applies to current system)\n");
     printf("  --source-dir PATH            Source directory (applies to current system)\n");
     printf("  --audio-buffer-ms MS         Audio buffer in milliseconds\n");
+    printf("  --audio-volume VOLUME        Audio volume (0..100)\n");
     printf("  --window-size WxH            Initial window size override\n");
     printf("  --record PATH                Record input events to a file\n");
     printf("  --playback PATH              Replay input events from a file\n");

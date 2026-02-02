@@ -230,6 +230,76 @@ rom_config_buildLegacyJsonPathCore(char *out, size_t cap, const char *saveDir, c
     return 1;
 }
 
+static int
+rom_config_findExistingPath(char *out, size_t cap, const char *saveDir, const char *romPath)
+{
+    if (!out || cap == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!saveDir || !*saveDir || !romPath || !*romPath || !rom_config_pathExistsDir(saveDir)) {
+        return 0;
+    }
+    char jsonPath[PATH_MAX];
+    if (!rom_config_buildJsonPathCore(jsonPath, sizeof(jsonPath), saveDir, romPath)) {
+        return 0;
+    }
+    if (rom_config_pathExistsFile(jsonPath)) {
+        strncpy(out, jsonPath, cap - 1);
+        out[cap - 1] = '\0';
+        return 1;
+    }
+    char legacyPath[PATH_MAX];
+    if (!rom_config_buildLegacyJsonPathCore(legacyPath, sizeof(legacyPath), saveDir, romPath)) {
+        return 0;
+    }
+    if (rom_config_pathExistsFile(legacyPath)) {
+        strncpy(out, legacyPath, cap - 1);
+        out[cap - 1] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+static const char *
+rom_config_uiTestSaveDir(void)
+{
+    if (ui_test_getMode() == UI_TEST_MODE_NONE) {
+        return NULL;
+    }
+    const char *folder = ui_test_getFolder();
+    if (!folder || !*folder || !rom_config_pathExistsDir(folder)) {
+        return NULL;
+    }
+    return folder;
+}
+
+static int
+rom_config_copyIntoSaveDir(char *outPath, size_t outCap, const char *dstSaveDir,
+                           const char *romPath, const char *srcPath)
+{
+    if (!outPath || outCap == 0) {
+        return 0;
+    }
+    outPath[0] = '\0';
+    if (!dstSaveDir || !*dstSaveDir || !romPath || !*romPath || !srcPath || !*srcPath) {
+        return 0;
+    }
+    char dstPath[PATH_MAX];
+    if (!rom_config_buildJsonPathCore(dstPath, sizeof(dstPath), dstSaveDir, romPath)) {
+        return 0;
+    }
+    if (!rom_config_copyFile(srcPath, dstPath)) {
+        return 0;
+    }
+    if (!rom_config_pathExistsFile(dstPath)) {
+        return 0;
+    }
+    strncpy(outPath, dstPath, outCap - 1);
+    outPath[outCap - 1] = '\0';
+    return 1;
+}
+
 static uint64_t
 rom_config_hashFNV1a(uint64_t hash, const uint8_t *data, size_t len)
 {
@@ -673,61 +743,60 @@ void
 rom_config_loadSettingsForSelectedRom(void)
 {
     const char *romPath = debugger.libretro.romPath[0] ? debugger.libretro.romPath : NULL;
+    if (!romPath || !*romPath) {
+        rom_config_setActiveDefaultsFromCurrentSystem();
+        return;
+    }
+    ui_test_mode_t testMode = ui_test_getMode();
+    const char *testSaveDir = rom_config_uiTestSaveDir();
     const char *saveDir = rom_config_saveDir(NULL);
-    if (!romPath || !saveDir || !rom_config_pathExistsDir(saveDir)) {
-        rom_config_setActiveDefaultsFromCurrentSystem();
-        return;
-    }
-    char jsonPath[PATH_MAX];
-    if (!rom_config_buildJsonPathCore(jsonPath, sizeof(jsonPath), saveDir, romPath)) {
-        rom_config_setActiveDefaultsFromCurrentSystem();
-        return;
-    }
+    char selectedPath[PATH_MAX];
+    selectedPath[0] = '\0';
 
-    char legacyPath[PATH_MAX];
-    int haveLegacy = rom_config_buildLegacyJsonPathCore(legacyPath, sizeof(legacyPath), saveDir, romPath);
-    const char *pathToRead = NULL;
-
-    if (rom_config_pathExistsFile(jsonPath)) {
-        pathToRead = jsonPath;
-    } else if (haveLegacy && rom_config_pathExistsFile(legacyPath)) {
-        pathToRead = legacyPath;
-    } else if (ui_test_getMode() == UI_TEST_MODE_RECORD) {
-        const char *bootSaveDir = rom_config_bootSaveDir();
-        if (bootSaveDir && *bootSaveDir &&
-            rom_config_pathExistsDir(bootSaveDir) &&
-            strcmp(bootSaveDir, saveDir) != 0) {
-            char bootJsonPath[PATH_MAX];
-            if (rom_config_buildJsonPathCore(bootJsonPath, sizeof(bootJsonPath), bootSaveDir, romPath)) {
-                char bootLegacyPath[PATH_MAX];
-                int haveBootLegacy = rom_config_buildLegacyJsonPathCore(bootLegacyPath, sizeof(bootLegacyPath), bootSaveDir, romPath);
-                const char *bootPathToCopy = NULL;
-                int bootIsLegacy = 0;
-                if (rom_config_pathExistsFile(bootJsonPath)) {
-                    bootPathToCopy = bootJsonPath;
-                } else if (haveBootLegacy && rom_config_pathExistsFile(bootLegacyPath)) {
-                    bootPathToCopy = bootLegacyPath;
-                    bootIsLegacy = 1;
+    if (testMode == UI_TEST_MODE_COMPARE) {
+        if (!testSaveDir || !rom_config_findExistingPath(selectedPath, sizeof(selectedPath), testSaveDir, romPath)) {
+            rom_config_setActiveDefaultsFromCurrentSystem();
+            return;
+        }
+    } else if (testMode == UI_TEST_MODE_RECORD) {
+        if (!testSaveDir) {
+            rom_config_setActiveDefaultsFromCurrentSystem();
+            return;
+        }
+        if (!rom_config_findExistingPath(selectedPath, sizeof(selectedPath), testSaveDir, romPath)) {
+            char sourcePath[PATH_MAX];
+            sourcePath[0] = '\0';
+            if (saveDir && strcmp(saveDir, testSaveDir) != 0) {
+                (void)rom_config_findExistingPath(sourcePath, sizeof(sourcePath), saveDir, romPath);
+            }
+            if (!sourcePath[0]) {
+                const char *bootSaveDir = rom_config_bootSaveDir();
+                if (bootSaveDir && *bootSaveDir &&
+                    strcmp(bootSaveDir, testSaveDir) != 0 &&
+                    (!saveDir || strcmp(bootSaveDir, saveDir) != 0)) {
+                    (void)rom_config_findExistingPath(sourcePath, sizeof(sourcePath), bootSaveDir, romPath);
                 }
-                if (bootPathToCopy) {
-                    const char *dstPath = bootIsLegacy ? legacyPath : jsonPath;
-                    if (rom_config_copyFile(bootPathToCopy, dstPath) && rom_config_pathExistsFile(dstPath)) {
-                        pathToRead = dstPath;
-                    } else {
-                        pathToRead = bootPathToCopy;
-                    }
+            }
+            if (sourcePath[0]) {
+                if (!rom_config_copyIntoSaveDir(selectedPath, sizeof(selectedPath), testSaveDir, romPath, sourcePath)) {
+                    strncpy(selectedPath, sourcePath, sizeof(selectedPath) - 1);
+                    selectedPath[sizeof(selectedPath) - 1] = '\0';
                 }
             }
         }
+    } else {
+        if (saveDir) {
+            (void)rom_config_findExistingPath(selectedPath, sizeof(selectedPath), saveDir, romPath);
+        }
     }
 
-    if (!pathToRead) {
+    if (!selectedPath[0]) {
         rom_config_setActiveDefaultsFromCurrentSystem();
         return;
     }
 
     rom_config_data_t data;
-    if (!rom_config_parseFile(pathToRead, &data)) {
+    if (!rom_config_parseFile(selectedPath, &data)) {
         rom_config_setActiveDefaultsFromCurrentSystem();
         return;
     }
@@ -832,28 +901,24 @@ rom_config_loadRuntimeStateOnBoot(void)
     if (!romPath) {
         return;
     }
-    const char *saveDir = rom_config_saveDir(NULL);
-    if (!saveDir || !rom_config_pathExistsDir(saveDir)) {
-        return;
+    const char *saveDir = NULL;
+    if (ui_test_getMode() != UI_TEST_MODE_NONE) {
+        saveDir = rom_config_uiTestSaveDir();
     }
-    char jsonPath[PATH_MAX];
-    if (!rom_config_buildJsonPathCore(jsonPath, sizeof(jsonPath), saveDir, romPath)) {
-        return;
+    if (!saveDir) {
+        saveDir = rom_config_saveDir(NULL);
     }
-    char legacyPath[PATH_MAX];
-    int haveLegacy = rom_config_buildLegacyJsonPathCore(legacyPath, sizeof(legacyPath), saveDir, romPath);
-    const char *pathToRead = NULL;
-    if (rom_config_pathExistsFile(jsonPath)) {
-        pathToRead = jsonPath;
-    } else if (haveLegacy && rom_config_pathExistsFile(legacyPath)) {
-        pathToRead = legacyPath;
+    char selectedPath[PATH_MAX];
+    selectedPath[0] = '\0';
+    if (saveDir) {
+        (void)rom_config_findExistingPath(selectedPath, sizeof(selectedPath), saveDir, romPath);
     }
-    if (!pathToRead) {
+    if (!selectedPath[0]) {
         return;
     }
 
     rom_config_data_t data;
-    if (!rom_config_parseFile(pathToRead, &data)) {
+    if (!rom_config_parseFile(selectedPath, &data)) {
         return;
     }
 

@@ -132,23 +132,11 @@ bundle: $(TARGET)
 -include $(W64_DEPS)
 
 
-test: test-example test-smoke
+include tests/neogeo.mk
+include tests/amiga.mk
+
+test:  $(AMIGA_TESTS) $(NEOGEO_TESTS)
 	@echo
 	@echo "✅✅✅ TESTS PASSED ✅✅✅"
 
-make-test-example: all tests/amiga/example/example.adf
-	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --make-test tests/results/amiga/example
 
-make-test-smoke: all tests/amiga/smoke/smoke.adf
-	./e9k-debugger --amiga --uae=./tests/amiga/smoke/smoke.uae --make-smoke tests/results/amiga/smoke
-
-test-example: all tests/amiga/example/example.adf
-	@./e9k-debugger --headless --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --test tests/results/amiga/example > /dev/null 2> /dev/null
-	@echo "✅ AMIGA SOURCE LEVEL DEBUG EXAMPLE"
-
-test-smoke: all tests/amiga/smoke/smoke.adf
-	@./e9k-debugger --headless --amiga --uae=./tests/amiga/smoke/smoke.uae --smoke-test tests/results/amiga/smoke > /dev/null 2> /dev/null
-	@echo "✅ AMIGA SMOKE TEST"
-
-tests/amiga/example/example.adf:
-	make -C tests/amiga/example

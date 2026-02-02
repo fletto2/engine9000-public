@@ -30,6 +30,9 @@ ui_test_getMode(void);
 void
 ui_test_registerRequestedMode(const char *folder, ui_test_mode_t mode);
 
+const char *
+ui_test_getFolder(void);
+
 int
 ui_test_bootstrap(void);
 

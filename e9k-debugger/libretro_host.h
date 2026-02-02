@@ -268,6 +268,9 @@ libretro_host_refreshCoreOptionVisibility(void);
 bool
 libretro_host_setAudioEnabled(int enabled);
 
+void
+libretro_host_setAudioVolume(int volumePercent);
+
 bool
 libretro_host_saveState(size_t *out_size, size_t *out_diff);
 

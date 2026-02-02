@@ -416,6 +416,7 @@ debugger_ctor(void)
   debugger.cliStartFullscreen = 0;
   debugger.cliHeadless = 0;
   debugger.cliWarp = 0;
+  debugger.cliAudioVolume = -1;
   debugger.cliResetCfg = 0;
   debugger.cliCoreSystemOverride = 0;
   debugger.cliCoreSystem = DEBUGGER_SYSTEM_AMIGA;
@@ -538,6 +539,8 @@ debugger_main(int argc, char **argv)
     if (!libretro_host_init(e9ui->ctx.renderer)) {
       debug_error("libretro: failed to init host renderer");
       debugger.libretro.enabled = 0;
+    } else if (debugger.cliAudioVolume >= 0) {
+      libretro_host_setAudioVolume(debugger.cliAudioVolume);
     }
   }
 

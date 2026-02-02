@@ -133,6 +133,7 @@ typedef struct  {
     int audioSampleRate;
     size_t audioMaxQueue;
     int audioEnabled;
+    int audioVolumePercent;
     uint8_t *frameData;
     size_t frameCapacity;
     size_t framePitch;
@@ -832,13 +833,26 @@ libretro_host_videoCallback(const void *data, unsigned width, unsigned height, s
     libretro_host.frameSeq++;
 }
 
+static int16_t
+libretro_host_clampToInt16(int value);
+
 static void
 libretro_host_audioSample(int16_t left, int16_t right)
 {
     if (!libretro_host.audioDev) {
         return;
     }
+    int volume = libretro_host.audioVolumePercent;
+    if (volume <= 0) {
+        return;
+    }
     int16_t sample[2] = { left, right };
+    if (volume < 100) {
+        int leftScaled = ((int)left * volume) / 100;
+        int rightScaled = ((int)right * volume) / 100;
+        sample[0] = libretro_host_clampToInt16(leftScaled);
+        sample[1] = libretro_host_clampToInt16(rightScaled);
+    }
     if (libretro_host.audioMaxQueue > 0) {
         size_t queued = SDL_GetQueuedAudioSize(libretro_host.audioDev);
         if (queued >= libretro_host.audioMaxQueue) {
@@ -855,6 +869,10 @@ libretro_host_audioSampleBatch(const int16_t *data, size_t frames)
     if (!libretro_host.audioDev || !data || frames == 0) {
         return frames;
     }
+    int volume = libretro_host.audioVolumePercent;
+    if (volume <= 0) {
+        return frames;
+    }
     size_t bytes = frames * 2 * sizeof(int16_t);
     if (libretro_host.audioMaxQueue > 0) {
         size_t queued = SDL_GetQueuedAudioSize(libretro_host.audioDev);
@@ -863,7 +881,26 @@ libretro_host_audioSampleBatch(const int16_t *data, size_t frames)
             return frames;
         }
     }
-    SDL_QueueAudio(libretro_host.audioDev, data, bytes);
+    if (volume >= 100) {
+        SDL_QueueAudio(libretro_host.audioDev, data, bytes);
+        return frames;
+    }
+    enum { kChunkSamples = 2048 };
+    int16_t scaled[kChunkSamples];
+    size_t samples = frames * 2;
+    size_t pos = 0;
+    while (pos < samples) {
+        size_t chunk = samples - pos;
+        if (chunk > kChunkSamples) {
+            chunk = kChunkSamples;
+        }
+        for (size_t i = 0; i < chunk; ++i) {
+            int v = ((int)data[pos + i] * volume) / 100;
+            scaled[i] = libretro_host_clampToInt16(v);
+        }
+        SDL_QueueAudio(libretro_host.audioDev, scaled, chunk * sizeof(int16_t));
+        pos += chunk;
+    }
     return frames;
 }
 
@@ -1207,6 +1244,7 @@ libretro_host_clearState(void)
     libretro_host_clearOptionOverrides();
     libretro_host_clearOptionsV2();
     memset(&libretro_host, 0, sizeof(libretro_host));
+    libretro_host.audioVolumePercent = 100;
 }
 
 bool
@@ -1414,6 +1452,7 @@ libretro_host_shutdown(void)
     libretro_host.running = false;
     libretro_host.gameLoaded = false;
     memset(&libretro_host, 0, sizeof(libretro_host));
+    libretro_host.audioVolumePercent = 100;
 }
 
 void
@@ -2301,6 +2340,18 @@ libretro_host_setAudioEnabled(int enabled)
         }
     }
     return true;
+}
+
+void
+libretro_host_setAudioVolume(int volumePercent)
+{
+    if (volumePercent < 0) {
+        volumePercent = 0;
+    }
+    if (volumePercent > 100) {
+        volumePercent = 100;
+    }
+    libretro_host.audioVolumePercent = volumePercent;
 }
 
 bool

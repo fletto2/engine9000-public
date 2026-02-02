@@ -7,6 +7,7 @@
  */
 
 #include "e9ui.h"
+#include <string.h>
 
 static int
 e9ui_event_pointInBounds(const e9ui_component_t *comp, int x, int y)
@@ -147,6 +148,9 @@ e9ui_event_processChildren(e9ui_component_t *comp, e9ui_context_t *ctx, const e9
         }
         if (e9ui_event_process(it->child, ctx, ev)) {
             consumed = 1;
+            if (it->child->name && strcmp(it->child->name, "e9ui_modal") == 0) {
+                return 1;
+            }
             if (!allow_multiple) {
                 return 1;
             }

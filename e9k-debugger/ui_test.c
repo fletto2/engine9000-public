@@ -73,6 +73,12 @@ ui_test_registerRequestedMode(const char *folder, ui_test_mode_t mode)
     ui_test_setMode(mode);
 }
 
+const char *
+ui_test_getFolder(void)
+{
+    return ui_test_folder[0] ? ui_test_folder : NULL;
+}
+
 int
 ui_test_hasFailed(void)
 {
@@ -133,7 +139,7 @@ ui_test_clearFolder(const char *path)
             continue;
         }
         if (_stricmp(ext, ".png") != 0 && _stricmp(ext, ".inp") != 0 &&
-            _stricmp(ext, ".evt") != 0) {
+            _stricmp(ext, ".evt") != 0 && _stricmp(ext, ".json") != 0) {
             continue;
         }
         char full[PATH_MAX];
@@ -158,7 +164,7 @@ ui_test_clearFolder(const char *path)
             continue;
         }
         if (strcmp(ext, ".png") != 0 && strcmp(ext, ".inp") != 0 &&
-            strcmp(ext, ".evt") != 0) {
+            strcmp(ext, ".evt") != 0 && strcmp(ext, ".json") != 0) {
             continue;
         }
         char full[PATH_MAX];

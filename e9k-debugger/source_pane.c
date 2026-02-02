@@ -92,6 +92,53 @@ source_pane_basename(const char *path)
 }
 
 static int
+source_pane_isAbsolutePath(const char *path)
+{
+    if (!path || !path[0]) {
+        return 0;
+    }
+    if (path[0] == '/' || path[0] == '\\') {
+        return 1;
+    }
+    if (isalpha((unsigned char)path[0]) && path[1] == ':') {
+        return 1;
+    }
+    return 0;
+}
+
+static void
+source_pane_resolveSourcePath(const char *path, char *out, size_t out_cap)
+{
+    if (!out || out_cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!path || !path[0]) {
+        return;
+    }
+    if (source_pane_isAbsolutePath(path)) {
+        strncpy(out, path, out_cap - 1);
+        out[out_cap - 1] = '\0';
+        return;
+    }
+    const char *src = debugger.libretro.sourceDir;
+    if (!src || !src[0]) {
+        strncpy(out, path, out_cap - 1);
+        out[out_cap - 1] = '\0';
+        return;
+    }
+    size_t src_len = strlen(src);
+    int need_sep = 1;
+    if (src_len > 0) {
+        char c = src[src_len - 1];
+        if (c == '/' || c == '\\') {
+            need_sep = 0;
+        }
+    }
+    snprintf(out, out_cap, "%s%s%s", src, need_sep ? "/" : "", path);
+}
+
+static int
 source_pane_parseHex(const char *s, uint32_t *out)
 {
     if (!s || !*s || !out) {
@@ -483,8 +530,7 @@ source_pane_updateSourceLocation(source_pane_state_t *st)
     int line = 0;
     char path[PATH_MAX];
     if (addr2line_resolve((uint64_t)pc, path, sizeof(path), &line)) {
-        strncpy(st->curSrcPath, path, sizeof(st->curSrcPath) - 1);
-        st->curSrcPath[sizeof(st->curSrcPath) - 1] = '\0';
+        source_pane_resolveSourcePath(path, st->curSrcPath, sizeof(st->curSrcPath));
         st->curSrcLine = line;
     }
 }
