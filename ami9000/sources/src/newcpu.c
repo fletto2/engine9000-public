@@ -31,7 +31,7 @@ extern bool libretro_frame_end;
 #include "custom.h"
 #include "newcpu.h"
 #ifdef __LIBRETRO__
-#include "geo_debug.h"
+#include "e9k_debug.h"
 #endif
 #include "disasm.h"
 #include "cpummu.h"
@@ -4388,8 +4388,10 @@ int cpu_sleep_millis(int ms)
 //	} else {
 		ret = sleep_millis_main(ms);
 //	}
-#elifdef __LIBRETRO__
+#else
+#ifdef __LIBRETRO__
 	ret = sleep_millis_main(ms);
+#endif
 #endif
 #ifdef WITH_PPC
 	if (state)
@@ -5030,7 +5032,7 @@ static void m68k_run_1 (void)
 #endif
 					r->instruction_pc = m68k_getpc ();
 #ifdef __LIBRETRO__
-					if (geo_debug_instructionHook(r->instruction_pc, (uae_u16)r->opcode)) {
+					if (e9k_debug_instructionHook(r->instruction_pc, (uae_u16)r->opcode)) {
 						exit = true;
 						continue;
 					}
@@ -5155,7 +5157,7 @@ static void m68k_run_1_ce (void)
 
 					r->instruction_pc = m68k_getpc ();
 #ifdef __LIBRETRO__
-					if (geo_debug_instructionHook(r->instruction_pc, (uae_u16)r->opcode)) {
+					if (e9k_debug_instructionHook(r->instruction_pc, (uae_u16)r->opcode)) {
 						exit = true;
 						continue;
 					}
@@ -6452,7 +6454,7 @@ static void cpu_thread_run_2(void *v)
 
 					r->opcode = x_get_iword(0);
 #ifdef __LIBRETRO__
-					if (geo_debug_instructionHook(r->instruction_pc, (uae_u16)r->opcode)) {
+					if (e9k_debug_instructionHook(r->instruction_pc, (uae_u16)r->opcode)) {
 						exit = true;
 						continue;
 					}
@@ -6494,7 +6496,7 @@ static void m68k_run_2_000(void)
 					r->opcode = x_get_iword(0);
 					count_instr (r->opcode);
 #ifdef __LIBRETRO__
-					if (geo_debug_instructionHook(r->instruction_pc, (uae_u16)r->opcode)) {
+					if (e9k_debug_instructionHook(r->instruction_pc, (uae_u16)r->opcode)) {
 						exit = true;
 						continue;
 					}
@@ -6545,7 +6547,7 @@ static void m68k_run_2_020(void)
 					r->opcode = x_get_iword(0);
 					count_instr(r->opcode);
 #ifdef __LIBRETRO__
-					if (geo_debug_instructionHook(r->instruction_pc, (uae_u16)r->opcode)) {
+					if (e9k_debug_instructionHook(r->instruction_pc, (uae_u16)r->opcode)) {
 						exit = true;
 						continue;
 					}

@@ -753,7 +753,7 @@ rom_config_loadSettingsForSelectedRom(void)
     char selectedPath[PATH_MAX];
     selectedPath[0] = '\0';
 
-    if (testMode == UI_TEST_MODE_COMPARE) {
+    if (testMode == UI_TEST_MODE_COMPARE || testMode == UI_TEST_MODE_REMAKE) {
         if (!testSaveDir || !rom_config_findExistingPath(selectedPath, sizeof(selectedPath), testSaveDir, romPath)) {
             rom_config_setActiveDefaultsFromCurrentSystem();
             return;
@@ -1026,17 +1026,17 @@ rom_config_saveOnExit(void)
         }
     }
 
-    geo_debug_protect_t protects[GEO_PROTECT_COUNT];
+    e9k_debug_protect_t protects[E9K_PROTECT_COUNT];
     size_t protectCount = 0;
     uint64_t enabledMask = 0;
-    libretro_host_debugReadProtects(protects, GEO_PROTECT_COUNT, &protectCount);
+    libretro_host_debugReadProtects(protects, E9K_PROTECT_COUNT, &protectCount);
     libretro_host_debugGetProtectEnabledMask(&enabledMask);
     if (protectCount > 0) {
         data.protects = (rom_config_protect_entry_t*)alloc_calloc(protectCount, sizeof(*data.protects));
         if (data.protects) {
             size_t written = 0;
             for (size_t i = 0; i < protectCount; ++i) {
-                const geo_debug_protect_t *p = &protects[i];
+                const e9k_debug_protect_t *p = &protects[i];
                 if (p->sizeBits == 0) {
                     continue;
                 }

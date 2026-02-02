@@ -515,6 +515,7 @@ static uae_u32 ncr_io_bget(struct ncr_state *ncr, uaecptr addr)
 #ifdef HAVE_LSI
 	return (uae_u32)lsi_mmio_read(ncr->devobject.lsistate, beswap(addr), 1);
 #endif
+	return 0;
 }
 
 static uae_u32 ncr710_io_bget(struct ncr_state *ncr, uaecptr addr)
@@ -523,6 +524,7 @@ static uae_u32 ncr710_io_bget(struct ncr_state *ncr, uaecptr addr)
 #ifdef HAVE_LSI
 	return (uae_u32)lsi710_mmio_read(ncr->devobject.lsistate, beswap(addr), 1);
 #endif
+	return 0;
 }
 
 uae_u32 cpuboard_ncr710_io_bget(uaecptr addr)
@@ -537,6 +539,7 @@ uae_u32 cpuboard_ncr720_io_bget(uaecptr addr)
 #ifdef HAVE_LSI
 	return (uae_u32)lsi_mmio_read(ncr->devobject.lsistate, beswap(addr), 1);
 #endif
+	return 0;
 }
 
 static bool isncrboard(struct ncr_state *ncr, struct ncr_state **ncrb)

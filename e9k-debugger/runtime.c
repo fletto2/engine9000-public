@@ -39,7 +39,7 @@ runtime_onVblank(void *user)
     }
     if (debugger.config.coreSystem == DEBUGGER_SYSTEM_NEOGEO)
     {
-        geo_debug_sprite_state_t spriteState;
+        e9k_debug_sprite_state_t spriteState;
         if (libretro_host_debugGetSpriteState(&spriteState) && spriteState.vram && spriteState.vram_words) {
             size_t byteCount = spriteState.vram_words * sizeof(uint16_t);
             if (!debugger.spriteShadowVram || debugger.spriteShadowWords != spriteState.vram_words) {
@@ -146,7 +146,7 @@ runtime_runLoop(void)
                 if (paused && wasRunning) {
                     debugger_clearFrameStep();
                     runtime_restoreSuppressedBreakpoint();
-                    geo_debug_watchbreak_t watchbreak;
+                    e9k_debug_watchbreak_t watchbreak;
                     if (libretro_host_debugConsumeWatchbreak(&watchbreak)) {
                         train_setLastWatchbreak(&watchbreak);
                         if (protect_handleWatchbreak(&watchbreak)) {
@@ -159,7 +159,7 @@ runtime_runLoop(void)
                             machine_setRunning(&debugger.machine, 1);
                             continue;
                         }
-                        const char *kind = watchbreak.access_kind == GEO_WATCH_ACCESS_WRITE ? "write" : "read";
+                        const char *kind = watchbreak.access_kind == E9K_WATCH_ACCESS_WRITE ? "write" : "read";
                         if (watchbreak.old_value_valid) {
                             debug_printf("watchbreak: wp[%u] %s addr=0x%06X value=0x%08X old=0x%08X\n",
                                         (unsigned)watchbreak.index, kind,

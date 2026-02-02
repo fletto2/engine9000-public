@@ -2,8 +2,9 @@ CC ?= cc
 PKG_CONFIG ?= pkg-config
 MINGW_HOME ?= /usr/local/mingw
 
-INCLUDES += -I../geo9000/libretro
-INCLUDES += -I../geo9000/src
+#INCLUDES += -I../geo9000/libretro
+#INCLUDES += -I../geo9000/src
+INCLUDES += -I../e9k-lib
 INCLUDES += -I./e9ui
 INCLUDES += -I./lib9000
 INCLUDES += -I.

@@ -1065,6 +1065,7 @@ static int target_get_display_scanline2(int displayindex)
 	}
 	return -13;
 #endif
+	return 0;
 }
 
 extern uae_u64 spincount;
@@ -1098,6 +1099,7 @@ int target_get_display_scanline(int displayindex)
 		return lastvpos;
 	}
 #endif
+	return 0;
 }
 
 void vsync_clear(void)

@@ -260,7 +260,8 @@ gettz()
 
 	time(&tt);
 	return -localtime(&tt)->tm_gmtoff;
-#elseif defined(GETTIMEOFDAY) /* HAVE_TM_ZONE */
+//#elseif defined(GETTIMEOFDAY) /* HAVE_TM_ZONE */
+#elif 0
 	struct timeval  tp;
 	struct timezone tzp;
 	gettimeofday(&tp, &tzp);/* specific to 4.3BSD */
@@ -270,6 +271,7 @@ gettz()
 	 */
 	return (tzp.tz_minuteswest * 60L);
 #endif /* HAVE_TM_ZONE */
+	return 0;
 }
 #endif
 #endif				/* defined(FTIME) || defined(GETTIMEOFDAY) ||

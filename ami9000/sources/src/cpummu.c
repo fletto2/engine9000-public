@@ -1754,6 +1754,7 @@ jmp_buf* __poptry(void) {
 #ifndef __LIBRETRO__
 		abort();
 #endif
+		return NULL;
 	}
 }
 void __pushtry(jmp_buf* j) {

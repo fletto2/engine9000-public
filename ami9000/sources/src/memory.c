@@ -1057,9 +1057,9 @@ uae_u16 kickstart_version;
 #define AMI_DBG_SETBASE_SECTION_TEXT 0u
 #define AMI_DBG_SETBASE_SECTION_DATA 1u
 #define AMI_DBG_SETBASE_SECTION_BSS  2u
-	void geo_debug_text_write(uae_u8 byte);
-	void geo_debug_set_debug_base(uae_u32 section, uae_u32 base);
-	void geo_debug_add_breakpoint_fromPeripheral(uae_u32 addr);
+	void e9k_debug_text_write(uae_u8 byte);
+	void e9k_debug_set_debug_base(uae_u32 section, uae_u32 base);
+	void e9k_debug_add_breakpoint_fromPeripheral(uae_u32 addr);
 	static uae_u8 ami_dbg_setbase_bytes[12];
 	static uae_u16 ami_dbg_setbase_mask;
 	static uae_u8 ami_dbg_setbreak_bytes[4];
@@ -1089,7 +1089,7 @@ static void
 		} else if (reg == 2u) {
 			section = AMI_DBG_SETBASE_SECTION_BSS;
 		}
-		geo_debug_set_debug_base(section, base);
+		e9k_debug_set_debug_base(section, base);
 		ami_dbg_setbase_mask &= (uae_u16)~reg_mask;
 	}
 	}
@@ -1111,7 +1111,7 @@ static void
 			               ((uae_u32)ami_dbg_setbreak_bytes[1] << 16) |
 			               ((uae_u32)ami_dbg_setbreak_bytes[2] << 8) |
 			               (uae_u32)ami_dbg_setbreak_bytes[3];
-			geo_debug_add_breakpoint_fromPeripheral(addr);
+			e9k_debug_add_breakpoint_fromPeripheral(addr);
 			ami_dbg_setbreak_mask = 0u;
 		}
 	}
@@ -1164,30 +1164,30 @@ static void REGPARAM2 kickmem_lput (uaecptr addr, uae_u32 b)
 #ifdef __LIBRETRO__
 	uaecptr addr24 = addr & 0x00ffffffu;
 	if (addr24 == AMI_DBG_TEXT_ADDR) {
-		geo_debug_text_write((uae_u8)((b >> 24) & 0xffu));
-		geo_debug_text_write((uae_u8)((b >> 16) & 0xffu));
-		geo_debug_text_write((uae_u8)((b >> 8) & 0xffu));
-		geo_debug_text_write((uae_u8)(b & 0xffu));
+		e9k_debug_text_write((uae_u8)((b >> 24) & 0xffu));
+		e9k_debug_text_write((uae_u8)((b >> 16) & 0xffu));
+		e9k_debug_text_write((uae_u8)((b >> 8) & 0xffu));
+		e9k_debug_text_write((uae_u8)(b & 0xffu));
 		return;
 	}
 	if (addr24 == AMI_DBG_SETBASE_TEXT_ADDR) {
 		ami_dbg_setbase_mask &= (uae_u16)~0x000Fu;
-		geo_debug_set_debug_base(AMI_DBG_SETBASE_SECTION_TEXT, b);
+		e9k_debug_set_debug_base(AMI_DBG_SETBASE_SECTION_TEXT, b);
 		return;
 	}
 	if (addr24 == AMI_DBG_SETBASE_DATA_ADDR) {
 		ami_dbg_setbase_mask &= (uae_u16)~0x00F0u;
-		geo_debug_set_debug_base(AMI_DBG_SETBASE_SECTION_DATA, b);
+		e9k_debug_set_debug_base(AMI_DBG_SETBASE_SECTION_DATA, b);
 		return;
 	}
 	if (addr24 == AMI_DBG_SETBASE_BSS_ADDR) {
 		ami_dbg_setbase_mask &= (uae_u16)~0x0F00u;
-		geo_debug_set_debug_base(AMI_DBG_SETBASE_SECTION_BSS, b);
+		e9k_debug_set_debug_base(AMI_DBG_SETBASE_SECTION_BSS, b);
 		return;
 	}
 		if (addr24 == AMI_DBG_SETBREAK_ADDR) {
 			ami_dbg_setbreak_mask = 0u;
-			geo_debug_add_breakpoint_fromPeripheral(b);
+			e9k_debug_add_breakpoint_fromPeripheral(b);
 			return;
 		}
 	#endif
@@ -1220,8 +1220,8 @@ static void REGPARAM2 kickmem_wput (uaecptr addr, uae_u32 b)
 	#ifdef __LIBRETRO__
 		uaecptr addr24 = addr & 0x00ffffffu;
 		if (addr24 == AMI_DBG_TEXT_ADDR) {
-			geo_debug_text_write((uae_u8)((b >> 8) & 0xffu));
-			geo_debug_text_write((uae_u8)(b & 0xffu));
+			e9k_debug_text_write((uae_u8)((b >> 8) & 0xffu));
+			e9k_debug_text_write((uae_u8)(b & 0xffu));
 			return;
 		}
 		ami_dbg_setbase_write_byte(addr24, (uae_u8)((b >> 8) & 0xffu));
@@ -1252,7 +1252,7 @@ static void REGPARAM2 kickmem_bput (uaecptr addr, uae_u32 b)
 	#ifdef __LIBRETRO__
 		uaecptr addr24 = addr & 0x00ffffffu;
 		if (addr24 == AMI_DBG_TEXT_ADDR) {
-			geo_debug_text_write((uae_u8)(b & 0xffu));
+			e9k_debug_text_write((uae_u8)(b & 0xffu));
 			return;
 		}
 		ami_dbg_setbase_write_byte(addr24, (uae_u8)(b & 0xffu));
@@ -1320,15 +1320,15 @@ static void REGPARAM2 extendedkickmem_lput (uaecptr addr, uae_u32 b)
 	#ifdef __LIBRETRO__
 		uaecptr addr24 = addr & 0x00ffffffu;
 		if (addr24 == AMI_DBG_TEXT_ADDR) {
-			geo_debug_text_write((uae_u8)((b >> 24) & 0xffu));
-			geo_debug_text_write((uae_u8)((b >> 16) & 0xffu));
-			geo_debug_text_write((uae_u8)((b >> 8) & 0xffu));
-			geo_debug_text_write((uae_u8)(b & 0xffu));
+			e9k_debug_text_write((uae_u8)((b >> 24) & 0xffu));
+			e9k_debug_text_write((uae_u8)((b >> 16) & 0xffu));
+			e9k_debug_text_write((uae_u8)((b >> 8) & 0xffu));
+			e9k_debug_text_write((uae_u8)(b & 0xffu));
 			return;
 		}
 		if (addr24 == AMI_DBG_SETBREAK_ADDR) {
 			ami_dbg_setbreak_mask = 0u;
-			geo_debug_add_breakpoint_fromPeripheral(b);
+			e9k_debug_add_breakpoint_fromPeripheral(b);
 			return;
 		}
 	#endif
@@ -1340,8 +1340,8 @@ static void REGPARAM2 extendedkickmem_wput (uaecptr addr, uae_u32 b)
 	#ifdef __LIBRETRO__
 		uaecptr addr24 = addr & 0x00ffffffu;
 		if (addr24 == AMI_DBG_TEXT_ADDR) {
-			geo_debug_text_write((uae_u8)((b >> 8) & 0xffu));
-			geo_debug_text_write((uae_u8)(b & 0xffu));
+			e9k_debug_text_write((uae_u8)((b >> 8) & 0xffu));
+			e9k_debug_text_write((uae_u8)(b & 0xffu));
 			return;
 		}
 		ami_dbg_setbase_write_byte(addr24, (uae_u8)((b >> 8) & 0xffu));
@@ -1357,7 +1357,7 @@ static void REGPARAM2 extendedkickmem_bput (uaecptr addr, uae_u32 b)
 	#ifdef __LIBRETRO__
 		uaecptr addr24 = addr & 0x00ffffffu;
 		if (addr24 == AMI_DBG_TEXT_ADDR) {
-			geo_debug_text_write((uae_u8)(b & 0xffu));
+			e9k_debug_text_write((uae_u8)(b & 0xffu));
 			return;
 		}
 		ami_dbg_setbase_write_byte(addr24, (uae_u8)(b & 0xffu));

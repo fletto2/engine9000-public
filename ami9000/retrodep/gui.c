@@ -244,5 +244,6 @@ int translate_message (int msg,	TCHAR *out)
 	WIN32GUI_LoadUIString (msg, out, MAX_DPATH);
 	return 1;
 #endif
+	return 0;
 }
 

@@ -1,4 +1,4 @@
 {
-   global: retro_*; geo_debug_*;
+   global: retro_*; e9k_debug_*;
    local: *;
 };

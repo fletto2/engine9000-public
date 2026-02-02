@@ -11,8 +11,7 @@
 #include <SDL.h>
 #include <stdio.h>
 
-#include "geo_debug_sprite.h"
-
+#include "e9k-geo.h"
 void
 sprite_debug_toggle(void);
 
@@ -20,7 +19,7 @@ int
 sprite_debug_is_open(void);
 
 void
-sprite_debug_render(const geo_debug_sprite_state_t *st);
+sprite_debug_render(const e9k_debug_sprite_state_t *st);
 
 void
 sprite_debug_handleWindowEvent(const SDL_Event *ev);

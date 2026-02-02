@@ -232,7 +232,7 @@ smoke_test_bootstrap(struct e9k_debugger *dbg)
         return 1;
     }
     if (ui_test_getMode() != UI_TEST_MODE_NONE) {
-        debug_error("test: cannot combine --make-test/--test with smoke test options");
+        debug_error("test: cannot combine --make-test/--remake-test/--test with smoke test options");
         return 0;
     }
     if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE) {

@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "debugger.h"
+#include "ui_test.h"
 
 int
 debugger_platform_pathJoin(char *out, size_t cap, const char *dir, const char *name)
@@ -69,6 +70,14 @@ char *
 debugger_configPath(void)
 {
     static char pathbuf[1024];
+    if (ui_test_getMode() == UI_TEST_MODE_COMPARE || ui_test_getMode() == UI_TEST_MODE_REMAKE) {
+        const char *folder = ui_test_getFolder();
+        if (folder && *folder) {
+            if (debugger_platform_pathJoin(pathbuf, sizeof(pathbuf), folder, ".e9k-debugger.cfg")) {
+                return pathbuf;
+            }
+        }
+    }
     const char *home = getenv("HOME");
     if (!home || !*home) {
         return NULL;

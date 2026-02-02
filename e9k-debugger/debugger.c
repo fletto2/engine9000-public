@@ -94,6 +94,46 @@ debugger_onAddBreakpointFromCore(uint32_t addr)
     e9ui_showTransientMessage("BREAKPOINT ADDED");
 }
 
+static int
+debugger_onResolveSourceLocationFromCore(uint32_t pc, uint64_t *out_location, void *user)
+{
+    (void)user;
+    if (!out_location) {
+        return 0;
+    }
+    *out_location = 0;
+
+    const char *elf = debugger.libretro.exePath;
+    if (!elf || !*elf || !debugger.elfValid) {
+        return 0;
+    }
+    if (!addr2line_start(elf)) {
+        return 0;
+    }
+
+    char path[PATH_MAX];
+    int line = 0;
+    uint32_t pc24 = pc & 0x00ffffffu;
+    if (!addr2line_resolve((uint64_t)pc24, path, sizeof(path), &line) && pc24 >= 2u) {
+        if (!addr2line_resolve((uint64_t)(pc24 - 2u), path, sizeof(path), &line)) {
+            return 0;
+        }
+    }
+    if (!path[0] || line <= 0) {
+        return 0;
+    }
+
+    uint64_t hash = 1469598103934665603ull;
+    for (const unsigned char *p = (const unsigned char *)path; *p; ++p) {
+        hash ^= (uint64_t)(*p);
+        hash *= 1099511628211ull;
+    }
+    hash ^= (uint64_t)(uint32_t)line;
+    hash *= 1099511628211ull;
+    *out_location = hash;
+    return 1;
+}
+
 static void
 debugger_setArgv0(void)
 {
@@ -487,6 +527,13 @@ debugger_main(int argc, char **argv)
   if (!ui_test_bootstrap()) {
     return 1;
   }
+  if (ui_test_getMode() == UI_TEST_MODE_COMPARE || ui_test_getMode() == UI_TEST_MODE_REMAKE) {
+    config_loadConfig();
+    debugger_captureBootSaveDirs();
+    if (debugger.cliCoreSystemOverride) {
+      debugger_setCoreSystem(debugger.cliCoreSystem);
+    }
+  }
   if (debugger.recordPath[0]) {
     input_record_setRecordPath(debugger.recordPath);
   }
@@ -554,24 +601,29 @@ debugger_main(int argc, char **argv)
 	    } else {
 	      if (!libretro_host_setDebugBaseCallback(debugger_onSetDebugBaseFromCore)) {
 	        if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-	          debug_error("debug_base: core does not expose geo_set_debug_base_callback");
+	          debug_error("debug_base: core does not expose e9k_debug_set_debug_base_callback");
 	        }
 	      }
-	      if (!libretro_host_setDebugBreakpointCallback(debugger_onAddBreakpointFromCore)) {
-	        if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-	          debug_error("breakpoint: core does not expose geo_set_debug_breakpoint_callback");
-	        }
-	      }
-      if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-	        int *debugDma = NULL;
-	        if (libretro_host_debugGetAmigaDebugDmaAddr(&debugDma)) {
+		      if (!libretro_host_setDebugBreakpointCallback(debugger_onAddBreakpointFromCore)) {
+		        if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
+		          debug_error("breakpoint: core does not expose e9k_debug_set_debug_breakpoint_callback");
+		        }
+		      }
+		      if (!libretro_host_setDebugSourceLocationCallback(debugger_onResolveSourceLocationFromCore, NULL)) {
+		          debug_error("source_location: core does not expose e9k_debug_set_source_location_resolver");
+		      }
+	      if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
+		        int *debugDma = NULL;
+		        if (libretro_host_debugGetAmigaDebugDmaAddr(&debugDma)) {
 	          debugger.amigaDebug.debugDma = debugDma;
 	        }
       }
-      snapshot_loadOnBoot();
-      rom_config_loadRuntimeStateOnBoot();
-    }
-  }
+	      if (ui_test_getMode() == UI_TEST_MODE_NONE) {
+	        snapshot_loadOnBoot();
+	      }
+	      rom_config_loadRuntimeStateOnBoot();
+	    }
+	  }
   if (debugger.config.neogeo.libretro.romPath[0] || debugger.config.neogeo.romFolder[0]) {
     if (!dasm_preloadText()) {
       debug_error("dasm: preload failed");
@@ -594,18 +646,17 @@ debugger_main(int argc, char **argv)
   }
   transition_runIntro();
   runtime_runLoop();
+  int uiTestExit = ui_test_getExitCode();
+  int smokeExit = smoke_test_getExitCode(&debugger);
   debugger_cleanup();
   input_record_shutdown();
   ui_test_shutdown();
   smoke_test_cleanup();
-  if (ui_test_getExitCode() >= 0) {
-    return ui_test_getExitCode();
+  if (uiTestExit >= 0) {
+    return uiTestExit;
   }
-  {
-    int smokeExit = smoke_test_getExitCode(&debugger);
-    if (smokeExit >= 0) {
-      return smokeExit;
-    }
+  if (smokeExit >= 0) {
+    return smokeExit;
   }
   {
     int sig = signal_getExitCode();

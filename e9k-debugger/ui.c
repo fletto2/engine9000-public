@@ -236,7 +236,12 @@ ui_finish(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
     (void)user;
-    console_cmd_sendLine("finish");
+    debugger_suppressBreakpointAtPC();
+    if (libretro_host_debugStepOut()) {
+        machine_setRunning(&debugger.machine, 1);
+        return;
+    }
+    debug_error("step out: libretro core does not expose debug step out");
 }
 
 static void

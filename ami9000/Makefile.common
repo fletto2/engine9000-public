@@ -13,11 +13,12 @@ INCFLAGS := \
 	-I$(DEPS_DIR)/libmpeg2/include \
 	-I$(LIBRETRO) \
 	-I$(LIBRETRO_COMM_DIR)/include \
-	-I$(LIBRETRO_COMM_DIR)/include/compat/zlib
+	-I$(LIBRETRO_COMM_DIR)/include/compat/zlib\
+	-I../e9k-lib
 
 	SOURCES_C += \
 	    $(LIBRETRO)/libretro-core.c \
-		$(LIBRETRO)/geo_debug.c \
+		$(LIBRETRO)/e9k_debug.c \
 		$(LIBRETRO)/libretro-mapper.c \
 		$(LIBRETRO)/libretro-dc.c \
 		$(LIBRETRO)/libretro-glue.c \

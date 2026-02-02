@@ -52,50 +52,52 @@ typedef size_t (*retro_serialize_size_fn_t)(void);
 typedef bool (*retro_serialize_fn_t)(void *data, size_t size);
 typedef bool (*retro_unserialize_fn_t)(const void *data, size_t size);
 typedef void (*retro_set_controller_port_device_fn_t)(unsigned port, unsigned device);
-typedef size_t (*geo_debug_read_regs_fn_t)(uint32_t *out, size_t cap);
-typedef void (*geo_debug_pause_fn_t)(void);
-typedef void (*geo_debug_resume_fn_t)(void);
-typedef int (*geo_debug_is_paused_fn_t)(void);
-typedef void (*geo_debug_step_instr_fn_t)(void);
-typedef void (*geo_debug_step_line_fn_t)(void);
-typedef void (*geo_debug_step_next_fn_t)(void);
-typedef void (*geo_debug_add_breakpoint_fn_t)(uint32_t addr);
-typedef void (*geo_debug_remove_breakpoint_fn_t)(uint32_t addr);
-typedef void (*geo_debug_add_temp_breakpoint_fn_t)(uint32_t addr);
-typedef void (*geo_debug_remove_temp_breakpoint_fn_t)(uint32_t addr);
-typedef void (*geo_debug_reset_watchpoints_fn_t)(void);
-typedef int (*geo_debug_add_watchpoint_fn_t)(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand, uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand);
-typedef void (*geo_debug_remove_watchpoint_fn_t)(uint32_t index);
-typedef size_t (*geo_debug_read_watchpoints_fn_t)(geo_debug_watchpoint_t *out, size_t cap);
-typedef uint64_t (*geo_debug_get_watchpoint_enabled_mask_fn_t)(void);
-typedef void (*geo_debug_set_watchpoint_enabled_mask_fn_t)(uint64_t mask);
-typedef int (*geo_debug_consume_watchbreak_fn_t)(geo_debug_watchbreak_t *out);
-typedef void (*geo_debug_reset_protects_fn_t)(void);
-typedef int (*geo_debug_add_protect_fn_t)(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t value);
-typedef void (*geo_debug_remove_protect_fn_t)(uint32_t index);
-typedef size_t (*geo_debug_read_protects_fn_t)(geo_debug_protect_t *out, size_t cap);
-typedef uint64_t (*geo_debug_get_protect_enabled_mask_fn_t)(void);
-typedef void (*geo_debug_set_protect_enabled_mask_fn_t)(uint64_t mask);
-typedef size_t (*geo_debug_read_callstack_fn_t)(uint32_t *out, size_t cap);
-typedef size_t (*geo_debug_read_memory_fn_t)(uint32_t addr, uint8_t *out, size_t cap);
-typedef int (*geo_debug_write_memory_fn_t)(uint32_t addr, uint32_t value, size_t size);
-typedef void (*geo_debug_profiler_start_fn_t)(int stream);
-typedef void (*geo_debug_profiler_stop_fn_t)(void);
-typedef int (*geo_debug_profiler_is_enabled_fn_t)(void);
-typedef size_t (*geo_debug_profiler_stream_next_fn_t)(char *out, size_t cap);
-typedef size_t (*geo_debug_text_read_fn_t)(char *out, size_t cap);
-typedef void (*geo_set_debug_base_callback_fn_t)(void (*cb)(uint32_t section, uint32_t base));
-typedef size_t (*geo_debug_neogeo_get_sprite_state_fn_t)(geo_debug_sprite_state_t *out, size_t cap);
-typedef size_t (*geo_debug_neogeo_get_p1_rom_fn_t)(geo_debug_rom_region_t *out, size_t cap);
-typedef size_t (*geo_debug_disassemble_quick_fn_t)(uint32_t pc, char *out, size_t cap);
-typedef size_t (*geo_debug_read_checkpoints_fn_t)(geo_debug_checkpoint_t *out, size_t cap);
-typedef void (*geo_debug_reset_checkpoints_fn_t)(void);
-typedef void (*geo_debug_set_checkpoint_enabled_fn_t)(int enabled);
-typedef int (*geo_debug_get_checkpoint_enabled_fn_t)(void);
-typedef uint64_t (*geo_debug_read_cycle_count_fn_t)(void);
-typedef void (*geo_set_vblank_callback_fn_t)(void (*cb)(void *), void *user);
-typedef int *(*geo_debug_amiga_get_debug_dma_addr_fn_t)(void);
-typedef void (*geo_set_debug_breakpoint_callback_fn_t)(void (*cb)(uint32_t addr));
+typedef size_t (*e9k_debug_read_regs_fn_t)(uint32_t *out, size_t cap);
+typedef void (*e9k_debug_pause_fn_t)(void);
+typedef void (*e9k_debug_resume_fn_t)(void);
+typedef int (*e9k_debug_is_paused_fn_t)(void);
+typedef void (*e9k_debug_step_instr_fn_t)(void);
+typedef void (*e9k_debug_step_line_fn_t)(void);
+typedef void (*e9k_debug_step_next_fn_t)(void);
+typedef void (*e9k_debug_step_out_fn_t)(void);
+typedef void (*e9k_debug_add_breakpoint_fn_t)(uint32_t addr);
+typedef void (*e9k_debug_remove_breakpoint_fn_t)(uint32_t addr);
+typedef void (*e9k_debug_add_temp_breakpoint_fn_t)(uint32_t addr);
+typedef void (*e9k_debug_remove_temp_breakpoint_fn_t)(uint32_t addr);
+typedef void (*e9k_debug_reset_watchpoints_fn_t)(void);
+typedef int (*e9k_debug_add_watchpoint_fn_t)(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand, uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand);
+typedef void (*e9k_debug_remove_watchpoint_fn_t)(uint32_t index);
+typedef size_t (*e9k_debug_read_watchpoints_fn_t)(e9k_debug_watchpoint_t *out, size_t cap);
+typedef uint64_t (*e9k_debug_get_watchpoint_enabled_mask_fn_t)(void);
+typedef void (*e9k_debug_set_watchpoint_enabled_mask_fn_t)(uint64_t mask);
+typedef int (*e9k_debug_consume_watchbreak_fn_t)(e9k_debug_watchbreak_t *out);
+typedef void (*e9k_debug_reset_protects_fn_t)(void);
+typedef int (*e9k_debug_add_protect_fn_t)(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t value);
+typedef void (*e9k_debug_remove_protect_fn_t)(uint32_t index);
+typedef size_t (*e9k_debug_read_protects_fn_t)(e9k_debug_protect_t *out, size_t cap);
+typedef uint64_t (*e9k_debug_get_protect_enabled_mask_fn_t)(void);
+typedef void (*e9k_debug_set_protect_enabled_mask_fn_t)(uint64_t mask);
+typedef size_t (*e9k_debug_read_callstack_fn_t)(uint32_t *out, size_t cap);
+typedef size_t (*e9k_debug_read_memory_fn_t)(uint32_t addr, uint8_t *out, size_t cap);
+typedef int (*e9k_debug_write_memory_fn_t)(uint32_t addr, uint32_t value, size_t size);
+typedef void (*e9k_debug_profiler_start_fn_t)(int stream);
+typedef void (*e9k_debug_profiler_stop_fn_t)(void);
+typedef int (*e9k_debug_profiler_is_enabled_fn_t)(void);
+typedef size_t (*e9k_debug_profiler_stream_next_fn_t)(char *out, size_t cap);
+typedef size_t (*e9k_debug_text_read_fn_t)(char *out, size_t cap);
+typedef void (*e9k_debug_set_base_callback_fn_t)(void (*cb)(uint32_t section, uint32_t base));
+typedef size_t (*e9k_debug_neogeo_get_sprite_state_fn_t)(e9k_debug_sprite_state_t *out, size_t cap);
+typedef size_t (*e9k_debug_neogeo_get_p1_rom_fn_t)(e9k_debug_rom_region_t *out, size_t cap);
+typedef size_t (*e9k_debug_disassemble_quick_fn_t)(uint32_t pc, char *out, size_t cap);
+typedef size_t (*e9k_debug_read_checkpoints_fn_t)(e9k_debug_checkpoint_t *out, size_t cap);
+typedef void (*e9k_debug_reset_checkpoints_fn_t)(void);
+typedef void (*e9k_debug_set_checkpoint_enabled_fn_t)(int enabled);
+typedef int (*e9k_debug_get_checkpoint_enabled_fn_t)(void);
+typedef uint64_t (*e9k_debug_read_cycle_count_fn_t)(void);
+typedef void (*e9k_debug_set_vblank_callback_fn_t)(void (*cb)(void *), void *user);
+typedef int *(*e9k_debug_amiga_get_debug_dma_addr_fn_t)(void);
+typedef void (*e9k_debug_set_breakpoint_callback_fn_t)(void (*cb)(uint32_t addr));
+typedef void (*e9k_debug_set_source_location_resolver_fn_t)(int (*resolver)(uint32_t pc24, uint64_t *out_location, void *user), void *user);
 
 typedef struct libretro_option {
     const char *key;
@@ -159,50 +161,52 @@ typedef struct  {
     retro_serialize_fn_t serialize;
     retro_unserialize_fn_t unserialize;
     retro_set_controller_port_device_fn_t setControllerPortDevice;
-    geo_debug_read_regs_fn_t debugReadRegs;
-    geo_debug_pause_fn_t debugPause;
-    geo_debug_resume_fn_t debugResume;
-    geo_debug_is_paused_fn_t debugIsPaused;
-    geo_debug_step_instr_fn_t debugStepInstr;
-    geo_debug_step_line_fn_t debugStepLine;
-    geo_debug_step_next_fn_t debugStepNext;
-    geo_debug_add_breakpoint_fn_t debugAddBreakpoint;
-    geo_debug_remove_breakpoint_fn_t debugRemoveBreakpoint;
-    geo_debug_add_temp_breakpoint_fn_t debugAddTempBreakpoint;
-    geo_debug_remove_temp_breakpoint_fn_t debugRemoveTempBreakpoint;
-    geo_debug_reset_watchpoints_fn_t debugResetWatchpoints;
-    geo_debug_add_watchpoint_fn_t debugAddWatchpoint;
-    geo_debug_remove_watchpoint_fn_t debugRemoveWatchpoint;
-    geo_debug_read_watchpoints_fn_t debugReadWatchpoints;
-    geo_debug_get_watchpoint_enabled_mask_fn_t debugGetWatchpointEnabledMask;
-    geo_debug_set_watchpoint_enabled_mask_fn_t debugSetWatchpointEnabledMask;
-    geo_debug_consume_watchbreak_fn_t debugConsumeWatchbreak;
-    geo_debug_reset_protects_fn_t debugResetProtects;
-    geo_debug_add_protect_fn_t debugAddProtect;
-    geo_debug_remove_protect_fn_t debugRemoveProtect;
-    geo_debug_read_protects_fn_t debugReadProtects;
-    geo_debug_get_protect_enabled_mask_fn_t debugGetProtectEnabledMask;
-    geo_debug_set_protect_enabled_mask_fn_t debugSetProtectEnabledMask;
-    geo_debug_read_callstack_fn_t debugReadCallstack;
-    geo_debug_read_memory_fn_t debugReadMemory;
-    geo_debug_write_memory_fn_t debugWriteMemory;
-    geo_debug_profiler_start_fn_t debugProfilerStart;
-    geo_debug_profiler_stop_fn_t debugProfilerStop;
-    geo_debug_profiler_is_enabled_fn_t debugProfilerIsEnabled;
-    geo_debug_profiler_stream_next_fn_t debugProfilerStreamNext;
-    geo_debug_text_read_fn_t debugTextRead;
-    geo_set_debug_base_callback_fn_t setDebugBaseCallback;
-    geo_set_debug_breakpoint_callback_fn_t setDebugBreakpointCallback;
-    geo_debug_neogeo_get_sprite_state_fn_t debugNeoGeoGetSpriteState;
-    geo_debug_neogeo_get_p1_rom_fn_t debugNeoGeoGetP1Rom;
-    geo_debug_disassemble_quick_fn_t debugDisassembleQuick;
-    geo_debug_read_checkpoints_fn_t debugReadCheckpoints;
-    geo_debug_reset_checkpoints_fn_t debugResetCheckpoints;
-    geo_debug_set_checkpoint_enabled_fn_t debugSetCheckpointEnabled;
-    geo_debug_get_checkpoint_enabled_fn_t debugGetCheckpointEnabled;
-    geo_debug_read_cycle_count_fn_t debugReadCycleCount;
-    geo_set_vblank_callback_fn_t setVblankCallback;
-    geo_debug_amiga_get_debug_dma_addr_fn_t debugAmigaGetDebugDmaAddr;
+    e9k_debug_read_regs_fn_t debugReadRegs;
+    e9k_debug_pause_fn_t debugPause;
+    e9k_debug_resume_fn_t debugResume;
+    e9k_debug_is_paused_fn_t debugIsPaused;
+    e9k_debug_step_instr_fn_t debugStepInstr;
+    e9k_debug_step_line_fn_t debugStepLine;
+    e9k_debug_step_next_fn_t debugStepNext;
+    e9k_debug_step_out_fn_t debugStepOut;
+    e9k_debug_add_breakpoint_fn_t debugAddBreakpoint;
+    e9k_debug_remove_breakpoint_fn_t debugRemoveBreakpoint;
+    e9k_debug_add_temp_breakpoint_fn_t debugAddTempBreakpoint;
+    e9k_debug_remove_temp_breakpoint_fn_t debugRemoveTempBreakpoint;
+    e9k_debug_reset_watchpoints_fn_t debugResetWatchpoints;
+    e9k_debug_add_watchpoint_fn_t debugAddWatchpoint;
+    e9k_debug_remove_watchpoint_fn_t debugRemoveWatchpoint;
+    e9k_debug_read_watchpoints_fn_t debugReadWatchpoints;
+    e9k_debug_get_watchpoint_enabled_mask_fn_t debugGetWatchpointEnabledMask;
+    e9k_debug_set_watchpoint_enabled_mask_fn_t debugSetWatchpointEnabledMask;
+    e9k_debug_consume_watchbreak_fn_t debugConsumeWatchbreak;
+    e9k_debug_reset_protects_fn_t debugResetProtects;
+    e9k_debug_add_protect_fn_t debugAddProtect;
+    e9k_debug_remove_protect_fn_t debugRemoveProtect;
+    e9k_debug_read_protects_fn_t debugReadProtects;
+    e9k_debug_get_protect_enabled_mask_fn_t debugGetProtectEnabledMask;
+    e9k_debug_set_protect_enabled_mask_fn_t debugSetProtectEnabledMask;
+    e9k_debug_read_callstack_fn_t debugReadCallstack;
+    e9k_debug_read_memory_fn_t debugReadMemory;
+    e9k_debug_write_memory_fn_t debugWriteMemory;
+    e9k_debug_profiler_start_fn_t debugProfilerStart;
+    e9k_debug_profiler_stop_fn_t debugProfilerStop;
+    e9k_debug_profiler_is_enabled_fn_t debugProfilerIsEnabled;
+    e9k_debug_profiler_stream_next_fn_t debugProfilerStreamNext;
+    e9k_debug_text_read_fn_t debugTextRead;
+    e9k_debug_set_base_callback_fn_t setDebugBaseCallback;
+    e9k_debug_set_breakpoint_callback_fn_t setDebugBreakpointCallback;
+    e9k_debug_set_source_location_resolver_fn_t debugSetSourceLocationResolver;
+    e9k_debug_neogeo_get_sprite_state_fn_t debugNeoGeoGetSpriteState;
+    e9k_debug_neogeo_get_p1_rom_fn_t debugNeoGeoGetP1Rom;
+    e9k_debug_disassemble_quick_fn_t debugDisassembleQuick;
+    e9k_debug_read_checkpoints_fn_t debugReadCheckpoints;
+    e9k_debug_reset_checkpoints_fn_t debugResetCheckpoints;
+    e9k_debug_set_checkpoint_enabled_fn_t debugSetCheckpointEnabled;
+    e9k_debug_get_checkpoint_enabled_fn_t debugGetCheckpointEnabled;
+    e9k_debug_read_cycle_count_fn_t debugReadCycleCount;
+    e9k_debug_set_vblank_callback_fn_t setVblankCallback;
+    e9k_debug_amiga_get_debug_dma_addr_fn_t debugAmigaGetDebugDmaAddr;
     uint8_t *stateData;
     size_t stateSize;
     uint32_t inputMask[LIBRETRO_HOST_MAX_PORTS];
@@ -1318,55 +1322,57 @@ libretro_host_start(const char *corePath, const char *romPath,
     libretro_host.serialize = (retro_serialize_fn_t)libretro_host_loadSymbol("retro_serialize");
     libretro_host.unserialize = (retro_unserialize_fn_t)libretro_host_loadSymbol("retro_unserialize");
     libretro_host.setControllerPortDevice = (retro_set_controller_port_device_fn_t)libretro_host_loadSymbol("retro_set_controller_port_device");
-    libretro_host.debugReadRegs = (geo_debug_read_regs_fn_t)libretro_host_loadSymbol("geo_debug_read_regs");
-    libretro_host.debugPause = (geo_debug_pause_fn_t)libretro_host_loadSymbol("geo_debug_pause");
-    libretro_host.debugResume = (geo_debug_resume_fn_t)libretro_host_loadSymbol("geo_debug_resume");
-    libretro_host.debugIsPaused = (geo_debug_is_paused_fn_t)libretro_host_loadSymbol("geo_debug_is_paused");
-    libretro_host.debugStepInstr = (geo_debug_step_instr_fn_t)libretro_host_loadSymbol("geo_debug_step_instr");
-    libretro_host.debugStepLine = (geo_debug_step_line_fn_t)libretro_host_loadSymbol("geo_debug_step_line");
-    libretro_host.debugStepNext = (geo_debug_step_next_fn_t)libretro_host_loadSymbol("geo_debug_step_next");
-    libretro_host.debugAddBreakpoint = (geo_debug_add_breakpoint_fn_t)libretro_host_loadSymbol("geo_debug_add_breakpoint");
-    libretro_host.debugRemoveBreakpoint = (geo_debug_remove_breakpoint_fn_t)libretro_host_loadSymbol("geo_debug_remove_breakpoint");
-    libretro_host.debugAddTempBreakpoint = (geo_debug_add_temp_breakpoint_fn_t)libretro_host_loadSymbol("geo_debug_add_temp_breakpoint");
-    libretro_host.debugRemoveTempBreakpoint = (geo_debug_remove_temp_breakpoint_fn_t)libretro_host_loadSymbol("geo_debug_remove_temp_breakpoint");
-    libretro_host.debugResetWatchpoints = (geo_debug_reset_watchpoints_fn_t)libretro_host_loadSymbol("geo_debug_reset_watchpoints");
-    libretro_host.debugAddWatchpoint = (geo_debug_add_watchpoint_fn_t)libretro_host_loadSymbol("geo_debug_add_watchpoint");
-    libretro_host.debugRemoveWatchpoint = (geo_debug_remove_watchpoint_fn_t)libretro_host_loadSymbol("geo_debug_remove_watchpoint");
-    libretro_host.debugReadWatchpoints = (geo_debug_read_watchpoints_fn_t)libretro_host_loadSymbol("geo_debug_read_watchpoints");
-    libretro_host.debugGetWatchpointEnabledMask = (geo_debug_get_watchpoint_enabled_mask_fn_t)libretro_host_loadSymbol("geo_debug_get_watchpoint_enabled_mask");
-    libretro_host.debugSetWatchpointEnabledMask = (geo_debug_set_watchpoint_enabled_mask_fn_t)libretro_host_loadSymbol("geo_debug_set_watchpoint_enabled_mask");
-    libretro_host.debugConsumeWatchbreak = (geo_debug_consume_watchbreak_fn_t)libretro_host_loadSymbol("geo_debug_consume_watchbreak");
-    libretro_host.debugResetProtects = (geo_debug_reset_protects_fn_t)libretro_host_loadSymbol("geo_debug_reset_protects");
-    libretro_host.debugAddProtect = (geo_debug_add_protect_fn_t)libretro_host_loadSymbol("geo_debug_add_protect");
-    libretro_host.debugRemoveProtect = (geo_debug_remove_protect_fn_t)libretro_host_loadSymbol("geo_debug_remove_protect");
-    libretro_host.debugReadProtects = (geo_debug_read_protects_fn_t)libretro_host_loadSymbol("geo_debug_read_protects");
-    libretro_host.debugGetProtectEnabledMask = (geo_debug_get_protect_enabled_mask_fn_t)libretro_host_loadSymbol("geo_debug_get_protect_enabled_mask");
-    libretro_host.debugSetProtectEnabledMask = (geo_debug_set_protect_enabled_mask_fn_t)libretro_host_loadSymbol("geo_debug_set_protect_enabled_mask");
-    libretro_host.debugReadCallstack = (geo_debug_read_callstack_fn_t)libretro_host_loadSymbol("geo_debug_read_callstack");
-    libretro_host.debugReadMemory = (geo_debug_read_memory_fn_t)libretro_host_loadSymbol("geo_debug_read_memory");
-    libretro_host.debugWriteMemory = (geo_debug_write_memory_fn_t)libretro_host_loadSymbol("geo_debug_write_memory");
-    libretro_host.debugProfilerStart = (geo_debug_profiler_start_fn_t)libretro_host_loadSymbol("geo_debug_profiler_start");
-    libretro_host.debugProfilerStop = (geo_debug_profiler_stop_fn_t)libretro_host_loadSymbol("geo_debug_profiler_stop");
-    libretro_host.debugProfilerIsEnabled = (geo_debug_profiler_is_enabled_fn_t)libretro_host_loadSymbol("geo_debug_profiler_is_enabled");
-    libretro_host.debugProfilerStreamNext = (geo_debug_profiler_stream_next_fn_t)libretro_host_loadSymbol("geo_debug_profiler_stream_next");
-    libretro_host.debugTextRead = (geo_debug_text_read_fn_t)libretro_host_loadSymbol("geo_debug_text_read");
-    libretro_host.setDebugBaseCallback = (geo_set_debug_base_callback_fn_t)libretro_host_loadSymbol("geo_set_debug_base_callback");
-    libretro_host.setDebugBreakpointCallback = (geo_set_debug_breakpoint_callback_fn_t)libretro_host_loadSymbol("geo_set_debug_breakpoint_callback");
-    libretro_host.debugNeoGeoGetSpriteState = (geo_debug_neogeo_get_sprite_state_fn_t)libretro_host_loadSymbol("geo_debug_neogeo_get_sprite_state");
+    libretro_host.debugReadRegs = (e9k_debug_read_regs_fn_t)libretro_host_loadSymbol("e9k_debug_read_regs");
+    libretro_host.debugPause = (e9k_debug_pause_fn_t)libretro_host_loadSymbol("e9k_debug_pause");
+    libretro_host.debugResume = (e9k_debug_resume_fn_t)libretro_host_loadSymbol("e9k_debug_resume");
+    libretro_host.debugIsPaused = (e9k_debug_is_paused_fn_t)libretro_host_loadSymbol("e9k_debug_is_paused");
+    libretro_host.debugStepInstr = (e9k_debug_step_instr_fn_t)libretro_host_loadSymbol("e9k_debug_step_instr");
+    libretro_host.debugStepLine = (e9k_debug_step_line_fn_t)libretro_host_loadSymbol("e9k_debug_step_line");
+    libretro_host.debugStepNext = (e9k_debug_step_next_fn_t)libretro_host_loadSymbol("e9k_debug_step_next");
+    libretro_host.debugStepOut = (e9k_debug_step_out_fn_t)libretro_host_loadSymbol("e9k_debug_step_out");
+    libretro_host.debugAddBreakpoint = (e9k_debug_add_breakpoint_fn_t)libretro_host_loadSymbol("e9k_debug_add_breakpoint");
+    libretro_host.debugRemoveBreakpoint = (e9k_debug_remove_breakpoint_fn_t)libretro_host_loadSymbol("e9k_debug_remove_breakpoint");
+    libretro_host.debugAddTempBreakpoint = (e9k_debug_add_temp_breakpoint_fn_t)libretro_host_loadSymbol("e9k_debug_add_temp_breakpoint");
+    libretro_host.debugRemoveTempBreakpoint = (e9k_debug_remove_temp_breakpoint_fn_t)libretro_host_loadSymbol("e9k_debug_remove_temp_breakpoint");
+    libretro_host.debugResetWatchpoints = (e9k_debug_reset_watchpoints_fn_t)libretro_host_loadSymbol("e9k_debug_reset_watchpoints");
+    libretro_host.debugAddWatchpoint = (e9k_debug_add_watchpoint_fn_t)libretro_host_loadSymbol("e9k_debug_add_watchpoint");
+    libretro_host.debugRemoveWatchpoint = (e9k_debug_remove_watchpoint_fn_t)libretro_host_loadSymbol("e9k_debug_remove_watchpoint");
+    libretro_host.debugReadWatchpoints = (e9k_debug_read_watchpoints_fn_t)libretro_host_loadSymbol("e9k_debug_read_watchpoints");
+    libretro_host.debugGetWatchpointEnabledMask = (e9k_debug_get_watchpoint_enabled_mask_fn_t)libretro_host_loadSymbol("e9k_debug_get_watchpoint_enabled_mask");
+    libretro_host.debugSetWatchpointEnabledMask = (e9k_debug_set_watchpoint_enabled_mask_fn_t)libretro_host_loadSymbol("e9k_debug_set_watchpoint_enabled_mask");
+    libretro_host.debugConsumeWatchbreak = (e9k_debug_consume_watchbreak_fn_t)libretro_host_loadSymbol("e9k_debug_consume_watchbreak");
+    libretro_host.debugResetProtects = (e9k_debug_reset_protects_fn_t)libretro_host_loadSymbol("e9k_debug_reset_protects");
+    libretro_host.debugAddProtect = (e9k_debug_add_protect_fn_t)libretro_host_loadSymbol("e9k_debug_add_protect");
+    libretro_host.debugRemoveProtect = (e9k_debug_remove_protect_fn_t)libretro_host_loadSymbol("e9k_debug_remove_protect");
+    libretro_host.debugReadProtects = (e9k_debug_read_protects_fn_t)libretro_host_loadSymbol("e9k_debug_read_protects");
+    libretro_host.debugGetProtectEnabledMask = (e9k_debug_get_protect_enabled_mask_fn_t)libretro_host_loadSymbol("e9k_debug_get_protect_enabled_mask");
+    libretro_host.debugSetProtectEnabledMask = (e9k_debug_set_protect_enabled_mask_fn_t)libretro_host_loadSymbol("e9k_debug_set_protect_enabled_mask");
+    libretro_host.debugReadCallstack = (e9k_debug_read_callstack_fn_t)libretro_host_loadSymbol("e9k_debug_read_callstack");
+    libretro_host.debugReadMemory = (e9k_debug_read_memory_fn_t)libretro_host_loadSymbol("e9k_debug_read_memory");
+    libretro_host.debugWriteMemory = (e9k_debug_write_memory_fn_t)libretro_host_loadSymbol("e9k_debug_write_memory");
+    libretro_host.debugProfilerStart = (e9k_debug_profiler_start_fn_t)libretro_host_loadSymbol("e9k_debug_profiler_start");
+    libretro_host.debugProfilerStop = (e9k_debug_profiler_stop_fn_t)libretro_host_loadSymbol("e9k_debug_profiler_stop");
+    libretro_host.debugProfilerIsEnabled = (e9k_debug_profiler_is_enabled_fn_t)libretro_host_loadSymbol("e9k_debug_profiler_is_enabled");
+    libretro_host.debugProfilerStreamNext = (e9k_debug_profiler_stream_next_fn_t)libretro_host_loadSymbol("e9k_debug_profiler_stream_next");
+    libretro_host.debugTextRead = (e9k_debug_text_read_fn_t)libretro_host_loadSymbol("e9k_debug_text_read");
+    libretro_host.setDebugBaseCallback = (e9k_debug_set_base_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_base_callback");
+    libretro_host.setDebugBreakpointCallback = (e9k_debug_set_breakpoint_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_breakpoint_callback");
+    libretro_host.debugSetSourceLocationResolver = (e9k_debug_set_source_location_resolver_fn_t)libretro_host_loadSymbol("e9k_debug_set_source_location_resolver");
+    libretro_host.debugNeoGeoGetSpriteState = (e9k_debug_neogeo_get_sprite_state_fn_t)libretro_host_loadSymbol("e9k_debug_neogeo_get_sprite_state");
     if (!libretro_host.debugNeoGeoGetSpriteState) {
-        libretro_host.debugNeoGeoGetSpriteState = (geo_debug_neogeo_get_sprite_state_fn_t)libretro_host_loadSymbol("geo_debug_get_sprite_state");
+        libretro_host.debugNeoGeoGetSpriteState = (e9k_debug_neogeo_get_sprite_state_fn_t)libretro_host_loadSymbol("e9k_debug_get_sprite_state");
     }
-    libretro_host.debugNeoGeoGetP1Rom = (geo_debug_neogeo_get_p1_rom_fn_t)libretro_host_loadSymbol("geo_debug_neogeo_get_p1_rom");
+    libretro_host.debugNeoGeoGetP1Rom = (e9k_debug_neogeo_get_p1_rom_fn_t)libretro_host_loadSymbol("e9k_debug_neogeo_get_p1_rom");
     if (!libretro_host.debugNeoGeoGetP1Rom) {
-        libretro_host.debugNeoGeoGetP1Rom = (geo_debug_neogeo_get_p1_rom_fn_t)libretro_host_loadSymbol("geo_debug_get_p1_rom");
+        libretro_host.debugNeoGeoGetP1Rom = (e9k_debug_neogeo_get_p1_rom_fn_t)libretro_host_loadSymbol("e9k_debug_get_p1_rom");
     }
-    libretro_host.debugDisassembleQuick = (geo_debug_disassemble_quick_fn_t)libretro_host_loadSymbol("geo_debug_disassemble_quick");
-    libretro_host.debugReadCheckpoints = (geo_debug_read_checkpoints_fn_t)libretro_host_loadSymbol("geo_debug_read_checkpoints");
-    libretro_host.debugResetCheckpoints = (geo_debug_reset_checkpoints_fn_t)libretro_host_loadSymbol("geo_debug_reset_checkpoints");
-    libretro_host.debugSetCheckpointEnabled = (geo_debug_set_checkpoint_enabled_fn_t)libretro_host_loadSymbol("geo_debug_set_checkpoint_enabled");
-    libretro_host.debugGetCheckpointEnabled = (geo_debug_get_checkpoint_enabled_fn_t)libretro_host_loadSymbol("geo_debug_get_checkpoint_enabled");
-    libretro_host.debugReadCycleCount = (geo_debug_read_cycle_count_fn_t)libretro_host_loadSymbol("geo_debug_read_cycle_count");
-    libretro_host.setVblankCallback = (geo_set_vblank_callback_fn_t)libretro_host_loadSymbol("geo_set_vblank_callback");
+    libretro_host.debugDisassembleQuick = (e9k_debug_disassemble_quick_fn_t)libretro_host_loadSymbol("e9k_debug_disassemble_quick");
+    libretro_host.debugReadCheckpoints = (e9k_debug_read_checkpoints_fn_t)libretro_host_loadSymbol("e9k_debug_read_checkpoints");
+    libretro_host.debugResetCheckpoints = (e9k_debug_reset_checkpoints_fn_t)libretro_host_loadSymbol("e9k_debug_reset_checkpoints");
+    libretro_host.debugSetCheckpointEnabled = (e9k_debug_set_checkpoint_enabled_fn_t)libretro_host_loadSymbol("e9k_debug_set_checkpoint_enabled");
+    libretro_host.debugGetCheckpointEnabled = (e9k_debug_get_checkpoint_enabled_fn_t)libretro_host_loadSymbol("e9k_debug_get_checkpoint_enabled");
+    libretro_host.debugReadCycleCount = (e9k_debug_read_cycle_count_fn_t)libretro_host_loadSymbol("e9k_debug_read_cycle_count");
+    libretro_host.setVblankCallback = (e9k_debug_set_vblank_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_vblank_callback");
     if (!libretro_host.setEnvironment || !libretro_host.setVideoRefresh ||
         !libretro_host.setInputPoll || !libretro_host.setInputState ||
         !libretro_host.init || !libretro_host.loadGame || !libretro_host.getSystemAvInfo ||
@@ -1758,6 +1764,16 @@ libretro_host_debugStepNext(void)
 }
 
 bool
+libretro_host_debugStepOut(void)
+{
+    if (!libretro_host.debugStepOut) {
+        return false;
+    }
+    libretro_host.debugStepOut();
+    return true;
+}
+
+bool
 libretro_host_debugAddBreakpoint(uint32_t addr)
 {
     if (!libretro_host.debugAddBreakpoint) {
@@ -1837,7 +1853,7 @@ libretro_host_debugRemoveWatchpoint(uint32_t index)
 }
 
 bool
-libretro_host_debugReadWatchpoints(geo_debug_watchpoint_t *out, size_t cap, size_t *out_count)
+libretro_host_debugReadWatchpoints(e9k_debug_watchpoint_t *out, size_t cap, size_t *out_count)
 {
     if (out_count) {
         *out_count = 0;
@@ -1879,7 +1895,7 @@ libretro_host_debugSetWatchpointEnabledMask(uint64_t mask)
 }
 
 bool
-libretro_host_debugConsumeWatchbreak(geo_debug_watchbreak_t *out)
+libretro_host_debugConsumeWatchbreak(e9k_debug_watchbreak_t *out)
 {
     if (!out || !libretro_host.debugConsumeWatchbreak) {
         return false;
@@ -1927,7 +1943,7 @@ libretro_host_debugRemoveProtect(uint32_t index)
 }
 
 bool
-libretro_host_debugReadProtects(geo_debug_protect_t *out, size_t cap, size_t *out_count)
+libretro_host_debugReadProtects(e9k_debug_protect_t *out, size_t cap, size_t *out_count)
 {
     if (out_count) {
         *out_count = 0;
@@ -2071,8 +2087,8 @@ libretro_host_debugGetAmigaDebugDmaAddr(int **out_addr)
     }
     *out_addr = NULL;
     if (!libretro_host.debugAmigaGetDebugDmaAddr) {
-        libretro_host.debugAmigaGetDebugDmaAddr = (geo_debug_amiga_get_debug_dma_addr_fn_t)
-            libretro_host_loadSymbol("geo_debug_amiga_get_debug_dma_addr");
+        libretro_host.debugAmigaGetDebugDmaAddr = (e9k_debug_amiga_get_debug_dma_addr_fn_t)
+            libretro_host_loadSymbol("e9k_debug_amiga_get_debug_dma_addr");
     }
     if (!libretro_host.debugAmigaGetDebugDmaAddr) {
         return false;
@@ -2082,7 +2098,7 @@ libretro_host_debugGetAmigaDebugDmaAddr(int **out_addr)
 }
 
 bool
-libretro_host_debugGetSpriteState(geo_debug_sprite_state_t *out)
+libretro_host_debugGetSpriteState(e9k_debug_sprite_state_t *out)
 {
     if (!out || !libretro_host.debugNeoGeoGetSpriteState) {
         return false;
@@ -2092,7 +2108,7 @@ libretro_host_debugGetSpriteState(geo_debug_sprite_state_t *out)
 }
 
 bool
-libretro_host_debugGetP1Rom(geo_debug_rom_region_t *out)
+libretro_host_debugGetP1Rom(e9k_debug_rom_region_t *out)
 {
     if (!out || !libretro_host.debugNeoGeoGetP1Rom) {
         return false;
@@ -2107,7 +2123,7 @@ libretro_host_debugGetP1Rom(geo_debug_rom_region_t *out)
 }
 
 size_t
-libretro_host_debugReadCheckpoints(geo_debug_checkpoint_t *out, size_t cap)
+libretro_host_debugReadCheckpoints(e9k_debug_checkpoint_t *out, size_t cap)
 {
     if (!out || cap == 0 || !libretro_host.debugReadCheckpoints) {
         return 0;
@@ -2325,6 +2341,16 @@ libretro_host_setDebugBreakpointCallback(void (*cb)(uint32_t addr))
         return false;
     }
     libretro_host.setDebugBreakpointCallback(cb);
+    return true;
+}
+
+bool
+libretro_host_setDebugSourceLocationCallback(int (*cb)(uint32_t pc, uint64_t *out_location, void *user), void *user)
+{
+    if (!libretro_host.debugSetSourceLocationResolver) {
+        return false;
+    }
+    libretro_host.debugSetSourceLocationResolver(cb, user);
     return true;
 }
 

@@ -105,8 +105,9 @@ else ifeq ($(platform), classic_armv8_a35)
 else ifeq ($(platform), osx)
    TARGET := $(TARGET_NAME)_libretro.dylib
    MINVERSION := -mmacosx-version-min=10.6
-   fpic := -fPIC 
-   LDFLAGS :=
+   fpic := -fPIC
+   #CFLAGS += -flto   
+   #LDFLAGS := -flto
    SHARED := -dynamiclib
    PLATFLAGS += -DUSE_NAMED_SEMAPHORES
 
@@ -290,7 +291,7 @@ else ifneq (,$(findstring armv,$(platform)))
 
 # Windows
 else
-   CFLAGS += -Wstringop-overflow=0
+   CFLAGS += -Wstringop-overflow=0 -Wno-discarded-qualifiers
    PLATFLAGS += -DWIN32
    TARGET := $(TARGET_NAME)_libretro.dll
    fpic := -fPIC
@@ -302,7 +303,14 @@ endif
 ifeq ($(DEBUG), 1)
    CFLAGS += -O0 -g
 else
-   CFLAGS += -O3 -Wno-format -Wno-format-security
+   CFLAGS += -O3 \
+	-Wno-format -Wno-format-security -Wno-tautological-constant-compare -Wno-unused-value -Wno-deprecated-declarations \
+	-Wno-pointer-bool-conversion -Wno-pointer-sign -Wno-typedef-redefinition -Wno-constant-logical-operand \
+	-Wno-non-literal-null-conversion -Wno-shift-op-parentheses -Wno-deprecated-non-prototype -Wno-dangling-else \
+	-Wno-parentheses-equality -Wno-constant-conversion -Wno-incompatible-pointer-types-discards-qualifiers \
+	-Wno-tautological-pointer-compare -Wno-switch -Wno-invalid-source-encoding -Wno-shift-negative-value \
+	-Wno-pointer-to-int-cast -Wno-int-to-void-pointer-cast -Wno-macro-redefined\
+	-Werror
    LDFLAGS += -s
 endif
 

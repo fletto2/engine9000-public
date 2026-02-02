@@ -42,9 +42,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "geo_serial.h"
 #include "geo_z80.h"
 #include "geo_debug_text.h"
-#include "geo_checkpoint.h"
-#include "geo_debugger.h"
-#include "geo_protect.h"
+#include "e9k_checkpoint.h"
+#include "e9k_debugger.h"
+#include "e9k_protect.h"
 
 #define SMATAP 0x98ec // NEO-SMA Tapped bits - 2, 3, 5, 6, 7, 11, 12, and 15
 #define GEO_DBG_TEXT_ADDR 0xFFFF0 // Fake debug output register
@@ -132,7 +132,7 @@ static inline void geo_debug_print_byte(uint8_t byte) {
 }
 
 static inline void geo_debug_checkpoint_write(uint8_t index) {
-    geo_checkpoint_write(index);
+    e9k_checkpoint_write(index);
 }
 
 static inline void write08(uint8_t *ptr, uint32_t addr, uint8_t data) {
@@ -926,7 +926,7 @@ unsigned m68k_read_memory_8(unsigned address) {
     geo_log(GEO_LOG_DBG, "Unknown 8-bit 68K Read at %06x\n", address);
     result = 0xff;
 out:
-    geo_debugger_watchpoint_read(addr24, (uint32_t)result, 8);
+    e9k_debugger_watchpoint_read(addr24, (uint32_t)result, 8);
     return result;
 }
 
@@ -1016,18 +1016,18 @@ unsigned m68k_read_memory_16(unsigned address) {
     geo_log(GEO_LOG_DBG, "Unknown 16-bit 68K Read at %06x\n", address);
     result = 0xffff;
 out:
-    geo_debugger_watchpoint_read(addr24, (uint32_t)result, 16);
+    e9k_debugger_watchpoint_read(addr24, (uint32_t)result, 16);
     return result;
 }
 
 unsigned m68k_read_memory_32(unsigned address) {
     uint32_t addr24 = (uint32_t)(address & 0x00ffffffu);
-    geo_debugger_watchpoint_suspend();
+    e9k_debugger_watchpoint_suspend();
     unsigned hi = m68k_read_memory_16(address);
     unsigned lo = m68k_read_memory_16(address + 2);
-    geo_debugger_watchpoint_resume();
+    e9k_debugger_watchpoint_resume();
     unsigned result = (hi << 16) | (lo & 0xffffu);
-    geo_debugger_watchpoint_read(addr24, (uint32_t)result, 32);
+    e9k_debugger_watchpoint_read(addr24, (uint32_t)result, 32);
     return result;
 }
 
@@ -1053,7 +1053,7 @@ void m68k_write_memory_8(unsigned address, unsigned value) {
     }
 
     uint32_t protectValue = (uint32_t)v8;
-    geo_protect_filterWrite(addr24, 8, old_value, old_value_valid, &protectValue);
+    e9k_protect_filterWrite(addr24, 8, old_value, old_value_valid, &protectValue);
     v8 = protectValue & 0xffu;
 
     if (address < 0x100000) { // Fixed 1M Program ROM Bank
@@ -1208,9 +1208,9 @@ void m68k_write_memory_8(unsigned address, unsigned value) {
                 /* Byte writes are only effective on even addresses, and they
                    store the same data in both bytes.
                 */
-                geo_debugger_watchpoint_suspend();
+                e9k_debugger_watchpoint_suspend();
                 m68k_write_memory_16(address, (v8 << 8) | v8);
-                geo_debugger_watchpoint_resume();
+                e9k_debugger_watchpoint_resume();
                 goto out;
             }
 
@@ -1236,7 +1236,7 @@ void m68k_write_memory_8(unsigned address, unsigned value) {
             ngsys.nvram[address & 0xffff] = v8;
     }
 out:
-    geo_debugger_watchpoint_write(addr24, (uint32_t)v8, old_value, 8, old_value_valid);
+    e9k_debugger_watchpoint_write(addr24, (uint32_t)v8, old_value, 8, old_value_valid);
 }
 
 void m68k_write_memory_16(unsigned address, unsigned value) {
@@ -1265,7 +1265,7 @@ void m68k_write_memory_16(unsigned address, unsigned value) {
     }
 
     uint32_t protectValue = (uint32_t)v16;
-    geo_protect_filterWrite(addr24, 16, old_value, old_value_valid, &protectValue);
+    e9k_protect_filterWrite(addr24, 16, old_value, old_value_valid, &protectValue);
     v16 = protectValue & 0xffffu;
 
     if (address < 0x100000) { // Fixed 1M Program ROM Bank
@@ -1364,20 +1364,20 @@ void m68k_write_memory_16(unsigned address, unsigned value) {
             write16(ngsys.nvram, address & 0xffff, v16);
     }
 out:
-    geo_debugger_watchpoint_write(addr24, (uint32_t)v16, old_value, 16, old_value_valid);
+    e9k_debugger_watchpoint_write(addr24, (uint32_t)v16, old_value, 16, old_value_valid);
 }
 
 void m68k_write_memory_32(unsigned address, unsigned value) {
     uint32_t addr24 = (uint32_t)(address & 0x00ffffffu);
     uint32_t v32 = (uint32_t)value;
-    geo_debugger_watchpoint_suspend();
+    e9k_debugger_watchpoint_suspend();
     unsigned old_hi = m68k_read_memory_16(address);
     unsigned old_lo = m68k_read_memory_16(address + 2);
     m68k_write_memory_16(address, (v32 >> 16) & 0xffffu);
     m68k_write_memory_16(address + 2, v32 & 0xffffu);
-    geo_debugger_watchpoint_resume();
+    e9k_debugger_watchpoint_resume();
     uint32_t old_value = ((uint32_t)old_hi << 16) | ((uint32_t)old_lo & 0xffffu);
-    geo_debugger_watchpoint_write(addr24, v32, old_value, 32, 1);
+    e9k_debugger_watchpoint_write(addr24, v32, old_value, 32, 1);
 }
 
 void geo_m68k_reset(void) {

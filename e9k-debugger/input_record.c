@@ -17,7 +17,6 @@
 #include "alloc.h"
 #include "debug.h"
 #include "libretro_host.h"
-#include "geo_checkpoint.h"
 
 typedef enum input_record_type {
     INPUT_RECORD_JOYPAD = 1,
@@ -666,11 +665,11 @@ input_record_recordCoreMouseButton(uint64_t frame, int port, unsigned id, int pr
 static void
 input_record_dumpCheckpoints(void)
 {
-    geo_debug_checkpoint_t entries[GEO_CHECKPOINT_COUNT];
+    e9k_debug_checkpoint_t entries[E9K_CHECKPOINT_COUNT];
     size_t bytes = libretro_host_debugReadCheckpoints(entries, sizeof(entries));
     size_t count = bytes / sizeof(entries[0]);
-    if (count > GEO_CHECKPOINT_COUNT) {
-        count = GEO_CHECKPOINT_COUNT;
+    if (count > E9K_CHECKPOINT_COUNT) {
+        count = E9K_CHECKPOINT_COUNT;
     }
     printf("Profiler checkpoints (avg/min/max):\n");
     for (size_t i = 0; i < count; ++i) {

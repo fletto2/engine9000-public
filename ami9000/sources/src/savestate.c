@@ -1464,7 +1464,7 @@ bool savestate_check(void)
 
 #ifdef __LIBRETRO__
 void savestate_capture (int force) {}
-int savestate_dorewind (int pos) {}
+int savestate_dorewind (int pos) { return 0;}
 void savestate_init (void) {}
 void savestate_free (void) {}
 void savestate_rewind (void) {}

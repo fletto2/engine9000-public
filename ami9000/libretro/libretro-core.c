@@ -24,7 +24,7 @@
 #include "memory.h"
 #include "sounddep/sound.h"
 
-#include "geo_debug.h"
+#include "e9k_debug.h"
 
 #ifndef MAX_STOP
 #define MAX_STOP 30000
@@ -8553,7 +8553,7 @@ void retro_run(void)
    input_poll_cb();
    retro_poll_event();
 
-   if (geo_debug_is_paused())
+   if (e9k_debug_is_paused())
    {
       old_frame = 1;
       video_cb(NULL, retrow_crop, retroh_crop, retrow << (pix_bytes >> 1));
@@ -8637,10 +8637,10 @@ void retro_run(void)
    if ((!retro_statusbar && opt_statusbar & STATUSBAR_MESSAGES && statusbar_message_timer) || retro_statusbar)
       print_statusbar();
 
-   geo_vblank_notify();
+   e9k_vblank_notify();
 
-   video_cb((old_frame || geo_debug_is_paused()) ? NULL : retro_bmp + retro_bmp_offset, retrow_crop, retroh_crop, retrow << (pix_bytes >> 1));
-   if (geo_debug_is_paused()) {
+   video_cb((old_frame || e9k_debug_is_paused()) ? NULL : retro_bmp + retro_bmp_offset, retrow_crop, retroh_crop, retrow << (pix_bytes >> 1));
+   if (e9k_debug_is_paused()) {
       output_audio_buffer.size = 0;
    }
    upload_output_audio_buffer();

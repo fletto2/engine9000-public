@@ -1,5 +1,5 @@
 INCFLAGS := -I$(CORE_DIR)/deps -I$(CORE_DIR)/deps/libretro-common/include \
-	-I$(CORE_DIR)/deps/miniz -I$(CORE_DIR)/src -I$(CORE_DIR)/libretro
+	-I$(CORE_DIR)/deps/miniz -I$(CORE_DIR)/src -I$(CORE_DIR)/libretro -I../../e9k-lib
 
 ## External SDL windows removed; no SDL dependencies needed
 
@@ -32,13 +32,12 @@ SOURCES_C := \
 	$(CORE_DIR)/src/geo_ymfm.c \
 	$(CORE_DIR)/src/geo_z80.c \
 	$(CORE_DIR)/src/geo_profiler.c \
-	$(CORE_DIR)/src/geo_profiler_elf.c \
 	$(CORE_DIR)/src/geo_notify.c \
 	$(CORE_DIR)/src/geo_debug_text.c \
-	$(CORE_DIR)/src/geo_debugger.c \
-	$(CORE_DIR)/src/geo_protect.c \
+	$(CORE_DIR)/src/e9k_debugger.c \
+	$(CORE_DIR)/src/e9k_protect.c \
 	$(CORE_DIR)/src/geo_hooks.c \
-	$(CORE_DIR)/src/geo_checkpoint.c \
+	$(CORE_DIR)/src/e9k_checkpoint.c \
 	$(CORE_DIR)/src/geo_cycles.c \
 	$(CORE_DIR)/src/m68k/m68kcpu.c \
 	$(CORE_DIR)/src/m68k/m68kdasm.c \

@@ -1,5 +1,5 @@
 MINGW_CC=x86_64-w64-mingw32-gcc 
-JOBS=-j12
+JOBS= -j12
 
 all:
 	$(MAKE) $(JOBS) -C ami9000 platform=osx
@@ -15,6 +15,8 @@ w64:
 
 clean:
 	$(MAKE) $(JOBS) -C ami9000 platform=win CC=$(MINGW_CC) clean
+	$(MAKE) $(JOBS) -C ami9000 clean
 	$(MAKE) $(JOBS) -C geo9000/libretro platform=win64 CC=$(MINGW_CC) clean
+	$(MAKE) $(JOBS) -C geo9000/libretro clean
 	$(MAKE) $(JOBS) -C e9k-debugger clean
 	$(MAKE) $(JOBS) -C tools/amiga/adf9000 clean

@@ -135,7 +135,7 @@ dasm_parseLine(const char *ln, uint64_t *out_addr, const char **out_text)
 static int
 dasm_preloadFromCore(void)
 {
-  geo_debug_rom_region_t p1 = {0};
+  e9k_debug_rom_region_t p1 = {0};
   if (!libretro_host_debugGetP1Rom(&p1)) {
     debug_error("dasm: P1 ROM unavailable from core");
     return 0;

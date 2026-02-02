@@ -1536,7 +1536,8 @@ int
 e9ui_processEvents(void)
 {
     SDL_Event ev;
-    int compareMode = ui_test_getMode() == UI_TEST_MODE_COMPARE ? 1 : 0;
+    ui_test_mode_t mode = ui_test_getMode();
+    int compareMode = (mode == UI_TEST_MODE_COMPARE || mode == UI_TEST_MODE_REMAKE) ? 1 : 0;
     while (1) {
         int hasEvent = 0;
         if (compareMode) {

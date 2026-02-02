@@ -43,13 +43,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "geo_mixer.h"
 #include "geo_neo.h"
 #include "geo_profiler.h"
-#include "geo_debugger.h"
+#include "e9k_debugger.h"
 #include "geo_notify.h"
-#include "geo_debugger.h"
+#include "e9k_debugger.h"
 #include "geo_debug_sprite.h"
 #include "geo_debug_rom.h"
-#include "geo_protect.h"
-#include "geo_checkpoint.h"
+#include "e9k_protect.h"
+#include "e9k_checkpoint.h"
 #include "geo_cycles.h"
 
 #include "libretro.h"
@@ -61,71 +61,72 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifndef TYPE_68000
 #define TYPE_68000 1
 #endif
-
-#define GEO_DEBUG_EXPORT RETRO_API
+#define E9K_DEBUG_EXPORT RETRO_API
 
 // Debugger-only API for direct pause/resume from the libretro host.
-GEO_DEBUG_EXPORT void geo_debug_pause(void) { geo_debugger_break_immediate(); }
-GEO_DEBUG_EXPORT void geo_debug_resume(void) { geo_debugger_continue(); }
-GEO_DEBUG_EXPORT int geo_debug_is_paused(void) { return geo_debugger_is_paused(); }
-GEO_DEBUG_EXPORT void geo_debug_step_instr(void) { geo_debugger_step_instr_cmd(); }
-GEO_DEBUG_EXPORT void geo_debug_step_line(void) { geo_debugger_step_next_line_cmd(); }
-GEO_DEBUG_EXPORT void geo_debug_step_next(void) { geo_debugger_step_next_over_cmd(); }
-GEO_DEBUG_EXPORT void geo_debug_add_breakpoint(uint32_t addr) { geo_debugger_add_breakpoint(addr); }
-GEO_DEBUG_EXPORT void geo_debug_remove_breakpoint(uint32_t addr) { geo_debugger_remove_breakpoint(addr); }
-GEO_DEBUG_EXPORT void geo_debug_add_temp_breakpoint(uint32_t addr) { geo_debugger_add_temp_breakpoint(addr); }
-GEO_DEBUG_EXPORT void geo_debug_remove_temp_breakpoint(uint32_t addr) { geo_debugger_remove_temp_breakpoint(addr); }
-GEO_DEBUG_EXPORT void geo_debug_reset_watchpoints(void) { geo_debugger_reset_watchpoints(); }
-GEO_DEBUG_EXPORT int geo_debug_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand, uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand) { return geo_debugger_add_watchpoint(addr, op_mask, diff_operand, value_operand, old_value_operand, size_operand, addr_mask_operand); }
-GEO_DEBUG_EXPORT void geo_debug_remove_watchpoint(uint32_t index) { geo_debugger_remove_watchpoint(index); }
-GEO_DEBUG_EXPORT size_t geo_debug_read_watchpoints(geo_debug_watchpoint_t *out, size_t cap) { return geo_debugger_read_watchpoints(out, cap); }
-GEO_DEBUG_EXPORT uint64_t geo_debug_get_watchpoint_enabled_mask(void) { return geo_debugger_get_watchpoint_enabled_mask(); }
-GEO_DEBUG_EXPORT void geo_debug_set_watchpoint_enabled_mask(uint64_t mask) { geo_debugger_set_watchpoint_enabled_mask(mask); }
-GEO_DEBUG_EXPORT int geo_debug_consume_watchbreak(geo_debug_watchbreak_t *out) { return geo_debugger_consume_watchbreak(out); }
-GEO_DEBUG_EXPORT void geo_debug_reset_protects(void) { geo_protect_reset(); }
-GEO_DEBUG_EXPORT int geo_debug_add_protect(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t value) { return geo_protect_add(addr, size_bits, mode, value); }
-GEO_DEBUG_EXPORT void geo_debug_remove_protect(uint32_t index) { geo_protect_remove(index); }
-GEO_DEBUG_EXPORT size_t geo_debug_read_protects(geo_debug_protect_t *out, size_t cap) { return geo_protect_read(out, cap); }
-GEO_DEBUG_EXPORT uint64_t geo_debug_get_protect_enabled_mask(void) { return geo_protect_getEnabledMask(); }
-GEO_DEBUG_EXPORT void geo_debug_set_protect_enabled_mask(uint64_t mask) { geo_protect_setEnabledMask(mask); }
-GEO_DEBUG_EXPORT size_t geo_debug_read_callstack(uint32_t *out, size_t cap) { return geo_debugger_read_callstack(out, cap); }
-GEO_DEBUG_EXPORT size_t geo_debug_read_memory(uint32_t addr, uint8_t *out, size_t cap) { return geo_debugger_readMemory(addr, out, cap); }
-GEO_DEBUG_EXPORT int geo_debug_write_memory(uint32_t addr, uint32_t value, size_t size) { return geo_debugger_writeMemory(addr, value, size); }
-GEO_DEBUG_EXPORT void geo_debug_profiler_start(int stream) {
+E9K_DEBUG_EXPORT void e9k_debug_pause(void) { e9k_debugger_break_immediate(); }
+E9K_DEBUG_EXPORT void e9k_debug_resume(void) { e9k_debugger_continue(); }
+E9K_DEBUG_EXPORT int e9k_debug_is_paused(void) { return e9k_debugger_is_paused(); }
+E9K_DEBUG_EXPORT void e9k_debug_step_instr(void) { e9k_debugger_step_instr_cmd(); }
+E9K_DEBUG_EXPORT void e9k_debug_step_line(void) { e9k_debugger_step_next_line_cmd(); }
+E9K_DEBUG_EXPORT void e9k_debug_step_next(void) { e9k_debugger_step_next_over_cmd(); }
+E9K_DEBUG_EXPORT void e9k_debug_step_out(void) { e9k_debugger_step_out_cmd(); }
+E9K_DEBUG_EXPORT void e9k_debug_add_breakpoint(uint32_t addr) { e9k_debugger_add_breakpoint(addr); }
+E9K_DEBUG_EXPORT void e9k_debug_remove_breakpoint(uint32_t addr) { e9k_debugger_remove_breakpoint(addr); }
+E9K_DEBUG_EXPORT void e9k_debug_add_temp_breakpoint(uint32_t addr) { e9k_debugger_add_temp_breakpoint(addr); }
+E9K_DEBUG_EXPORT void e9k_debug_remove_temp_breakpoint(uint32_t addr) { e9k_debugger_remove_temp_breakpoint(addr); }
+E9K_DEBUG_EXPORT void e9k_debug_set_source_location_resolver(int (*resolver)(uint32_t pc24, uint64_t *out_location, void *user), void *user) { e9k_debugger_set_source_location_resolver(resolver, user); }
+E9K_DEBUG_EXPORT void e9k_debug_reset_watchpoints(void) { e9k_debugger_reset_watchpoints(); }
+E9K_DEBUG_EXPORT int e9k_debug_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand, uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand) { return e9k_debugger_add_watchpoint(addr, op_mask, diff_operand, value_operand, old_value_operand, size_operand, addr_mask_operand); }
+E9K_DEBUG_EXPORT void e9k_debug_remove_watchpoint(uint32_t index) { e9k_debugger_remove_watchpoint(index); }
+E9K_DEBUG_EXPORT size_t e9k_debug_read_watchpoints(e9k_debug_watchpoint_t *out, size_t cap) { return e9k_debugger_read_watchpoints(out, cap); }
+E9K_DEBUG_EXPORT uint64_t e9k_debug_get_watchpoint_enabled_mask(void) { return e9k_debugger_get_watchpoint_enabled_mask(); }
+E9K_DEBUG_EXPORT void e9k_debug_set_watchpoint_enabled_mask(uint64_t mask) { e9k_debugger_set_watchpoint_enabled_mask(mask); }
+E9K_DEBUG_EXPORT int e9k_debug_consume_watchbreak(e9k_debug_watchbreak_t *out) { return e9k_debugger_consume_watchbreak(out); }
+E9K_DEBUG_EXPORT void e9k_debug_reset_protects(void) { e9k_protect_reset(); }
+E9K_DEBUG_EXPORT int e9k_debug_add_protect(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t value) { return e9k_protect_add(addr, size_bits, mode, value); }
+E9K_DEBUG_EXPORT void e9k_debug_remove_protect(uint32_t index) { e9k_protect_remove(index); }
+E9K_DEBUG_EXPORT size_t e9k_debug_read_protects(e9k_debug_protect_t *out, size_t cap) { return e9k_protect_read(out, cap); }
+E9K_DEBUG_EXPORT uint64_t e9k_debug_get_protect_enabled_mask(void) { return e9k_protect_getEnabledMask(); }
+E9K_DEBUG_EXPORT void e9k_debug_set_protect_enabled_mask(uint64_t mask) { e9k_protect_setEnabledMask(mask); }
+E9K_DEBUG_EXPORT size_t e9k_debug_read_callstack(uint32_t *out, size_t cap) { return e9k_debugger_read_callstack(out, cap); }
+E9K_DEBUG_EXPORT size_t e9k_debug_read_memory(uint32_t addr, uint8_t *out, size_t cap) { return e9k_debugger_readMemory(addr, out, cap); }
+E9K_DEBUG_EXPORT int e9k_debug_write_memory(uint32_t addr, uint32_t value, size_t size) { return e9k_debugger_writeMemory(addr, value, size); }
+E9K_DEBUG_EXPORT void e9k_debug_profiler_start(int stream) {
     if (!geo_profiler_get_enabled()) {
         geo_profiler_reset();
         geo_profiler_set_enabled(1);
     }
     geo_profiler_stream_enable(stream ? 1 : 0);
 }
-GEO_DEBUG_EXPORT void geo_debug_profiler_stop(void) {
+E9K_DEBUG_EXPORT void e9k_debug_profiler_stop(void) {
     geo_profiler_set_enabled(0);
     geo_profiler_stream_enable(0);
 }
-GEO_DEBUG_EXPORT int geo_debug_profiler_is_enabled(void) { return geo_profiler_get_enabled(); }
-GEO_DEBUG_EXPORT size_t geo_debug_profiler_stream_next(char *out, size_t cap) { return geo_profiler_stream_format_json(out, cap); }
+E9K_DEBUG_EXPORT int e9k_debug_profiler_is_enabled(void) { return geo_profiler_get_enabled(); }
+E9K_DEBUG_EXPORT size_t e9k_debug_profiler_stream_next(char *out, size_t cap) { return geo_profiler_stream_format_json(out, cap); }
 
-GEO_DEBUG_EXPORT size_t geo_debug_read_checkpoints(geo_debug_checkpoint_t *out, size_t cap) {
-    return geo_checkpoint_read(out, cap);
+E9K_DEBUG_EXPORT size_t e9k_debug_read_checkpoints(e9k_debug_checkpoint_t *out, size_t cap) {
+    return e9k_checkpoint_read(out, cap);
 }
 
-GEO_DEBUG_EXPORT void geo_debug_reset_checkpoints(void) {
-    geo_checkpoint_reset();
+E9K_DEBUG_EXPORT void e9k_debug_reset_checkpoints(void) {
+    e9k_checkpoint_reset();
 }
 
-GEO_DEBUG_EXPORT void geo_debug_set_checkpoint_enabled(int enabled) {
-    geo_checkpoint_setEnabled(enabled);
+E9K_DEBUG_EXPORT void e9k_debug_set_checkpoint_enabled(int enabled) {
+    e9k_checkpoint_setEnabled(enabled);
 }
 
-GEO_DEBUG_EXPORT int geo_debug_get_checkpoint_enabled(void) {
-    return geo_checkpoint_isEnabled();
+E9K_DEBUG_EXPORT int e9k_debug_get_checkpoint_enabled(void) {
+    return e9k_checkpoint_isEnabled();
 }
 
-GEO_DEBUG_EXPORT uint64_t geo_debug_read_cycle_count(void) {
+E9K_DEBUG_EXPORT uint64_t e9k_debug_read_cycle_count(void) {
     return geo_cycles_get();
 }
 
-GEO_DEBUG_EXPORT size_t geo_debug_neogeo_get_p1_rom(geo_debug_rom_region_t *out, size_t cap) {
+E9K_DEBUG_EXPORT size_t e9k_debug_neogeo_get_p1_rom(e9k_debug_rom_region_t *out, size_t cap) {
     if (!out || cap < sizeof(*out)) {
         return 0;
     }
@@ -139,11 +140,11 @@ GEO_DEBUG_EXPORT size_t geo_debug_neogeo_get_p1_rom(geo_debug_rom_region_t *out,
 }
 
 // Backward-compatible alias for older hosts.
-GEO_DEBUG_EXPORT size_t geo_debug_get_p1_rom(geo_debug_rom_region_t *out, size_t cap) {
-    return geo_debug_neogeo_get_p1_rom(out, cap);
+E9K_DEBUG_EXPORT size_t e9k_debug_get_p1_rom(e9k_debug_rom_region_t *out, size_t cap) {
+    return e9k_debug_neogeo_get_p1_rom(out, cap);
 }
 
-GEO_DEBUG_EXPORT size_t geo_debug_disassemble_quick(uint32_t pc, char *out, size_t cap) {
+E9K_DEBUG_EXPORT size_t e9k_debug_disassemble_quick(uint32_t pc, char *out, size_t cap) {
     if (!out || cap == 0) {
         return 0;
     }
@@ -161,7 +162,7 @@ GEO_DEBUG_EXPORT size_t geo_debug_disassemble_quick(uint32_t pc, char *out, size
 }
 
 // Debugger-only API for direct register reads from the libretro host.
-GEO_DEBUG_EXPORT size_t geo_debug_read_regs(uint32_t *out, size_t cap) {
+E9K_DEBUG_EXPORT size_t e9k_debug_read_regs(uint32_t *out, size_t cap) {
     if (!out || cap == 0) {
         return 0;
     }
@@ -226,7 +227,7 @@ static int video_crop_r = 8;
 static int video_width_visible = LSPC_WIDTH_VISIBLE;
 static int video_height_visible = LSPC_HEIGHT_VISIBLE;
 
-GEO_DEBUG_EXPORT size_t geo_debug_neogeo_get_sprite_state(geo_debug_sprite_state_t *out, size_t cap) {
+E9K_DEBUG_EXPORT size_t e9k_debug_neogeo_get_sprite_state(e9k_debug_sprite_state_t *out, size_t cap) {
     if (!out || cap < sizeof(*out)) {
         return 0;
     }
@@ -243,8 +244,8 @@ GEO_DEBUG_EXPORT size_t geo_debug_neogeo_get_sprite_state(geo_debug_sprite_state
 }
 
 // Backward-compatible alias for older hosts.
-GEO_DEBUG_EXPORT size_t geo_debug_get_sprite_state(geo_debug_sprite_state_t *out, size_t cap) {
-    return geo_debug_neogeo_get_sprite_state(out, cap);
+E9K_DEBUG_EXPORT size_t e9k_debug_get_sprite_state(e9k_debug_sprite_state_t *out, size_t cap) {
+    return e9k_debug_neogeo_get_sprite_state(out, cap);
 }
 static float video_aspect = 0.0;
 static unsigned coins34 = 0x00;
@@ -1212,7 +1213,7 @@ void retro_run(void) {
     // (input handled earlier this frame)
 
     // Run emulation for this frame after processing input (so step/break takes effect now)
-    if (!geo_debugger_is_paused()) {
+    if (!e9k_debugger_is_paused()) {
         geo_exec();
     }
 
@@ -1234,7 +1235,7 @@ void retro_run(void) {
     }
 
     // After finishing a frame, allow debugger to latch breakpoint notifications
-    geo_debugger_end_of_frame_update(NULL);
+    e9k_debugger_end_of_frame_update(NULL);
 
     if (present_buf) {
         video_cb(present_buf,
@@ -1313,7 +1314,7 @@ bool retro_load_game(const struct retro_game_info *info) {
 
     // Initialize 68K profiler and debugger
     geo_profiler_init();
-    geo_debugger_init();
+    e9k_debugger_init();
 
     // Extract the game name from the path
     geo_retro_gamename(info->path);

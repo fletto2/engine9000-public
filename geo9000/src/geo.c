@@ -42,9 +42,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "geo_rtc.h"
 #include "geo_serial.h"
 #include "geo_ymfm.h"
-#include "geo_checkpoint.h"
 #include "geo_cycles.h"
 #include "geo_z80.h"
+#include "e9k_checkpoint.h"
+#include "e9k_debugger.h"
 
 #define DIV_M68K 2
 #define DIV_Z80 6
@@ -105,6 +106,11 @@ void geo_input_sys_set_callback(unsigned port, unsigned (*cb)(void)) {
 }
 
 GEO_EXPORT void geo_set_vblank_callback(void (*cb)(void *), void *user) {
+    geo_vblank_cb = cb;
+    geo_vblank_user = user;
+}
+
+GEO_EXPORT void e9k_debug_set_vblank_callback(void (*cb)(void *), void *user) {
     geo_vblank_cb = cb;
     geo_vblank_user = user;
 }
@@ -389,7 +395,7 @@ void geo_reset(int hard) {
     geo_z80_reset();
     geo_ymfm_reset(); // Reset the YM2610 to make sure everything is defaulted
     geo_lspc_init();
-    geo_checkpoint_reset();
+    e9k_checkpoint_reset();
     geo_cycles_reset();
 
     if (hard)
@@ -402,7 +408,7 @@ void geo_init(void) {
     geo_ymfm_init();
     geo_rtc_init();
     geo_lspc_init();
-    geo_checkpoint_reset();
+    e9k_checkpoint_reset();
     geo_cycles_reset();
 
     ngsys.irq2_ctrl = 0;
@@ -450,7 +456,7 @@ int geo_state_load_raw(const void *sstate) {
     ngsys.sound_code = geo_serial_pop8(st);
     ngsys.sound_reply = geo_serial_pop8(st);
 
-    geo_checkpoint_state_load(st);
+    e9k_checkpoint_state_load(st);
     geo_cycles_state_load(st);
     geo_lspc_state_load(st);
     geo_m68k_state_load(st);
@@ -523,7 +529,7 @@ const void* geo_state_save_raw(void) {
     geo_serial_push8(state, ngsys.sound_code);
     geo_serial_push8(state, ngsys.sound_reply);
 
-    geo_checkpoint_state_save(state);
+    e9k_checkpoint_state_save(state);
     geo_cycles_state_save(state);
     geo_lspc_state_save(state);
     geo_m68k_state_save(state);
@@ -628,12 +634,12 @@ void geo_watchdog_reset(void) {
     ngsys.watchdog = 0;
 }
 
-#include "geo_debugger.h"
+
 void geo_exec(void) {
     int dbg_broke_midframe = 0;
     while (mcycs < MCYC_PER_FRAME) {
         // Allow debugger to halt mid-frame after a single-instruction step or breakpoint
-        if (geo_debugger_break_now()) { dbg_broke_midframe = 1; break; }
+        if (e9k_debugger_break_now()) { dbg_broke_midframe = 1; break; }
         icycs = geo_m68k_run(1);
         mcycs += (icycs * DIV_M68K) >> oc;
 

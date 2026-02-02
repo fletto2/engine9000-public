@@ -2,14 +2,10 @@
 
 #include <stddef.h>
 #include <stdint.h>
-
-typedef struct geo_debug_rom_region {
-    const uint8_t *data;
-    size_t size;
-} geo_debug_rom_region_t;
+#include "e9k-geo.h"
 
 size_t
-geo_debug_neogeo_get_p1_rom(geo_debug_rom_region_t *out, size_t cap);
+e9k_debug_neogeo_get_p1_rom(e9k_debug_rom_region_t *out, size_t cap);
 
 size_t
-geo_debug_disassemble_quick(uint32_t pc, char *out, size_t cap);
+e9k_debug_disassemble_quick(uint32_t pc, char *out, size_t cap);

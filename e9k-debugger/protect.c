@@ -30,7 +30,7 @@ protect_addBlock(uint32_t addr24, uint32_t sizeBits)
         return 0;
     }
     uint32_t index = 0;
-    return libretro_host_debugAddProtect(addr24, sizeBits, GEO_PROTECT_MODE_BLOCK, 0, &index) ? 1 : 0;
+    return libretro_host_debugAddProtect(addr24, sizeBits, E9K_PROTECT_MODE_BLOCK, 0, &index) ? 1 : 0;
 }
 
 int
@@ -41,7 +41,7 @@ protect_addSet(uint32_t addr24, uint32_t value, uint32_t sizeBits)
         return 0;
     }
     uint32_t index = 0;
-    return libretro_host_debugAddProtect(addr24, sizeBits, GEO_PROTECT_MODE_SET, value, &index) ? 1 : 0;
+    return libretro_host_debugAddProtect(addr24, sizeBits, E9K_PROTECT_MODE_SET, value, &index) ? 1 : 0;
 }
 
 int
@@ -49,9 +49,9 @@ protect_remove(uint32_t addr24, uint32_t sizeBits)
 {
     addr24 &= 0x00ffffffu;
 
-    geo_debug_protect_t protects[GEO_PROTECT_COUNT];
+    e9k_debug_protect_t protects[E9K_PROTECT_COUNT];
     size_t count = 0;
-    if (!libretro_host_debugReadProtects(protects, GEO_PROTECT_COUNT, &count)) {
+    if (!libretro_host_debugReadProtects(protects, E9K_PROTECT_COUNT, &count)) {
         return 0;
     }
 
@@ -64,7 +64,7 @@ protect_remove(uint32_t addr24, uint32_t sizeBits)
         if (((enabledMask >> i) & 1ull) == 0ull) {
             continue;
         }
-        const geo_debug_protect_t *p = &protects[i];
+        const e9k_debug_protect_t *p = &protects[i];
         if (sizeBits != 0 && p->sizeBits != sizeBits) {
             continue;
         }
@@ -78,7 +78,7 @@ protect_remove(uint32_t addr24, uint32_t sizeBits)
 }
 
 int
-protect_handleWatchbreak(const geo_debug_watchbreak_t *wb)
+protect_handleWatchbreak(const e9k_debug_watchbreak_t *wb)
 {
     (void)wb;
     // Core-side protect does not use watchbreaks.
@@ -88,9 +88,9 @@ protect_handleWatchbreak(const geo_debug_watchbreak_t *wb)
 void
 protect_debugList(void)
 {
-    geo_debug_protect_t protects[GEO_PROTECT_COUNT];
+    e9k_debug_protect_t protects[E9K_PROTECT_COUNT];
     size_t count = 0;
-    if (!libretro_host_debugReadProtects(protects, GEO_PROTECT_COUNT, &count)) {
+    if (!libretro_host_debugReadProtects(protects, E9K_PROTECT_COUNT, &count)) {
         debug_printf("protect: unavailable\n");
         return;
     }
@@ -113,9 +113,9 @@ protect_debugList(void)
         if (((enabledMask >> i) & 1ull) == 0ull) {
             continue;
         }
-        const geo_debug_protect_t *p = &protects[i];
-        const char *mode = p->mode == GEO_PROTECT_MODE_SET ? "set" : "block";
-        if (p->mode == GEO_PROTECT_MODE_SET) {
+        const e9k_debug_protect_t *p = &protects[i];
+        const char *mode = p->mode == E9K_PROTECT_MODE_SET ? "set" : "block";
+        if (p->mode == E9K_PROTECT_MODE_SET) {
             debug_printf("  [%u] %s addr=0x%06X size=%u val=0x%08X mask=0x%06X\n",
                          (unsigned)i, mode,
                          (unsigned)(p->addr & 0x00ffffffu),

@@ -216,7 +216,7 @@ emu_geo_drawDigits3x5Pixels(uint32_t *pixels, int width, int height,
 
 
 static void
-emu_geo_spriteOverlayRender(SDL_Renderer *renderer, const SDL_Rect *dst, const geo_debug_sprite_state_t *st)
+emu_e9k_spriteOverlayRender(SDL_Renderer *renderer, const SDL_Rect *dst, const e9k_debug_sprite_state_t *st)
 {
     if (!renderer || !dst || !st || !st->vram) {
         return;
@@ -650,7 +650,7 @@ void
 emu_geo_render(e9ui_context_t *ctx, SDL_Rect* dst)    
 {
   if (emu_geo_histogramEnabled && debugger.spriteShadowReady) {
-    emu_geo_spriteOverlayRender(ctx->renderer, dst, &debugger.spriteShadow);
+    emu_e9k_spriteOverlayRender(ctx->renderer, dst, &debugger.spriteShadow);
   }
   
   if (sprite_debug_is_open() && debugger.spriteShadowReady) {

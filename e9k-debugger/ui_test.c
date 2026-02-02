@@ -26,6 +26,7 @@
 #include "ui_test.h"
 #include "debugger.h"
 #include "debug.h"
+#include "config.h"
 #include "input_record.h"
 #include "libretro_host.h"
 
@@ -39,8 +40,11 @@ static size_t ui_test_prevStride = 0;
 static int ui_test_prevWidth = 0;
 static int ui_test_prevHeight = 0;
 static int ui_test_prevValid = 0;
+static int ui_test_pendingMissingFrameValid = 0;
+static uint64_t ui_test_pendingMissingFrame = 0;
 static uint8_t *ui_test_captureFrameBuf = NULL;
 static size_t ui_test_captureFrameCap = 0;
+static const char ui_test_sessionConfigName[] = ".e9k-debugger.cfg";
 
 void
 ui_test_setFolder(const char *path)
@@ -177,6 +181,59 @@ ui_test_clearFolder(const char *path)
 #endif
 }
 
+static void
+ui_test_clearPngOnly(const char *path)
+{
+    if (!path || !*path) {
+        return;
+    }
+#ifdef _WIN32
+    char pattern[PATH_MAX];
+    snprintf(pattern, sizeof(pattern), "%s\\*.*", path);
+    WIN32_FIND_DATAA data;
+    HANDLE h = FindFirstFileA(pattern, &data);
+    if (h == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    do {
+        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
+            continue;
+        }
+        const char *ext = strrchr(data.cFileName, '.');
+        if (!ext || _stricmp(ext, ".png") != 0) {
+            continue;
+        }
+        char full[PATH_MAX];
+        if (!debugger_platform_pathJoin(full, sizeof(full), path, data.cFileName)) {
+            continue;
+        }
+        DeleteFileA(full);
+    } while (FindNextFileA(h, &data));
+    FindClose(h);
+#else
+    DIR *dir = opendir(path);
+    if (!dir) {
+        return;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        const char *ext = strrchr(ent->d_name, '.');
+        if (!ext || strcmp(ext, ".png") != 0) {
+            continue;
+        }
+        char full[PATH_MAX];
+        if (!debugger_platform_pathJoin(full, sizeof(full), path, ent->d_name)) {
+            continue;
+        }
+        unlink(full);
+    }
+    closedir(dir);
+#endif
+}
+
 int
 ui_test_init(void)
 {
@@ -186,6 +243,8 @@ ui_test_init(void)
     ui_test_prevHeight = 0;
     ui_test_failed = 0;
     ui_test_exitCode = -1;
+    ui_test_pendingMissingFrameValid = 0;
+    ui_test_pendingMissingFrame = 0;
     if (!ui_test_folder[0]) {
         ui_test_enabled = 0;
         return 1;
@@ -197,6 +256,8 @@ ui_test_init(void)
     }
     if (ui_test_mode == UI_TEST_MODE_RECORD) {
         ui_test_clearFolder(ui_test_folder);
+    } else if (ui_test_mode == UI_TEST_MODE_REMAKE) {
+        ui_test_clearPngOnly(ui_test_folder);
     }
     if (ui_test_mode == UI_TEST_MODE_NONE) {
         ui_test_enabled = 0;
@@ -226,6 +287,8 @@ ui_test_shutdown(void)
     ui_test_prevWidth = 0;
     ui_test_prevHeight = 0;
     ui_test_prevValid = 0;
+    ui_test_pendingMissingFrameValid = 0;
+    ui_test_pendingMissingFrame = 0;
 }
 
 int
@@ -248,6 +311,100 @@ ui_test_copyPath(char *dest, size_t cap, const char *src)
     dest[cap - 1] = '\0';
 }
 
+static int
+ui_test_copyFile(const char *srcPath, const char *dstPath)
+{
+    if (!srcPath || !*srcPath || !dstPath || !*dstPath) {
+        return 0;
+    }
+
+    FILE *src = fopen(srcPath, "rb");
+    if (!src) {
+        return 0;
+    }
+    FILE *dst = fopen(dstPath, "wb");
+    if (!dst) {
+        fclose(src);
+        return 0;
+    }
+
+    int ok = 1;
+    char buf[8192];
+    while (!feof(src)) {
+        size_t n = fread(buf, 1, sizeof(buf), src);
+        if (n == 0) {
+            if (ferror(src)) {
+                ok = 0;
+            }
+            break;
+        }
+        if (fwrite(buf, 1, n, dst) != n) {
+            ok = 0;
+            break;
+        }
+    }
+
+    fclose(dst);
+    fclose(src);
+    return ok;
+}
+
+static int
+ui_test_copySessionConfigForRecord(void)
+{
+    if (!ui_test_folder[0]) {
+        return 0;
+    }
+
+    const char *srcPath = debugger_configPath();
+    if (!srcPath || !*srcPath) {
+        return 0;
+    }
+
+    char dstPath[PATH_MAX];
+    if (!debugger_platform_pathJoin(dstPath, sizeof(dstPath), ui_test_folder, ui_test_sessionConfigName)) {
+        return 0;
+    }
+
+    if (ui_test_copyFile(srcPath, dstPath)) {
+        return 1;
+    }
+
+    FILE *dst = fopen(dstPath, "w");
+    if (!dst) {
+        debug_error("ui-test: failed to copy %s to %s", srcPath, dstPath);
+        return 0;
+    }
+    config_persistConfig(dst);
+    fclose(dst);
+    debug_printf("ui-test: source config missing/unreadable, wrote session config to %s", dstPath);
+    return 1;
+}
+
+static int
+ui_test_verifySessionConfigForReplay(void)
+{
+    if (!ui_test_folder[0]) {
+        return 0;
+    }
+
+    char cfgPath[PATH_MAX];
+    if (!debugger_platform_pathJoin(cfgPath, sizeof(cfgPath), ui_test_folder, ui_test_sessionConfigName)) {
+        return 0;
+    }
+
+    struct stat st;
+    if (stat(cfgPath, &st) != 0) {
+        debug_error("ui-test: missing %s (create with --make-test first)", cfgPath);
+        return 0;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        debug_error("ui-test: config path is not a file: %s", cfgPath);
+        return 0;
+    }
+    return 1;
+}
+
 int
 ui_test_bootstrap(void)
 {
@@ -259,7 +416,7 @@ ui_test_bootstrap(void)
             debug_error("make-test: cannot use --playback with --make-test");
             return 0;
         }
-    } else if (ui_test_mode == UI_TEST_MODE_COMPARE) {
+    } else if (ui_test_mode == UI_TEST_MODE_COMPARE || ui_test_mode == UI_TEST_MODE_REMAKE) {
         if (debugger.recordPath[0] || debugger.playbackPath[0]) {
             debug_error("test: cannot combine with --record or --playback");
             return 0;
@@ -270,13 +427,19 @@ ui_test_bootstrap(void)
     if (!ui_test_init()) {
         return 0;
     }
-    input_record_setUiEventQueueMode(ui_test_mode == UI_TEST_MODE_COMPARE);
+    input_record_setUiEventQueueMode(ui_test_mode == UI_TEST_MODE_COMPARE || ui_test_mode == UI_TEST_MODE_REMAKE);
 
     char path[PATH_MAX];
     if (ui_test_getRecordPath(path, sizeof(path))) {
         if (ui_test_mode == UI_TEST_MODE_RECORD) {
+            if (!ui_test_copySessionConfigForRecord()) {
+                return 0;
+            }
             ui_test_copyPath(debugger.recordPath, sizeof(debugger.recordPath), path);
-        } else if (ui_test_mode == UI_TEST_MODE_COMPARE) {
+        } else if (ui_test_mode == UI_TEST_MODE_COMPARE || ui_test_mode == UI_TEST_MODE_REMAKE) {
+            if (!ui_test_verifySessionConfigForReplay()) {
+                return 0;
+            }
             ui_test_copyPath(debugger.playbackPath, sizeof(debugger.playbackPath), path);
         }
     }
@@ -289,14 +452,21 @@ ui_test_bootstrap(void)
 int
 ui_test_checkPlaybackComplete(void)
 {
-    if (ui_test_mode != UI_TEST_MODE_COMPARE || ui_test_failed) {
+    if ((ui_test_mode != UI_TEST_MODE_COMPARE && ui_test_mode != UI_TEST_MODE_REMAKE) || ui_test_failed) {
         return 0;
     }
     if (!input_record_isUiEventPlaybackComplete()) {
         return 0;
     }
+    if (ui_test_pendingMissingFrameValid) {
+        debug_printf("ui-test: ignoring missing final reference frame #%llu",
+                     (unsigned long long)ui_test_pendingMissingFrame);
+        ui_test_pendingMissingFrameValid = 0;
+    }
     ui_test_exitCode = 0;
-    debug_printf("*** UI TEST PASSED ***");
+    if (ui_test_mode == UI_TEST_MODE_COMPARE) {
+        debug_printf("*** UI TEST PASSED ***");
+    }
     return 1;
 }
 
@@ -504,6 +674,8 @@ ui_test_compareFrame(uint64_t frame, const uint8_t *data, int width, int height,
     struct stat st;
     if (stat(path, &st) != 0) {
         if (errno == ENOENT) {
+            ui_test_pendingMissingFrameValid = 1;
+            ui_test_pendingMissingFrame = frame;
             return 0;
         }
         char diffPath[PATH_MAX];
@@ -609,15 +781,29 @@ ui_test_captureFrame(uint64_t frame)
     if (!libretro_host_getFrame(&data, &width, &height, &pitch)) {
         return 0;
     }
+    int different = ui_test_isDifferentToPrev(data, width, height, pitch);
     if (ui_test_mode == UI_TEST_MODE_COMPARE) {
-        int r = ui_test_compareFrame(frame, data, width, height, pitch);
-        if (r == 1) {
-            ui_test_failed = 1;
-            ui_test_exitCode = 1;
+        int r = 0;
+        if (different) {
+            if (ui_test_pendingMissingFrameValid) {
+                debug_error("ui-test: missing reference frame #%llu is not final (next changed frame #%llu)",
+                            (unsigned long long)ui_test_pendingMissingFrame,
+                            (unsigned long long)frame);
+                ui_test_pendingMissingFrameValid = 0;
+                ui_test_failed = 1;
+                ui_test_exitCode = 1;
+                ui_test_updatePrevFrame(data, width, height, pitch);
+                return 1;
+            }
+            r = ui_test_compareFrame(frame, data, width, height, pitch);
+            if (r == 1) {
+                ui_test_failed = 1;
+                ui_test_exitCode = 1;
+            }
         }
+        ui_test_updatePrevFrame(data, width, height, pitch);
         return r;
     }
-    int different = ui_test_isDifferentToPrev(data, width, height, pitch);
     if (different) {
         ui_test_writeFrame(frame, data, width, height, pitch);
     }
@@ -654,15 +840,29 @@ ui_test_captureWindowFrame(uint64_t frame, SDL_Renderer *renderer)
         debug_error("ui-test: SDL_RenderReadPixels failed: %s", SDL_GetError());
         return 0;
     }
+    int different = ui_test_isDifferentToPrev(ui_test_captureFrameBuf, width, height, pitch);
     if (ui_test_mode == UI_TEST_MODE_COMPARE) {
-        int r = ui_test_compareFrame(frame, ui_test_captureFrameBuf, width, height, pitch);
-        if (r == 1) {
-            ui_test_failed = 1;
-            ui_test_exitCode = 1;
+        int r = 0;
+        if (different) {
+            if (ui_test_pendingMissingFrameValid) {
+                debug_error("ui-test: missing reference frame #%llu is not final (next changed frame #%llu)",
+                            (unsigned long long)ui_test_pendingMissingFrame,
+                            (unsigned long long)frame);
+                ui_test_pendingMissingFrameValid = 0;
+                ui_test_failed = 1;
+                ui_test_exitCode = 1;
+                ui_test_updatePrevFrame(ui_test_captureFrameBuf, width, height, pitch);
+                return 1;
+            }
+            r = ui_test_compareFrame(frame, ui_test_captureFrameBuf, width, height, pitch);
+            if (r == 1) {
+                ui_test_failed = 1;
+                ui_test_exitCode = 1;
+            }
         }
+        ui_test_updatePrevFrame(ui_test_captureFrameBuf, width, height, pitch);
         return r;
     }
-    int different = ui_test_isDifferentToPrev(ui_test_captureFrameBuf, width, height, pitch);
     if (different) {
         ui_test_writeFrame(frame, ui_test_captureFrameBuf, width, height, pitch);
     }

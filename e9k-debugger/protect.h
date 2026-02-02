@@ -8,10 +8,8 @@
 
 #pragma once
 
+#include "e9k-lib.h"
 #include <stdint.h>
-
-#include "geo_watchpoint.h"
-#include "geo_protect.h"
 
 void
 protect_clear(void);
@@ -26,7 +24,7 @@ int
 protect_remove(uint32_t addr24, uint32_t sizeBits);
 
 int
-protect_handleWatchbreak(const geo_debug_watchbreak_t *wb);
+protect_handleWatchbreak(const e9k_debug_watchbreak_t *wb);
 
 void
 protect_debugList(void);

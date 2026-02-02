@@ -8,6 +8,7 @@
 
 #include "w64_debugger_platform.h"
 #include "debugger.h"
+#include "ui_test.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -75,6 +76,14 @@ char *
 debugger_configPath(void)
 {
     static char pathbuf[1024];
+    if (ui_test_getMode() == UI_TEST_MODE_COMPARE || ui_test_getMode() == UI_TEST_MODE_REMAKE) {
+        const char *folder = ui_test_getFolder();
+        if (folder && *folder) {
+            if (debugger_platform_pathJoin(pathbuf, sizeof(pathbuf), folder, ".e9k-debugger.cfg")) {
+                return pathbuf;
+            }
+        }
+    }
     const char *home = getenv("APPDATA");
     if (!home || !*home) {
         home = getenv("USERPROFILE");

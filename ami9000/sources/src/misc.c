@@ -545,6 +545,7 @@ uae_u8 *target_load_keyfile (struct uae_prefs *p, const TCHAR *path, int *sizep,
 	//write_log (_T("keybuf=%08x\n"), keybuf);
 	return keybuf;
 #endif
+	return 0;
 }
 
 void refreshtitle (void)
@@ -1705,7 +1706,7 @@ void uaenative_install (void) {}
 
 int consolehook_activate (void) { return 0; }
 void consolehook_ret(TrapContext *ctx, uaecptr condev, uaecptr oldbeginio) {}
-uaecptr consolehook_beginio(TrapContext *ctx, uaecptr request) {}
+uaecptr consolehook_beginio(TrapContext *ctx, uaecptr request) { return 0;}
 
 void filesys_addexternals (void) {}
 int target_get_volume_name (struct uaedev_mount_info *mtinf, struct uaedev_config_info *ci, bool inserted, bool fullcheck, int cnt) { return 2; }

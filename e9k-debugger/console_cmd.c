@@ -42,6 +42,7 @@ static int console_cmd_cls(int argc, char **argv);
 static int console_cmd_step(int argc, char **argv);
 static int console_cmd_stepi(int argc, char **argv);
 static int console_cmd_next(int argc, char **argv);
+static int console_cmd_finish(int argc, char **argv);
 static int console_cmd_write(int argc, char **argv);
 static int console_cmd_completeWrite(const char *prefix, char ***outList, int *outCount);
 static int console_cmd_transition(int argc, char **argv);
@@ -65,6 +66,7 @@ static const console_cmd_entry_t console_cmd[] = {
     { "print", "p", "print <expr>", "Print an expression using DWARF + symbol info.", console_cmd_print, console_cmd_completePrint },   
     { "protect", NULL, "protect\nprotect clear\nprotect del <addr> [size=8|16|32]\nprotect <addr> block [size=8|16|32]\nprotect <addr> set=0x... [size=8|16|32]", "Protect addresses by blocking writes or forcing a value (core-side).", console_cmd_protect, NULL },    
     { "next", "n", "next", "Step over the next line.", console_cmd_next, NULL },    
+    { "finish", "f", "finish", "Step out of the current function.", console_cmd_finish, NULL },
     { "step", "s", "step", "Step to next source line.", console_cmd_step, NULL },
     { "stepi", "i", "stepi", "Step one instruction.", console_cmd_stepi, NULL },
     { "train", NULL, "train <from> <to> [size=8|16|32]\ntrain ignore\ntrain clear", "Train by breaking on a value transition (from/to accept decimal or 0x...).", console_cmd_train, NULL },    
@@ -734,10 +736,10 @@ console_cmd_break(int argc, char **argv)
 static int
 console_cmd_watchList(void)
 {
-    geo_debug_watchpoint_t wps[GEO_WATCHPOINT_COUNT];
+    e9k_debug_watchpoint_t wps[E9K_WATCHPOINT_COUNT];
     memset(wps, 0, sizeof(wps));
     size_t count = 0;
-    if (!libretro_host_debugReadWatchpoints(wps, GEO_WATCHPOINT_COUNT, &count)) {
+    if (!libretro_host_debugReadWatchpoints(wps, E9K_WATCHPOINT_COUNT, &count)) {
         debug_error("watch: libretro core does not expose watchpoints");
         return 0;
     }
@@ -746,37 +748,37 @@ console_cmd_watchList(void)
 
     debug_printf("Watchpoints (enabled=0x%016llX):\n", (unsigned long long)enabled);
     for (size_t i = 0; i < count; ++i) {
-        const geo_debug_watchpoint_t *wp = &wps[i];
+        const e9k_debug_watchpoint_t *wp = &wps[i];
         int is_enabled = ((enabled >> i) & 1ull) ? 1 : 0;
         if (!is_enabled && wp->op_mask == 0) {
             continue;
         }
 
         const char *rw = "";
-        if ((wp->op_mask & GEO_WATCH_OP_READ) && (wp->op_mask & GEO_WATCH_OP_WRITE)) {
+        if ((wp->op_mask & E9K_WATCH_OP_READ) && (wp->op_mask & E9K_WATCH_OP_WRITE)) {
             rw = "rw";
-        } else if (wp->op_mask & GEO_WATCH_OP_READ) {
+        } else if (wp->op_mask & E9K_WATCH_OP_READ) {
             rw = "r";
-        } else if (wp->op_mask & GEO_WATCH_OP_WRITE) {
+        } else if (wp->op_mask & E9K_WATCH_OP_WRITE) {
             rw = "w";
         }
 
         debug_printf("  [%02u] %s addr=0x%06X op=0x%08X %s",
                      (unsigned)i, is_enabled ? "on " : "off",
                      (unsigned)(wp->addr & 0x00ffffffu), (unsigned)wp->op_mask, rw);
-        if (wp->op_mask & GEO_WATCH_OP_ACCESS_SIZE) {
+        if (wp->op_mask & E9K_WATCH_OP_ACCESS_SIZE) {
             debug_printf(" size=%u", (unsigned)wp->size_operand);
         }
-        if (wp->op_mask & GEO_WATCH_OP_ADDR_COMPARE_MASK) {
+        if (wp->op_mask & E9K_WATCH_OP_ADDR_COMPARE_MASK) {
             debug_printf(" mask=0x%08X", (unsigned)wp->addr_mask_operand);
         }
-        if (wp->op_mask & GEO_WATCH_OP_VALUE_EQ) {
+        if (wp->op_mask & E9K_WATCH_OP_VALUE_EQ) {
             debug_printf(" val=0x%08X", (unsigned)wp->value_operand);
         }
-        if (wp->op_mask & GEO_WATCH_OP_OLD_VALUE_EQ) {
+        if (wp->op_mask & E9K_WATCH_OP_OLD_VALUE_EQ) {
             debug_printf(" old=0x%08X", (unsigned)wp->old_value_operand);
         }
-        if (wp->op_mask & GEO_WATCH_OP_VALUE_NEQ_OLD) {
+        if (wp->op_mask & E9K_WATCH_OP_VALUE_NEQ_OLD) {
             debug_printf(" diff=0x%08X", (unsigned)wp->diff_operand);
         }
         debug_printf("\n");
@@ -840,17 +842,17 @@ console_cmd_watch(int argc, char **argv)
             continue;
         }
         if (strcasecmp(tok, "r") == 0 || strcasecmp(tok, "read") == 0) {
-            op_mask |= GEO_WATCH_OP_READ;
+            op_mask |= E9K_WATCH_OP_READ;
             have_rw = 1;
             continue;
         }
         if (strcasecmp(tok, "w") == 0 || strcasecmp(tok, "write") == 0) {
-            op_mask |= GEO_WATCH_OP_WRITE;
+            op_mask |= E9K_WATCH_OP_WRITE;
             have_rw = 1;
             continue;
         }
         if (strcasecmp(tok, "rw") == 0 || strcasecmp(tok, "wr") == 0) {
-            op_mask |= (GEO_WATCH_OP_READ | GEO_WATCH_OP_WRITE);
+            op_mask |= (E9K_WATCH_OP_READ | E9K_WATCH_OP_WRITE);
             have_rw = 1;
             continue;
         }
@@ -860,7 +862,7 @@ console_cmd_watch(int argc, char **argv)
                 debug_error("watch: invalid size '%s' (expected 8/16/32)", tok + 5);
                 return 0;
             }
-            op_mask |= GEO_WATCH_OP_ACCESS_SIZE;
+            op_mask |= E9K_WATCH_OP_ACCESS_SIZE;
             size_operand = (uint32_t)sz;
             continue;
         }
@@ -870,7 +872,7 @@ console_cmd_watch(int argc, char **argv)
                 debug_error("watch: invalid mask '%s' (expected 0x...)", tok + 5);
                 return 0;
             }
-            op_mask |= GEO_WATCH_OP_ADDR_COMPARE_MASK;
+            op_mask |= E9K_WATCH_OP_ADDR_COMPARE_MASK;
             addr_mask_operand = v;
             continue;
         }
@@ -880,7 +882,7 @@ console_cmd_watch(int argc, char **argv)
                 debug_error("watch: invalid val '%s' (expected 0x...)", tok + 4);
                 return 0;
             }
-            op_mask |= GEO_WATCH_OP_VALUE_EQ;
+            op_mask |= E9K_WATCH_OP_VALUE_EQ;
             value_operand = v;
             continue;
         }
@@ -890,7 +892,7 @@ console_cmd_watch(int argc, char **argv)
                 debug_error("watch: invalid value '%s' (expected 0x...)", tok + 6);
                 return 0;
             }
-            op_mask |= GEO_WATCH_OP_VALUE_EQ;
+            op_mask |= E9K_WATCH_OP_VALUE_EQ;
             value_operand = v;
             continue;
         }
@@ -900,7 +902,7 @@ console_cmd_watch(int argc, char **argv)
                 debug_error("watch: invalid old '%s' (expected 0x...)", tok + 4);
                 return 0;
             }
-            op_mask |= GEO_WATCH_OP_OLD_VALUE_EQ;
+            op_mask |= E9K_WATCH_OP_OLD_VALUE_EQ;
             old_value_operand = v;
             continue;
         }
@@ -910,7 +912,7 @@ console_cmd_watch(int argc, char **argv)
                 debug_error("watch: invalid diff '%s' (expected 0x...)", tok + 5);
                 return 0;
             }
-            op_mask |= GEO_WATCH_OP_VALUE_NEQ_OLD;
+            op_mask |= E9K_WATCH_OP_VALUE_NEQ_OLD;
             diff_operand = v;
             continue;
         }
@@ -920,7 +922,7 @@ console_cmd_watch(int argc, char **argv)
                 debug_error("watch: invalid neq '%s' (expected 0x...)", tok + 4);
                 return 0;
             }
-            op_mask |= GEO_WATCH_OP_VALUE_NEQ_OLD;
+            op_mask |= E9K_WATCH_OP_VALUE_NEQ_OLD;
             diff_operand = v;
             continue;
         }
@@ -930,7 +932,7 @@ console_cmd_watch(int argc, char **argv)
     }
 
     if (!have_rw) {
-        op_mask |= (GEO_WATCH_OP_READ | GEO_WATCH_OP_WRITE);
+        op_mask |= (E9K_WATCH_OP_READ | E9K_WATCH_OP_WRITE);
     }
 
     uint32_t index = 0;
@@ -999,7 +1001,7 @@ console_cmd_train(int argc, char **argv)
                 debug_error("train: invalid size '%s' (expected 8/16/32)", tok + 5);
                 return 0;
             }
-            op_mask |= GEO_WATCH_OP_ACCESS_SIZE;
+            op_mask |= E9K_WATCH_OP_ACCESS_SIZE;
             size_operand = (uint32_t)sz;
             continue;
         }
@@ -1008,10 +1010,10 @@ console_cmd_train(int argc, char **argv)
     }
 
     // Any address: enable address compare mask with mask=0 (always matches).
-    op_mask |= GEO_WATCH_OP_ADDR_COMPARE_MASK;
-    op_mask |= GEO_WATCH_OP_WRITE;
-    op_mask |= GEO_WATCH_OP_OLD_VALUE_EQ;
-    op_mask |= GEO_WATCH_OP_VALUE_EQ;
+    op_mask |= E9K_WATCH_OP_ADDR_COMPARE_MASK;
+    op_mask |= E9K_WATCH_OP_WRITE;
+    op_mask |= E9K_WATCH_OP_OLD_VALUE_EQ;
+    op_mask |= E9K_WATCH_OP_VALUE_EQ;
 
     uint32_t index = 0;
     if (!libretro_host_debugAddWatchpoint(0, op_mask, 0, to, from, size_operand, 0, &index)) {
@@ -1262,6 +1264,20 @@ console_cmd_next(int argc, char **argv)
         return 1;
     }
     debug_error("step next: libretro core does not expose debug next");
+    return 0;
+}
+
+static int
+console_cmd_finish(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    debugger_suppressBreakpointAtPC();
+    if (libretro_host_debugStepOut()) {
+        machine_setRunning(&debugger.machine, 1);
+        return 1;
+    }
+    debug_error("step out: libretro core does not expose debug step out");
     return 0;
 }
 
@@ -1779,7 +1795,7 @@ console_cmd_diff(int argc, char **argv)
 
     const uint64_t restoreFrame = state_buffer_getCurrentFrameNo();
 
-    // Neo Geo main + backup RAM (68k map). Keep it simple; we can extend later.
+    // Neo E9k main + backup RAM (68k map). Keep it simple; we can extend later.
     struct {
         uint32_t base;
         size_t size;

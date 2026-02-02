@@ -15,7 +15,8 @@
 typedef enum ui_test_mode {
     UI_TEST_MODE_NONE = 0,
     UI_TEST_MODE_RECORD,
-    UI_TEST_MODE_COMPARE
+    UI_TEST_MODE_COMPARE,
+    UI_TEST_MODE_REMAKE
 } ui_test_mode_t;
 
 void

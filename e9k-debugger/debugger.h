@@ -18,7 +18,7 @@
 #include "debug.h"
 #include "linebuf.h"
 #include "machine.h"
-#include "geo_debug_sprite.h"
+#include "e9k-geo.h"
 #include "file.h"
 #include "dasm.h"
 #include "emu.h"
@@ -111,7 +111,7 @@ typedef struct e9k_debugger {
     double frameTimeAccum;
     int vblankCaptureActive;
     int spriteShadowReady;
-    geo_debug_sprite_state_t spriteShadow;
+    e9k_debug_sprite_state_t spriteShadow;
     uint16_t *spriteShadowVram;
     size_t spriteShadowWords;
     uint64_t uiFrameCounter;

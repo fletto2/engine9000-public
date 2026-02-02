@@ -47,8 +47,8 @@ extern void m68ki_build_opcode_table(void);
 
 #include "m68kops.h"
 #include "m68kcpu.h"
-#include "../geo_debugger.h"
-#include "../geo_checkpoint.h"
+#include "../e9k_debugger.h"
+#include "../e9k_checkpoint.h"
 #include "../geo_cycles.h"
 
 #include "m68kfpu.c"
@@ -979,7 +979,7 @@ int m68k_execute(int num_cycles)
 
 			/* Call external hook to peek at CPU */
 			m68ki_instr_hook(REG_PC); /* auto-disable (see m68kcpu.h) */
-			if (geo_debugger_should_break_now()) {
+			if (e9k_debugger_should_break_now()) {
 				/* Stop before executing this instruction. */
 				SET_CYCLES(0);
 				break;
@@ -1010,7 +1010,7 @@ int m68k_execute(int num_cycles)
                 if (__geo_delta > 0)
                     geo_profiler_account(REG_PPC, (unsigned)__geo_delta);
                 if (__geo_delta > 0)
-                    geo_checkpoint_tick((uint64_t)__geo_delta);
+                    e9k_checkpoint_tick((uint64_t)__geo_delta);
                 if (__geo_delta > 0)
                     geo_cycles_add((uint64_t)__geo_delta);
                 __geo_prev_cycrun = __geo_cycrun;

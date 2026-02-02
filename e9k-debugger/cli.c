@@ -270,30 +270,30 @@ cli_parseArgs(int argc, char **argv)
             }
             continue;
         }
-        if (strcmp(argv[i], "--audio-volume") == 0) {
+        if (strcmp(argv[i], "--volume") == 0) {
             if (i + 1 >= argc) {
-                cli_setError("audio-volume: missing value");
+                cli_setError("volume: missing value");
                 return;
             }
             char *end = NULL;
             long volume = strtol(argv[++i], &end, 10);
             if (!end || *end != '\0' || volume < 0 || volume > 100) {
-                cli_setError("audio-volume: value must be in range 0..100");
+                cli_setError("volume: value must be in range 0..100");
                 return;
             }
             debugger.cliAudioVolume = (int)volume;
             continue;
         }
-        if (strncmp(argv[i], "--audio-volume=", sizeof("--audio-volume=") - 1) == 0) {
-            const char *value = argv[i] + sizeof("--audio-volume=") - 1;
+        if (strncmp(argv[i], "--volume=", sizeof("--volume=") - 1) == 0) {
+            const char *value = argv[i] + sizeof("--volume=") - 1;
             if (!value[0]) {
-                cli_setError("audio-volume: missing value");
+                cli_setError("volume: missing value");
                 return;
             }
             char *end = NULL;
             long volume = strtol(value, &end, 10);
             if (!end || *end != '\0' || volume < 0 || volume > 100) {
-                cli_setError("audio-volume: value must be in range 0..100");
+                cli_setError("volume: value must be in range 0..100");
                 return;
             }
             debugger.cliAudioVolume = (int)volume;
@@ -423,6 +423,28 @@ cli_parseArgs(int argc, char **argv)
             ui_test_registerRequestedMode(folder, UI_TEST_MODE_RECORD);
             continue;
         }
+        if (strcmp(argv[i], "--remake-test") == 0 && i + 1 < argc) {
+            char folder[PATH_MAX];
+            folder[0] = '\0';
+            cli_copyPath(folder, sizeof(folder), argv[++i]);
+            ui_test_registerRequestedMode(folder, UI_TEST_MODE_REMAKE);
+            continue;
+        }
+        if (strcmp(argv[i], "--remake-test") == 0) {
+            cli_setError("remake-test: missing folder path");
+            return;
+        }
+        if (strncmp(argv[i], "--remake-test=", sizeof("--remake-test=") - 1) == 0) {
+            if (argv[i][sizeof("--remake-test=") - 1] == '\0') {
+                cli_setError("remake-test: missing folder path");
+                return;
+            }
+            char folder[PATH_MAX];
+            folder[0] = '\0';
+            cli_copyPath(folder, sizeof(folder), argv[i] + sizeof("--remake-test=") - 1);
+            ui_test_registerRequestedMode(folder, UI_TEST_MODE_REMAKE);
+            continue;
+        }
         if (strcmp(argv[i], "--test") == 0 && i + 1 < argc) {
             char folder[PATH_MAX];
             folder[0] = '\0';
@@ -515,7 +537,7 @@ cli_printUsage(const char *argv0)
     printf("  --save-dir PATH              Saves directory (applies to current system)\n");
     printf("  --source-dir PATH            Source directory (applies to current system)\n");
     printf("  --audio-buffer-ms MS         Audio buffer in milliseconds\n");
-    printf("  --audio-volume VOLUME        Audio volume (0..100)\n");
+    printf("  --volume VOLUME              Audio volume (0..100)\n");
     printf("  --window-size WxH            Initial window size override\n");
     printf("  --record PATH                Record input events to a file\n");
     printf("  --playback PATH              Replay input events from a file\n");
@@ -523,6 +545,7 @@ cli_printUsage(const char *argv0)
     printf("  --smoke-test PATH            Replay inputs and compare frames\n");
     printf("  --smoke-open                 Open montage on smoke-test failure\n");
     printf("  --make-test PATH             Record inputs + UI test frame captures\n");
+    printf("  --remake-test PATH           Replay events and regenerate UI test frames\n");
     printf("  --test PATH                  Replay inputs and compare UI test frames\n");
     printf("  --headless                   Hide main window (useful for --smoke-test/--test)\n");
     printf("  --warp                       Start in speed multiplier mode\n");

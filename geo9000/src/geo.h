@@ -179,6 +179,7 @@ void geo_log_set_callback(void (*)(int, const char *, ...));
 void geo_input_set_callback(unsigned, unsigned (*)(unsigned));
 void geo_input_sys_set_callback(unsigned, unsigned (*)(void));
 void geo_set_vblank_callback(void (*cb)(void *), void *user);
+void e9k_debug_set_vblank_callback(void (*cb)(void *), void *user);
 void geo_vblank_notify(void);
 
 int geo_get_region(void);

@@ -26,7 +26,7 @@
 
 
 typedef struct trainer_record {
-    geo_debug_protect_t data;
+    e9k_debug_protect_t data;
     uint32_t            index;
     int                 enabled;
     int                 present;
@@ -47,7 +47,7 @@ struct trainer_list_state {
     trainer_record_t *records;          // owned by list state
     int                  record_count;
     int                  record_cap;
-    const geo_debug_protect_t *last_bps;   // non-owning snapshot pointer
+    const e9k_debug_protect_t *last_bps;   // non-owning snapshot pointer
     int                        last_count;
     e9ui_component_t         *markerLabel;
     e9ui_component_t         *ignoreButton;
@@ -69,7 +69,7 @@ trainer_formatSummary(const trainer_record_t *rec, char *dst, size_t cap)
         snprintf(dst, cap, "<unknown>");
         return;
     }
-    const char *mode = (rec->data.mode == GEO_PROTECT_MODE_SET) ? "set" : "block";
+    const char *mode = (rec->data.mode == E9K_PROTECT_MODE_SET) ? "set" : "block";
     snprintf(dst, cap, "#%u 0x%06X %u-bit %s%s",
              rec->index,
              rec->data.addr & 0x00ffffffu,
@@ -88,7 +88,7 @@ trainer_formatDetail(const trainer_record_t *rec, char *dst, size_t cap)
     if (!rec) {
         return;
     }
-    if (rec->data.mode == GEO_PROTECT_MODE_SET) {
+    if (rec->data.mode == E9K_PROTECT_MODE_SET) {
         snprintf(dst, cap, "value = 0x%X", rec->data.value);
     } else {
         snprintf(dst, cap, "block writes");
@@ -425,7 +425,7 @@ trainer_recordFind(trainer_list_state_t *st, uint32_t index)
 }
 
 static trainer_record_t *
-trainer_recordAdd(trainer_list_state_t *st, const geo_debug_protect_t *protect, uint32_t index, int enabled)
+trainer_recordAdd(trainer_list_state_t *st, const e9k_debug_protect_t *protect, uint32_t index, int enabled)
 {
     if (!st || !protect) return NULL;
 
@@ -445,7 +445,7 @@ trainer_recordAdd(trainer_list_state_t *st, const geo_debug_protect_t *protect, 
 
 //static
 int
-trainer_updateRecords(trainer_list_state_t *st, const geo_debug_protect_t *protects, size_t count, uint64_t enabled_mask)
+trainer_updateRecords(trainer_list_state_t *st, const e9k_debug_protect_t *protects, size_t count, uint64_t enabled_mask)
 {
     if (!st) return 0;
 
@@ -463,7 +463,7 @@ trainer_updateRecords(trainer_list_state_t *st, const geo_debug_protect_t *prote
     }
 
     for (size_t i = 0; i < count; ++i) {
-        const geo_debug_protect_t *protect = &protects[i];
+        const e9k_debug_protect_t *protect = &protects[i];
         if (protect->sizeBits == 0) {
             continue;
         }
@@ -524,10 +524,10 @@ trainer_listRebuild(trainer_list_state_t *st, e9ui_context_t *ctx)
 {
     if (!st || !st->entries) return;
 
-    geo_debug_protect_t protects[GEO_PROTECT_COUNT];
+    e9k_debug_protect_t protects[E9K_PROTECT_COUNT];
     size_t count = 0;
     uint64_t enabled_mask = 0;
-    if (!libretro_host_debugReadProtects(protects, GEO_PROTECT_COUNT, &count)) {
+    if (!libretro_host_debugReadProtects(protects, E9K_PROTECT_COUNT, &count)) {
         count = 0;
     }
     libretro_host_debugGetProtectEnabledMask(&enabled_mask);
@@ -673,10 +673,10 @@ trainer_toggleAllCB(e9ui_context_t *ctx, void *user)
 {
   (void)ctx;
   (void)user;
-  geo_debug_protect_t protects[GEO_PROTECT_COUNT];
+  e9k_debug_protect_t protects[E9K_PROTECT_COUNT];
   size_t count = 0;
   uint64_t enabledMask = 0;
-  if (!libretro_host_debugReadProtects(protects, GEO_PROTECT_COUNT, &count)) {
+  if (!libretro_host_debugReadProtects(protects, E9K_PROTECT_COUNT, &count)) {
     return;
   }
   if (!libretro_host_debugGetProtectEnabledMask(&enabledMask)) {

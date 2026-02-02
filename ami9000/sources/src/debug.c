@@ -40,9 +40,9 @@
 #include "rommgr.h"
 
 #ifdef __LIBRETRO__
-void geo_debug_memhook_afterRead(uint32_t addr24, uint32_t value, uint32_t sizeBits);
-int geo_debug_memhook_filterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldValue, int oldValueValid, uint32_t *inoutValue);
-void geo_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid);
+void e9k_debug_memhook_afterRead(uint32_t addr24, uint32_t value, uint32_t sizeBits);
+int e9k_debug_memhook_filterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldValue, int oldValueValid, uint32_t *inoutValue);
+void e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid);
 #endif
 #include "inputrecord.h"
 #include "calc.h"
@@ -4075,7 +4075,7 @@ static uae_u32 REGPARAM2 debug_lget(uaecptr addr)
 	v = debug_mem_banks[off]->lget(addr);
 	memwatch_func(addr, 1, 4, &v, MW_MASK_CPU_D_R, 0);
 #ifdef __LIBRETRO__
-	geo_debug_memhook_afterRead((uint32_t)(munge24(addr) & 0x00ffffffu), v, 32u);
+	e9k_debug_memhook_afterRead((uint32_t)(munge24(addr) & 0x00ffffffu), v, 32u);
 #endif
 	return v;
 }
@@ -4086,7 +4086,7 @@ static uae_u32 REGPARAM2 debug_wget (uaecptr addr)
 	v = debug_mem_banks[off]->wget (addr);
 	memwatch_func (addr, 1, 2, &v, MW_MASK_CPU_D_R, 0);
 #ifdef __LIBRETRO__
-	geo_debug_memhook_afterRead((uint32_t)(munge24(addr) & 0x00ffffffu), v, 16u);
+	e9k_debug_memhook_afterRead((uint32_t)(munge24(addr) & 0x00ffffffu), v, 16u);
 #endif
 	return v;
 }
@@ -4097,7 +4097,7 @@ static uae_u32 REGPARAM2 debug_bget (uaecptr addr)
 	v = debug_mem_banks[off]->bget (addr);
 	memwatch_func (addr, 1, 1, &v, MW_MASK_CPU_D_R, 0);
 #ifdef __LIBRETRO__
-	geo_debug_memhook_afterRead((uint32_t)(munge24(addr) & 0x00ffffffu), v, 8u);
+	e9k_debug_memhook_afterRead((uint32_t)(munge24(addr) & 0x00ffffffu), v, 8u);
 #endif
 	return v;
 }
@@ -4131,7 +4131,7 @@ static void REGPARAM2 debug_lput (uaecptr addr, uae_u32 v)
 	}
 #ifdef __LIBRETRO__
 	uae_u32 vv = v;
-	if (!geo_debug_memhook_filterWrite(addr24, 32u, oldv, oldvalid, &vv)) {
+	if (!e9k_debug_memhook_filterWrite(addr24, 32u, oldv, oldvalid, &vv)) {
 		return;
 	}
 	v = vv;
@@ -4139,7 +4139,7 @@ static void REGPARAM2 debug_lput (uaecptr addr, uae_u32 v)
 	if (memwatch_func (addr, 2, 4, &v, MW_MASK_CPU_D_W, 0)) {
 		debug_mem_banks[off]->lput (addr, v);
 #ifdef __LIBRETRO__
-		geo_debug_memhook_afterWrite(addr24, v, oldv, 32u, oldvalid);
+		e9k_debug_memhook_afterWrite(addr24, v, oldv, 32u, oldvalid);
 #endif
 	}
 }
@@ -4157,7 +4157,7 @@ static void REGPARAM2 debug_wput (uaecptr addr, uae_u32 v)
 	}
 #ifdef __LIBRETRO__
 	uae_u32 vv = v;
-	if (!geo_debug_memhook_filterWrite(addr24, 16u, oldv, oldvalid, &vv)) {
+	if (!e9k_debug_memhook_filterWrite(addr24, 16u, oldv, oldvalid, &vv)) {
 		return;
 	}
 	v = vv;
@@ -4165,7 +4165,7 @@ static void REGPARAM2 debug_wput (uaecptr addr, uae_u32 v)
 	if (memwatch_func (addr, 2, 2, &v, MW_MASK_CPU_D_W, 0)) {
 		debug_mem_banks[off]->wput (addr, v);
 #ifdef __LIBRETRO__
-		geo_debug_memhook_afterWrite(addr24, v, oldv, 16u, oldvalid);
+		e9k_debug_memhook_afterWrite(addr24, v, oldv, 16u, oldvalid);
 #endif
 	}
 }
@@ -4183,7 +4183,7 @@ static void REGPARAM2 debug_bput (uaecptr addr, uae_u32 v)
 	}
 #ifdef __LIBRETRO__
 	uae_u32 vv = v;
-	if (!geo_debug_memhook_filterWrite(addr24, 8u, oldv, oldvalid, &vv)) {
+	if (!e9k_debug_memhook_filterWrite(addr24, 8u, oldv, oldvalid, &vv)) {
 		return;
 	}
 	v = vv;
@@ -4191,7 +4191,7 @@ static void REGPARAM2 debug_bput (uaecptr addr, uae_u32 v)
 	if (memwatch_func (addr, 2, 1, &v, MW_MASK_CPU_D_W, 0)) {
 		debug_mem_banks[off]->bput (addr, v);
 #ifdef __LIBRETRO__
-		geo_debug_memhook_afterWrite(addr24, v, oldv, 8u, oldvalid);
+		e9k_debug_memhook_afterWrite(addr24, v, oldv, 8u, oldvalid);
 #endif
 	}
 }
@@ -4512,11 +4512,11 @@ static void initialize_memwatch (int mode)
 }
 
 #ifdef __LIBRETRO__
-static int geo_debug_hooks_active;
+static int e9k_debug_hooks_active;
 
-void debug_enableGeoHooks(void)
+void debug_enableE9kHooks(void)
 {
-	if (geo_debug_hooks_active) {
+	if (e9k_debug_hooks_active) {
 		return;
 	}
 
@@ -4554,7 +4554,7 @@ void debug_enableGeoHooks(void)
 		map_banks_quick(newbank, i, 1, 1);
 	}
 
-	geo_debug_hooks_active = 1;
+	e9k_debug_hooks_active = 1;
 }
 #endif
 

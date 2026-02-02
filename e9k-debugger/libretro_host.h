@@ -15,11 +15,8 @@
 
 #include "libretro.h"
 
-#include "geo_debug_sprite.h"
-#include "geo_debug_rom.h"
-#include "geo_checkpoint.h"
-#include "geo_watchpoint.h"
-#include "geo_protect.h"
+#include "e9k-geo.h"
+#include "e9k-lib.h"
 
 #define LIBRETRO_HOST_MAX_PORTS 4
 
@@ -95,6 +92,9 @@ bool
 libretro_host_debugStepNext(void);
 
 bool
+libretro_host_debugStepOut(void);
+
+bool
 libretro_host_debugAddBreakpoint(uint32_t addr);
 
 bool
@@ -116,7 +116,7 @@ bool
 libretro_host_debugRemoveWatchpoint(uint32_t index);
 
 bool
-libretro_host_debugReadWatchpoints(geo_debug_watchpoint_t *out, size_t cap, size_t *out_count);
+libretro_host_debugReadWatchpoints(e9k_debug_watchpoint_t *out, size_t cap, size_t *out_count);
 
 bool
 libretro_host_debugGetWatchpointEnabledMask(uint64_t *out_mask);
@@ -125,7 +125,7 @@ bool
 libretro_host_debugSetWatchpointEnabledMask(uint64_t mask);
 
 bool
-libretro_host_debugConsumeWatchbreak(geo_debug_watchbreak_t *out);
+libretro_host_debugConsumeWatchbreak(e9k_debug_watchbreak_t *out);
 
 bool
 libretro_host_debugResetProtects(void);
@@ -137,7 +137,7 @@ bool
 libretro_host_debugRemoveProtect(uint32_t index);
 
 bool
-libretro_host_debugReadProtects(geo_debug_protect_t *out, size_t cap, size_t *out_count);
+libretro_host_debugReadProtects(e9k_debug_protect_t *out, size_t cap, size_t *out_count);
 
 bool
 libretro_host_debugGetProtectEnabledMask(uint64_t *out_mask);
@@ -155,13 +155,13 @@ bool
 libretro_host_debugWriteMemory(uint32_t addr, uint32_t value, size_t size);
 
 bool
-libretro_host_debugGetSpriteState(geo_debug_sprite_state_t *out);
+libretro_host_debugGetSpriteState(e9k_debug_sprite_state_t *out);
 
 bool
-libretro_host_debugGetP1Rom(geo_debug_rom_region_t *out);
+libretro_host_debugGetP1Rom(e9k_debug_rom_region_t *out);
 
 size_t
-libretro_host_debugReadCheckpoints(geo_debug_checkpoint_t *out, size_t cap);
+libretro_host_debugReadCheckpoints(e9k_debug_checkpoint_t *out, size_t cap);
 
 bool
 libretro_host_debugResetCheckpoints(void);
@@ -237,6 +237,9 @@ libretro_host_setDebugBaseCallback(void (*cb)(uint32_t section, uint32_t base));
 
 bool
 libretro_host_setDebugBreakpointCallback(void (*cb)(uint32_t addr));
+
+bool
+libretro_host_setDebugSourceLocationCallback(int (*cb)(uint32_t pc, uint64_t *out_location, void *user), void *user);
 
 void
 libretro_host_setCoreOption(const char *key, const char *value);

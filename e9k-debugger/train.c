@@ -58,7 +58,7 @@ train_isIgnoredAddr(uint32_t addr24)
 }
 
 void
-train_setLastWatchbreak(const geo_debug_watchbreak_t *wb)
+train_setLastWatchbreak(const e9k_debug_watchbreak_t *wb)
 {
     if (!wb) {
         s_train_haveLastWatchAddr = 0;

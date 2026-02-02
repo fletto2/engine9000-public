@@ -2624,7 +2624,7 @@ struct zfile *read_device_from_romconfig(struct romconfig *rc, uae_u32 romtype, 
 
 struct zfile *read_device_from_romconfig_2(struct romconfig *rc, uae_u32 romtype)
 {
-   read_device_from_romconfig(rc, romtype, false);
+  return read_device_from_romconfig(rc, romtype, false);
 }
 
 struct zfile *read_device_rom(struct uae_prefs *p, int romtype, int devnum, int *roms)

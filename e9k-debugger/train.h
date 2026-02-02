@@ -8,9 +8,8 @@
 
 #pragma once
 
+#include "e9k-lib.h"
 #include <stdint.h>
-
-#include "geo_watchpoint.h"
 
 void
 train_clearIgnoreList(void);
@@ -22,7 +21,7 @@ int
 train_isIgnoredAddr(uint32_t addr24);
 
 void
-train_setLastWatchbreak(const geo_debug_watchbreak_t *wb);
+train_setLastWatchbreak(const e9k_debug_watchbreak_t *wb);
 
 void
 train_setWatchIndex(uint32_t index);

@@ -14,11 +14,10 @@
 #include "profile_list.h"
 #include "libretro_host.h"
 #include "debugger.h"
-#include "geo_checkpoint.h"
 #include "e9ui.h"
 
 typedef struct profile_checkpoints_state {
-    geo_debug_checkpoint_t entries[GEO_CHECKPOINT_COUNT];
+    e9k_debug_checkpoint_t entries[E9K_CHECKPOINT_COUNT];
     size_t entryCount;
     size_t visibleCount;
     int enabled;
@@ -51,8 +50,8 @@ profile_checkpoints_refresh(profile_checkpoints_state_t *st)
     }
     size_t bytes = libretro_host_debugReadCheckpoints(st->entries, sizeof(st->entries));
     st->entryCount = bytes / sizeof(st->entries[0]);
-    if (st->entryCount > GEO_CHECKPOINT_COUNT) {
-        st->entryCount = GEO_CHECKPOINT_COUNT;
+    if (st->entryCount > E9K_CHECKPOINT_COUNT) {
+        st->entryCount = E9K_CHECKPOINT_COUNT;
     }
     st->visibleCount = 0;
     for (size_t i = 0; i < st->entryCount; ++i) {

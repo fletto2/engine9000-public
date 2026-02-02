@@ -487,7 +487,7 @@ sprite_debug_is_window_id(uint32_t window_id)
 }
 
 void
-sprite_debug_render(const geo_debug_sprite_state_t *st)
+sprite_debug_render(const e9k_debug_sprite_state_t *st)
 {
     if (!s_dbg.open || !s_dbg.renderer) {
         return;
