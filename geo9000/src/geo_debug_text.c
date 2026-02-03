@@ -23,7 +23,7 @@ geo_debug_text_write(uint8_t byte)
 }
 
 GEO_EXPORT size_t
-geo_debug_text_read(char *out, size_t cap)
+e9k_debug_text_read(char *out, size_t cap)
 {
     if (!out || cap == 0 || s_count == 0) {
         return 0;

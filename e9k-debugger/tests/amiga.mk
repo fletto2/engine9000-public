@@ -22,7 +22,8 @@ make-test-amigasavestate: all tests/amiga/smoke/smoke.adf
 	./e9k-debugger --amiga --uae=./tests/amiga/smoke/smoke.uae --make-test tests/results/amiga/savestate
 
 make-test-amigastepping: all tests/amiga/stepping/stepping.adf
-	./e9k-debugger --amiga --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae --hunk=./tests/amiga/stepping/stepping #--make-test tests/results/amiga/stepping
+	./e9k-debugger --amiga --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae \
+	--hunk=./tests/amiga/stepping/stepping --make-test tests/results/amiga/stepping
 
 
 # testers
@@ -47,6 +48,11 @@ test-amigasavestate: all tests/amiga/smoke/smoke.adf
 	@./e9k-debugger $(HEADLESS) --volume=0 --amiga --uae=./tests/amiga/smoke/smoke.uae --test tests/results/amiga/savestate  >> test.log 2>&1
 	@echo "PASSED ✅"
 
+test-amigastepping: all tests/amiga/stepping/stepping.adf
+	@printf "AMIGA STEPPING..."
+	./e9k-debugger --amiga --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae \
+	--hunk=./tests/amiga/stepping/stepping --test tests/results/amiga/stepping >> test.log 2>&1
+	@echo "PASSED ✅"
 # assets
 
 tests/amiga/example/example.adf:

@@ -140,4 +140,12 @@ test:  $(AMIGA_TESTS) $(NEOGEO_TESTS)
 	@echo
 	@echo "✅✅✅ TESTS PASSED ✅✅✅"
 
+test-amiga: $(AMIGA_TESTS)
+	@echo
+	@echo "✅✅✅ AMIGA TESTS PASSED ✅✅✅"
+
+test-neogeo: $(NEOGEO_TESTS)
+	@echo
+	@echo "✅✅✅ NEO GEO TESTS PASSED ✅✅✅"
+
 
