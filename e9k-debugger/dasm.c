@@ -12,8 +12,8 @@
 static const dasm_iface_t *
 dasm_active(void)
 {
-    if (debugger.dasm) {
-        return debugger.dasm;
+    if (target->dasm) {
+        return target->dasm;
     }
     return &dasm_geo_iface;
 }

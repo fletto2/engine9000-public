@@ -256,9 +256,7 @@ emu_seekBarDragging(int dragging, float percent, void *user)
 static unsigned
 emu_joypadPort(void)
 {
-    if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-        return 0u;
-    }
+
     return 0u;
 }
 
@@ -301,8 +299,8 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
             return 0;
         }
         unsigned port = libretro_host_getMousePort();
-        if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-            port = LIBRETRO_HOST_MAX_PORTS;
+        if (target->mousePort >= 0) {
+	  port = target->mousePort;
         }
         if (port < LIBRETRO_HOST_MAX_PORTS || port == LIBRETRO_HOST_MAX_PORTS) {
             if (ev->type == SDL_MOUSEMOTION) {
@@ -343,13 +341,13 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
     if (rawMods & KMOD_GUI) {
         mods = (SDL_Keymod)(mods | KMOD_GUI);
     }
-    if (debugger.emu->mapKeyToJoypad(ev->key.keysym.sym, &id)) {
+    if (target->emu->mapKeyToJoypad(ev->key.keysym.sym, &id)) {
         libretro_host_setJoypadState(emu_joypadPort(), id, pressed);
     } else {
         SDL_Keycode key = ev->key.keysym.sym;
-        uint32_t character = debugger.emu->translateCharacter(key, ev->key.keysym.mod);
-        unsigned retro_key = debugger.emu->translateKey(key);
-        uint16_t mods = debugger.emu->translateModifiers(ev->key.keysym.mod);
+        uint32_t character = target->emu->translateCharacter(key, ev->key.keysym.mod);
+        unsigned retro_key = target->emu->translateKey(key);
+        uint16_t mods = target->emu->translateModifiers(ev->key.keysym.mod);
         libretro_host_sendKeyEvent(retro_key, character, mods, pressed);
     }
     return 1;
@@ -423,7 +421,7 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
         SDL_RenderCopy(ctx->renderer, tex, NULL, &dst);
     }
 
-    debugger.emu->render(ctx, &dst);    
+    target->emu->render(ctx, &dst);    
 
     if (state && state->buttonStackMeta) {
         e9ui_component_t *stack = e9ui_child_find(self, state->buttonStackMeta);
@@ -495,7 +493,7 @@ emu_makeComponent(void)
         e9ui_child_add(comp, button_stack, state->buttonStackMeta);
     }
 
-    debugger.emu->createOverlays(comp, button_stack);
+    target->emu->createOverlays(comp, button_stack);
     
     e9ui_component_t *btn_shader = e9ui_button_make("CRT Settings", emu_toggleShaderUi, comp);
     if (btn_shader) {

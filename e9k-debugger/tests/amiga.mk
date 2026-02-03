@@ -11,7 +11,6 @@ make-test-amigaexample: all tests/amiga/example/example.adf
 remake-test-amigaexample: all tests/amiga/example/example.adf
 	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --remake-test tests/results/amiga/example
 
-
 make-test-amigacoreoptions: all tests/amiga/example/example.adf
 	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --make-test tests/results/amiga/amigacoreoptions
 
@@ -24,6 +23,11 @@ make-test-amigasavestate: all tests/amiga/smoke/smoke.adf
 make-test-amigastepping: all tests/amiga/stepping/stepping.adf
 	./e9k-debugger --amiga --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae \
 	--hunk=./tests/amiga/stepping/stepping --make-test tests/results/amiga/stepping
+
+# remakers
+
+remake-test-amigacoreoptions: all tests/amiga/example/example.adf
+	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --remake-test tests/results/amiga/amigacoreoptions
 
 
 # testers

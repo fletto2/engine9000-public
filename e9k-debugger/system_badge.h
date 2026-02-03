@@ -13,5 +13,7 @@
 #include "debugger.h"
 
 SDL_Texture *
-system_badge_getTexture(SDL_Renderer *renderer, debugger_system_type_t coreSystem, int *outW, int *outH);
+system_badge_getTexture(SDL_Renderer *renderer, target_iface_t *system, int *outW, int *outH);
 
+SDL_Texture *
+system_badge_loadTexture(SDL_Renderer *renderer, const char *asset, int *outW, int *outH);

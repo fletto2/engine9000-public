@@ -13,11 +13,8 @@
 #include "sprite_debug.h"
 #include "transition.h"
 #include "ui_test.h"
+#include "debugger_platform.h"
 
-void
-debugger_platform_setDefaults(e9k_neogeo_config_t *config);
-void
-debugger_platform_setDefaultsAmiga(e9k_amiga_config_t *config);
 
 static void
 config_setConfigValue(char *dest, size_t capacity, const char *value)
@@ -133,7 +130,7 @@ config_persistConfig(FILE *f)
         fprintf(f, "comp.config.core_options_show_help=0\n");
     }
     fprintf(f, "comp.config.transition=%s\n", transition_modeName(e9ui->transition.mode));
-    fprintf(f, "comp.config.core_system=%d\n", debugger.config.coreSystem);
+    fprintf(f, "comp.config.core_system=%d\n", target->coreIndex);
     crt_persistConfig(f);
     sprite_debug_persistConfig(f);
 }
@@ -156,6 +153,7 @@ config_loadConfig(void)
     }
     FILE *f = fopen(path, "r");
     if (!f) {
+      // TODO
         debugger_platform_setDefaults(&debugger.config.neogeo);
         debugger_platform_setDefaultsAmiga(&debugger.config.amiga);
         return;
@@ -232,7 +230,7 @@ config_loadConfig(void)
             } else if (strcmp(prop, "core_options_show_help") == 0) {
                 debugger.coreOptionsShowHelp = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "core_system") == 0) {
-                debugger_setCoreSystem((debugger_system_type_t)atoi(value));
+                target_setTargetIndex(atoi(value));
             } else if (strcmp(prop, "transition") == 0) {
                 e9k_transition_mode_t mode = e9k_transition_none;
                 if (transition_parseMode(value, &mode)) {

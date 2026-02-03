@@ -257,3 +257,51 @@ e9ui_checkbox_isSelected(e9ui_component_t *checkbox)
     e9ui_checkbox_state_t *st = (e9ui_checkbox_state_t*)checkbox->state;
     return st->selected;
 }
+
+void
+e9ui_checkbox_measure(e9ui_component_t *checkbox, e9ui_context_t *ctx, int *outW, int *outH)
+{
+    if (outW) {
+        *outW = 0;
+    }
+    if (outH) {
+        *outH = 0;
+    }
+    if (!checkbox || !checkbox->state || !ctx) {
+        return;
+    }
+    e9ui_checkbox_state_t *st = (e9ui_checkbox_state_t*)checkbox->state;
+
+    TTF_Font *font = e9ui->theme.text.source;
+    if (!font && ctx) {
+        font = ctx->font;
+    }
+
+    int textW = 0;
+    int textH = 0;
+    if (font && st->label && st->label[0]) {
+        TTF_SizeText(font, st->label, &textW, &textH);
+    }
+
+    int lineHeight = font ? TTF_FontHeight(font) : 16;
+    if (lineHeight <= 0) {
+        lineHeight = 16;
+    }
+    int pad = e9ui_checkbox_getMargin(ctx);
+    int height = pad + lineHeight + pad;
+    int size = height > 24 ? 24 : (height - 4 > 0 ? height - 4 : 16);
+    int gap = e9ui_checkbox_getTextGap(ctx);
+
+    int leftMargin = 0;
+    if (st->leftMargin > 0) {
+        int scaled = e9ui_scale_px(ctx, st->leftMargin);
+        leftMargin = scaled > 0 ? scaled : st->leftMargin;
+    }
+
+    if (outW) {
+        *outW = leftMargin + size + gap + textW;
+    }
+    if (outH) {
+        *outH = height;
+    }
+}

@@ -782,9 +782,6 @@ state_buffer_shutdown(void)
 void
 state_buffer_capture(void)
 {
-    if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-        // return;
-    }
     if (state_buffer.current.paused || state_buffer.current.rollingPaused) {
         return;
     }

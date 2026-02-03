@@ -51,28 +51,19 @@ cli_setError(const char *message)
     cli_errorFlag = 1;
 }
 
-static debugger_system_type_t
+static const target_iface_t*
 cli_getTargetCoreSystem(int argc, char **argv)
 {
-    debugger_system_type_t system = debugger.config.coreSystem;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--amiga") == 0) {
-            system = DEBUGGER_SYSTEM_AMIGA;
+	  return target_amiga();
         } else if (strcmp(argv[i], "--neogeo") == 0) {
-            system = DEBUGGER_SYSTEM_NEOGEO;
+	  return target_neogeo();
         }
     }
-    return system;
+    return target_amiga();
 }
 
-static e9k_libretro_config_t *
-cli_targetLibretroConfig(debugger_system_type_t system)
-{
-    if (system == DEBUGGER_SYSTEM_AMIGA) {
-        return &debugger.cliConfig.amiga.libretro;
-    }
-    return &debugger.cliConfig.neogeo.libretro;
-}
 
 void
 cli_setArgv0(const char *argv0)
@@ -94,8 +85,12 @@ cli_getArgv0(void)
 void
 cli_parseArgs(int argc, char **argv)
 {
-    debugger_system_type_t targetSystem = cli_getTargetCoreSystem(argc, argv);
-    e9k_libretro_config_t *targetLibretro = cli_targetLibretroConfig(targetSystem);
+    const target_iface_t* targetSystem = cli_getTargetCoreSystem(argc, argv);
+    e9k_libretro_config_t *targetLibretro = targetSystem ? targetSystem->getLibretroCliConfig() : NULL;
+    if (!targetLibretro) {
+        cli_setError("internal: missing target libretro config");
+        return;
+    }
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -110,7 +105,7 @@ cli_parseArgs(int argc, char **argv)
             continue;
         }
         if (strcmp(argv[i], "--rom-folder") == 0) {
-            if (targetSystem == DEBUGGER_SYSTEM_AMIGA) {
+	    if (targetSystem == target_amiga()) {
                 cli_setError("rom-folder: only supported for Neo Geo (use --neogeo)");
                 return;
             }
@@ -122,7 +117,7 @@ cli_parseArgs(int argc, char **argv)
             continue;
         }
         if (strncmp(argv[i], "--rom-folder=", sizeof("--rom-folder=") - 1) == 0) {
-            if (targetSystem == DEBUGGER_SYSTEM_AMIGA) {
+            if (targetSystem == target_amiga()) {
                 cli_setError("rom-folder: only supported for Neo Geo (use --neogeo)");
                 return;
             }
@@ -130,7 +125,7 @@ cli_parseArgs(int argc, char **argv)
             continue;
         }
         if (strcmp(argv[i], "--elf") == 0) {
-            if (targetSystem == DEBUGGER_SYSTEM_AMIGA) {
+            if (targetSystem == target_amiga()) {
                 cli_setError("elf: only supported for Neo Geo (use --neogeo)");
                 return;
             }
@@ -142,7 +137,7 @@ cli_parseArgs(int argc, char **argv)
             continue;
         }
         if (strncmp(argv[i], "--elf=", sizeof("--elf=") - 1) == 0) {
-            if (targetSystem == DEBUGGER_SYSTEM_AMIGA) {
+            if (targetSystem == target_amiga()) {
                 cli_setError("elf: only supported for Neo Geo (use --neogeo)");
                 return;
             }
@@ -154,7 +149,7 @@ cli_parseArgs(int argc, char **argv)
             continue;
         }
         if (strcmp(argv[i], "--hunk") == 0) {
-            if (targetSystem != DEBUGGER_SYSTEM_AMIGA) {
+	     if (targetSystem != target_amiga()) {
                 cli_setError("hunk: only supported for Amiga (use --amiga)");
                 return;
             }
@@ -166,7 +161,7 @@ cli_parseArgs(int argc, char **argv)
             continue;
         }
         if (strncmp(argv[i], "--hunk=", sizeof("--hunk=") - 1) == 0) {
-            if (targetSystem != DEBUGGER_SYSTEM_AMIGA) {
+            if (targetSystem != target_amiga()) {
                 cli_setError("hunk: only supported for Amiga (use --amiga)");
                 return;
             }
@@ -186,7 +181,7 @@ cli_parseArgs(int argc, char **argv)
             continue;
         }
         if (strcmp(argv[i], "--rom") == 0) {
-            if (targetSystem == DEBUGGER_SYSTEM_AMIGA) {
+            if (targetSystem == target_amiga()) {
                 cli_setError("rom: only supported for Neo Geo (use --neogeo)");
                 return;
             }
@@ -198,7 +193,7 @@ cli_parseArgs(int argc, char **argv)
             continue;
         }
         if (strncmp(argv[i], "--rom=", sizeof("--rom=") - 1) == 0) {
-            if (targetSystem == DEBUGGER_SYSTEM_AMIGA) {
+            if (targetSystem == target_amiga()) {
                 cli_setError("rom: only supported for Neo Geo (use --neogeo)");
                 return;
             }
@@ -206,7 +201,7 @@ cli_parseArgs(int argc, char **argv)
             continue;
         }
         if (strcmp(argv[i], "--uae") == 0) {
-            if (targetSystem != DEBUGGER_SYSTEM_AMIGA) {
+            if (targetSystem != target_amiga()) {
                 cli_setError("uae: only supported for Amiga (use --amiga)");
                 return;
             }
@@ -218,7 +213,7 @@ cli_parseArgs(int argc, char **argv)
             continue;
         }
         if (strncmp(argv[i], "--uae=", sizeof("--uae=") - 1) == 0) {
-            if (targetSystem != DEBUGGER_SYSTEM_AMIGA) {
+            if (targetSystem != target_amiga()) {
                 cli_setError("uae: only supported for Amiga (use --amiga)");
                 return;
             }
@@ -473,12 +468,12 @@ cli_parseArgs(int argc, char **argv)
         }
         if (strcmp(argv[i], "--amiga") == 0) {
             debugger.cliCoreSystemOverride = 1;
-            debugger.cliCoreSystem = DEBUGGER_SYSTEM_AMIGA;
+            debugger.cliTargetIndex = TARGET_AMIGA;;
             continue;
         }
         if (strcmp(argv[i], "--neogeo") == 0) {
             debugger.cliCoreSystemOverride = 1;
-            debugger.cliCoreSystem = DEBUGGER_SYSTEM_NEOGEO;
+	    debugger.cliTargetIndex = TARGET_NEOGEO;
             continue;
         }
         if (strcmp(argv[i], "--headless") == 0) {

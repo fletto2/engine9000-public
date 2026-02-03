@@ -37,27 +37,7 @@ runtime_onVblank(void *user)
     if (state_buffer_isPaused()) {
         return;
     }
-    if (debugger.config.coreSystem == DEBUGGER_SYSTEM_NEOGEO)
-    {
-        e9k_debug_sprite_state_t spriteState;
-        if (libretro_host_debugGetSpriteState(&spriteState) && spriteState.vram && spriteState.vram_words) {
-            size_t byteCount = spriteState.vram_words * sizeof(uint16_t);
-            if (!debugger.spriteShadowVram || debugger.spriteShadowWords != spriteState.vram_words) {
-                void *nextBuffer = realloc(debugger.spriteShadowVram, byteCount);
-                if (nextBuffer) {
-                    debugger.spriteShadowVram = (uint16_t *)nextBuffer;
-                    debugger.spriteShadowWords = spriteState.vram_words;
-                }
-            }
-            if (debugger.spriteShadowVram && debugger.spriteShadowWords == spriteState.vram_words) {
-                memcpy(debugger.spriteShadowVram, spriteState.vram, byteCount);
-                debugger.spriteShadow = spriteState;
-                debugger.spriteShadow.vram = debugger.spriteShadowVram;
-                debugger.spriteShadow.vram_words = debugger.spriteShadowWords;
-                debugger.spriteShadowReady = 1;
-            }
-        }
-    }
+    target->onVblank();
     debugger.frameCounter++;
     if (!debugger.smokeTestFailed && !debugger.smokeTestCompleted) {
         int smokeResult = smoke_test_captureFrame(debugger.frameCounter);

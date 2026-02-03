@@ -45,7 +45,7 @@ system_badge_resetCache(SDL_Renderer *renderer)
     system_badge_cache.renderer = renderer;
 }
 
-static SDL_Texture *
+SDL_Texture *
 system_badge_loadTexture(SDL_Renderer *renderer, const char *asset, int *outW, int *outH)
 {
     if (outW) {
@@ -79,7 +79,7 @@ system_badge_loadTexture(SDL_Renderer *renderer, const char *asset, int *outW, i
 }
 
 SDL_Texture *
-system_badge_getTexture(SDL_Renderer *renderer, debugger_system_type_t coreSystem, int *outW, int *outH)
+system_badge_getTexture(SDL_Renderer *renderer, target_iface_t* system, int *outW, int *outH)
 {
     if (outW) {
         *outW = 0;
@@ -95,30 +95,8 @@ system_badge_getTexture(SDL_Renderer *renderer, debugger_system_type_t coreSyste
         system_badge_resetCache(renderer);
     }
 
-    if (coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-        if (!system_badge_cache.amigaTex) {
-            system_badge_cache.amigaTex =
-                system_badge_loadTexture(renderer, "assets/amiga.png", &system_badge_cache.amigaW, &system_badge_cache.amigaH);
-        }
-        if (outW) {
-            *outW = system_badge_cache.amigaW;
-        }
-        if (outH) {
-            *outH = system_badge_cache.amigaH;
-        }
-        return system_badge_cache.amigaTex;
-    }
 
-    if (!system_badge_cache.neogeoTex) {
-        system_badge_cache.neogeoTex =
-            system_badge_loadTexture(renderer, "assets/neogeo.png", &system_badge_cache.neogeoW, &system_badge_cache.neogeoH);
-    }
-    if (outW) {
-        *outW = system_badge_cache.neogeoW;
-    }
-    if (outH) {
-        *outH = system_badge_cache.neogeoH;
-    }
-    return system_badge_cache.neogeoTex;
+    return system->getBadgeTexture(renderer, system, outW, outH);
+    
 }
 

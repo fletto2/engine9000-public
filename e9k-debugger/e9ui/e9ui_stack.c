@@ -20,9 +20,22 @@ typedef struct e9ui_stack_state {
 static int
 e9ui_stack_preferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
 {
-  (void)self; (void)ctx; (void)availW;
-  // Stack itself is flexible; let parent size it
-  return 0;
+  if (!self || !ctx) {
+    return 0;
+  }
+  int hSum = 0;
+  e9ui_child_iterator it;
+  e9ui_child_iterator* p = e9ui_child_iterateChildren(self, &it);
+  while (e9ui_child_interateNext(p)) {
+    e9ui_component_t* child = p->child;
+    if (!child || e9ui_getHidden(child)) {
+      continue;
+    }
+    if (child->preferredHeight) {
+      hSum += child->preferredHeight(child, ctx, availW);
+    }
+  }
+  return hSum;
 }
 
 static void

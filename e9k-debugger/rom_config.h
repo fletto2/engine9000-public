@@ -30,3 +30,8 @@ rom_config_loadSettingsForRom(const char *saveDir, const char *romPath,
                               char *outSourceDir, size_t sourceCap,
                               char *outToolchainPrefix, size_t toolchainCap,
                               int *outHasElf, int *outHasSource, int *outHasToolchain);
+
+extern char rom_config_activeElfPath[PATH_MAX];
+extern char rom_config_activeSourceDir[PATH_MAX];
+extern char rom_config_activeToolchainPrefix[PATH_MAX];
+extern int rom_config_activeInit;

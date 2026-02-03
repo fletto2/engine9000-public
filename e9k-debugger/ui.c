@@ -435,11 +435,8 @@ ui_build(void)
     comp_libretro_view->persist_id = "geo_view";
     e9ui_component_t *comp_libretro_box = e9ui_box_make(comp_libretro_view);
     comp_libretro_box->persist_id = "libretro_box";
-    if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-      e9ui_box_setTitlebar(comp_libretro_box, "AMIGA", "assets/icons/game.png");
-    } else {
-      e9ui_box_setTitlebar(comp_libretro_box, "NEO GEO", "assets/icons/game.png");
-    }
+    e9ui_box_setTitlebar(comp_libretro_box, target->name, "assets/icons/game.png");
+
     e9ui_component_t *comp_gdb_geo = e9ui_split_makeComponent(comp_console_box, comp_libretro_box, e9ui_orient_horizontal, 0.60f, 6);
     e9ui_split_setId(comp_gdb_geo, "gdb_geo");
     e9ui_component_t *comp_split = e9ui_split_makeComponent(comp_sources_box, comp_gdb_geo, e9ui_orient_vertical, 0.66f, 6);
@@ -491,7 +488,7 @@ ui_build(void)
 
     int systemW = 0;
     int systemH = 0;
-    SDL_Texture *systemTex = system_badge_getTexture(e9ui->ctx.renderer, debugger.config.coreSystem, &systemW, &systemH);
+    SDL_Texture *systemTex = system_badge_getTexture(e9ui->ctx.renderer, target, &systemW, &systemH);
     e9ui_component_t *comp_system = NULL;
     if (systemTex) {
         comp_system = e9ui_image_makeFromTexture(systemTex, systemW, systemH);

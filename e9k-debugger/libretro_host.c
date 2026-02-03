@@ -249,7 +249,7 @@ libretro_host_applyOptionOverrides(void);
 static bool
 libretro_host_setOptionsV2(const struct retro_core_options_v2 *opts);
 
-static void
+void
 libretro_host_setControllerPortDevice(unsigned port, unsigned device)
 {
     if (port >= LIBRETRO_HOST_MAX_PORTS) {
@@ -264,10 +264,7 @@ libretro_host_setControllerPortDevice(unsigned port, unsigned device)
 static void
 libretro_host_configureControllerPorts(void)
 {
-    if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-        libretro_host_setControllerPortDevice(0, RETRO_DEVICE_JOYPAD);
-        libretro_host_setControllerPortDevice(1, RETRO_DEVICE_MOUSE);
-    }
+  target->configControllerPorts();
 }
 
 static void

@@ -34,4 +34,6 @@ e9ui_checkbox_setLeftMargin(e9ui_component_t *checkbox, int margin);
 int
 e9ui_checkbox_getLeftMargin(const e9ui_component_t *checkbox, const e9ui_context_t *ctx);
 
+void
+e9ui_checkbox_measure(e9ui_component_t *checkbox, e9ui_context_t *ctx, int *outW, int *outH);
 

@@ -279,3 +279,10 @@ libretro_host_saveState(size_t *out_size, size_t *out_diff);
 
 bool
 libretro_host_restoreState(size_t *out_size);
+
+int
+libretro_host_isCoreOptionVisible(const char *key);
+
+void
+libretro_host_setControllerPortDevice(unsigned port, unsigned device);
+

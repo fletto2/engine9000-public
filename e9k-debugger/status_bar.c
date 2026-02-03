@@ -129,7 +129,7 @@ status_bar_render(e9ui_component_t *self, e9ui_context_t *ctx)
              (unsigned long long)cycles,
              profile,
              glLabel,
-	     debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA ? "AMIGA" : "NEOGEO"
+	     target->name
 	     );
     TTF_Font *font = ctx->font;
     if (font) {

@@ -22,6 +22,8 @@
 #include "file.h"
 #include "dasm.h"
 #include "emu.h"
+#include "target.h"
+#define countof(x) (sizeof(x) / sizeof(x[0]))
 
 #ifdef _WIN32
 #include "w64_debugger_platform.h"
@@ -40,13 +42,7 @@ typedef enum {
   DEBUGGER_RUNMODE_RESTORE,
 } debugger_run_mode_t;
 
-typedef enum {
-  DEBUGGER_SYSTEM_AMIGA,
-  DEBUGGER_SYSTEM_NEOGEO,
-  DEBUGGER_SYSTEM_MEGADRIVE,
-} debugger_system_type_t;
-
-typedef struct {
+typedef struct e9k_libretro_config {
   char corePath[PATH_MAX];
   char romPath[PATH_MAX];
   char systemDir[PATH_MAX];
@@ -66,7 +62,7 @@ typedef struct e9k_path_config {
     int  skipBiosLogo;
 } e9k_neogeo_config_t;
 
-typedef struct {
+typedef struct e9k_amiga_config {
     e9k_libretro_config_t libretro;  
 } e9k_amiga_config_t;
 
@@ -74,8 +70,8 @@ typedef struct amiga_debug {
     int *debugDma;
 } amiga_debug_t;
 
-typedef struct {
-    debugger_system_type_t coreSystem;
+typedef struct e9k_system_config {
+    struct target_iface* target;
     e9k_neogeo_config_t neogeo;
     e9k_amiga_config_t amiga;
     int crtEnabled;
@@ -89,8 +85,6 @@ typedef struct e9k_debugger {
     e9k_system_config_t cliConfig;
     e9k_system_config_t settingsEdit;
     e9k_system_config_t* currentConfig;
-    const emu_system_iface_t* emu;
-    const dasm_iface_t *dasm;
     struct {
         int connected;
         int sock;
@@ -118,10 +112,6 @@ typedef struct e9k_debugger {
     int uiRefreshHz;
     char recordPath[PATH_MAX];
     char playbackPath[PATH_MAX];
-    char bootAmigaSaveDir[PATH_MAX];
-    char bootAmigaSystemDir[PATH_MAX];
-    char bootNeogeoSaveDir[PATH_MAX];
-    char bootNeogeoSystemDir[PATH_MAX];
     char smokeTestPath[PATH_MAX];
     int smokeTestMode;
     int smokeTestCompleted;
@@ -138,7 +128,7 @@ typedef struct e9k_debugger {
     int cliAudioVolume;
     int cliResetCfg;
     int cliCoreSystemOverride;
-    debugger_system_type_t cliCoreSystem;
+    int cliTargetIndex;
     int settingsOk;
     int elfValid;
     int restartRequested;
@@ -181,9 +171,6 @@ debugger_setSeeking(int seeking);
 int
 debugger_isSeeking(void);
 
-void
-debugger_setCoreSystem(debugger_system_type_t type);
-
 void debugger_libretroSelectConfig(void);
 
 void
@@ -203,3 +190,12 @@ debugger_setAudioEnabled(int enabled);
 
 uint32_t
 debugger_uiTicks(void);
+
+ void
+debugger_copyPath(char *dest, size_t cap, const char *src);
+
+void
+debugger_onSetDebugBaseFromCore(uint32_t section, uint32_t base);
+
+void
+debugger_onAddBreakpointFromCore(uint32_t addr);

@@ -51,10 +51,10 @@ typedef struct rom_config_data {
     int hasToolchain;
 } rom_config_data_t;
 
-static char rom_config_activeElfPath[PATH_MAX];
-static char rom_config_activeSourceDir[PATH_MAX];
-static char rom_config_activeToolchainPrefix[PATH_MAX];
-static int rom_config_activeInit = 0;
+char rom_config_activeElfPath[PATH_MAX];
+char rom_config_activeSourceDir[PATH_MAX];
+char rom_config_activeToolchainPrefix[PATH_MAX];
+int rom_config_activeInit = 0;
 
 static const char *
 rom_config_basename(const char *path)
@@ -97,22 +97,14 @@ rom_config_pathExistsDir(const char *path)
 static const char *
 rom_config_bootSaveDir(void)
 {
-    if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-        if (debugger.bootAmigaSaveDir[0]) {
-            return debugger.bootAmigaSaveDir;
-        }
-        if (debugger.bootAmigaSystemDir[0]) {
-            return debugger.bootAmigaSystemDir;
-        }
-        return NULL;
-    }
-    if (debugger.bootNeogeoSaveDir[0]) {
-        return debugger.bootNeogeoSaveDir;
-    }
-    if (debugger.bootNeogeoSystemDir[0]) {
-        return debugger.bootNeogeoSystemDir;
-    }
-    return NULL;
+  if (target->bootSaveDir[0]) {
+    return target->bootSaveDir;
+  }
+  
+  if (target->bootSystemDir[0]) {
+    return target->bootSystemDir;
+  }
+  return NULL;
 }
 
 static int
@@ -685,15 +677,7 @@ rom_config_writeJsonFile(const char *path, const char *romPath, const rom_config
 static void
 rom_config_setActiveDefaultsFromCurrentSystem(void)
 {
-    if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-        strncpy(rom_config_activeElfPath, debugger.config.amiga.libretro.exePath, sizeof(rom_config_activeElfPath) - 1);
-        strncpy(rom_config_activeSourceDir, debugger.config.amiga.libretro.sourceDir, sizeof(rom_config_activeSourceDir) - 1);
-        strncpy(rom_config_activeToolchainPrefix, debugger.config.amiga.libretro.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
-    } else {
-        strncpy(rom_config_activeElfPath, debugger.config.neogeo.libretro.exePath, sizeof(rom_config_activeElfPath) - 1);
-        strncpy(rom_config_activeSourceDir, debugger.config.neogeo.libretro.sourceDir, sizeof(rom_config_activeSourceDir) - 1);
-        strncpy(rom_config_activeToolchainPrefix, debugger.config.neogeo.libretro.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
-    }
+    target->setActiveDefaultsFromCurrentSystem();
     rom_config_activeElfPath[sizeof(rom_config_activeElfPath) - 1] = '\0';
     rom_config_activeSourceDir[sizeof(rom_config_activeSourceDir) - 1] = '\0';
     rom_config_activeToolchainPrefix[sizeof(rom_config_activeToolchainPrefix) - 1] = '\0';
@@ -706,21 +690,8 @@ rom_config_applyActiveSettingsToCurrentSystem(void)
     if (!rom_config_activeInit) {
         return;
     }
-    if (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-        strncpy(debugger.config.amiga.libretro.exePath, rom_config_activeElfPath, sizeof(debugger.config.amiga.libretro.exePath) - 1);
-        strncpy(debugger.config.amiga.libretro.sourceDir, rom_config_activeSourceDir, sizeof(debugger.config.amiga.libretro.sourceDir) - 1);
-        strncpy(debugger.config.amiga.libretro.toolchainPrefix, rom_config_activeToolchainPrefix, sizeof(debugger.config.amiga.libretro.toolchainPrefix) - 1);
-        debugger.config.amiga.libretro.exePath[sizeof(debugger.config.amiga.libretro.exePath) - 1] = '\0';
-        debugger.config.amiga.libretro.sourceDir[sizeof(debugger.config.amiga.libretro.sourceDir) - 1] = '\0';
-        debugger.config.amiga.libretro.toolchainPrefix[sizeof(debugger.config.amiga.libretro.toolchainPrefix) - 1] = '\0';
-    } else {
-        strncpy(debugger.config.neogeo.libretro.exePath, rom_config_activeElfPath, sizeof(debugger.config.neogeo.libretro.exePath) - 1);
-        strncpy(debugger.config.neogeo.libretro.sourceDir, rom_config_activeSourceDir, sizeof(debugger.config.neogeo.libretro.sourceDir) - 1);
-        strncpy(debugger.config.neogeo.libretro.toolchainPrefix, rom_config_activeToolchainPrefix, sizeof(debugger.config.neogeo.libretro.toolchainPrefix) - 1);
-        debugger.config.neogeo.libretro.exePath[sizeof(debugger.config.neogeo.libretro.exePath) - 1] = '\0';
-        debugger.config.neogeo.libretro.sourceDir[sizeof(debugger.config.neogeo.libretro.sourceDir) - 1] = '\0';
-        debugger.config.neogeo.libretro.toolchainPrefix[sizeof(debugger.config.neogeo.libretro.toolchainPrefix) - 1] = '\0';
-    }
+    target->applyActiveSettingsToCurrentSystem();
+
     debugger_libretroSelectConfig();
 }
 

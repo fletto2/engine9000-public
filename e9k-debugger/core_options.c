@@ -11,7 +11,7 @@
 
 #include "core_options.h"
 #include "alloc.h"
-#include "amiga_uae_options.h"
+
 #include "config.h"
 #include "core_config.h"
 #include "debugger.h"
@@ -22,59 +22,6 @@
 #include "settings.h"
 #include "system_badge.h"
 
-typedef struct core_options_kv {
-    char *key;
-    char *value;
-} core_options_kv_t;
-
-typedef struct core_options_category_cb {
-    struct core_options_modal_state *st;
-    const char *categoryKey;
-    e9ui_component_t *button;
-} core_options_category_cb_t;
-
-typedef struct core_options_option_cb {
-    struct core_options_modal_state *st;
-    const char *key;
-    const char *enabledValue;
-    const char *disabledValue;
-} core_options_option_cb_t;
-
-typedef struct core_options_modal_state {
-    core_options_kv_t *entries;
-    size_t entryCount;
-    size_t entryCap;
-
-    const struct retro_core_option_v2_category *cats;
-    size_t catCount;
-    const struct retro_core_option_v2_definition *defs;
-    size_t defCount;
-
-    const char *selectedCategoryKey;
-
-    e9ui_component_t *categoryScroll;
-    e9ui_component_t *categoryStack;
-    int categoryWidthPx;
-
-    e9ui_component_t *optionsScroll;
-    e9ui_component_t *optionsStack;
-    int optionsWidthPx;
-
-    e9ui_component_t *btnSave;
-    e9ui_component_t *btnDefaults;
-
-    core_options_category_cb_t **categoryCallbacks;
-    size_t categoryCallbackCount;
-    size_t categoryCallbackCap;
-
-    core_options_option_cb_t **optionCallbacks;
-    size_t optionCallbackCount;
-    size_t optionCallbackCap;
-
-    core_config_options_v2_t probedOptions;
-    int probed;
-    int targetCoreRunning;
-} core_options_modal_state_t;
 
 static void
 core_options_optionChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *value, void *user);
@@ -89,14 +36,14 @@ static void
 core_options_clearCategoryCbs(core_options_modal_state_t *st);
 
 static e9ui_component_t *
-core_options_makeSystemBadge(e9ui_context_t *ctx, debugger_system_type_t coreSystem)
+core_options_makeSystemBadge(e9ui_context_t *ctx, target_iface_t* system)
 {
     if (!ctx || !ctx->renderer) {
         return NULL;
     }
     int w = 0;
     int h = 0;
-    SDL_Texture *tex = system_badge_getTexture(ctx->renderer, coreSystem, &w, &h);
+    SDL_Texture *tex = system_badge_getTexture(ctx->renderer, system, &w, &h);
     if (!tex) {
         return NULL;
     }
@@ -113,7 +60,7 @@ core_options_makeSystemBadge(e9ui_context_t *ctx, debugger_system_type_t coreSys
     return box;
 }
 
-static void
+void
 core_options_closeModal(void)
 {
     if (!e9ui->coreOptionsModal) {
@@ -190,7 +137,7 @@ core_options_freeState(core_options_modal_state_t *st)
     st->targetCoreRunning = 0;
 }
 
-static const char *
+const char *
 core_options_findDefaultValue(const core_options_modal_state_t *st, const char *key)
 {
     if (!st || !st->defs || !key) {
@@ -205,7 +152,7 @@ core_options_findDefaultValue(const core_options_modal_state_t *st, const char *
     return NULL;
 }
 
-static const e9k_system_config_t *
+const e9k_system_config_t *
 core_options_selectConfig(void)
 {
     if (e9ui && e9ui->settingsModal) {
@@ -219,14 +166,11 @@ core_options_selectLibretroConfig(const e9k_system_config_t *cfg)
 {
     if (!cfg) {
         return NULL;
-    }
-    if (cfg->coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-        return &cfg->amiga.libretro;
-    }
-    return &cfg->neogeo.libretro;
+    }    
+    return cfg->target->selectLibretroConfig(cfg);
 }
 
-static int
+int
 core_options_stringsEqual(const char *a, const char *b)
 {
     if (!a && !b) {
@@ -412,36 +356,7 @@ core_options_updateCategoryButtonThemes(core_options_modal_state_t *st)
     }
 }
 
-static int
-core_options_hasUncategorizedDefs(const core_options_modal_state_t *st)
-{
-    if (!st || !st->defs) {
-        return 0;
-    }
-    const e9k_system_config_t *cfg = core_options_selectConfig();
-    int isAmiga = (cfg && cfg->coreSystem == DEBUGGER_SYSTEM_AMIGA) ? 1 : 0;
-    for (size_t i = 0; i < st->defCount; ++i) {
-        const struct retro_core_option_v2_definition *def = &st->defs[i];
-        if (st->targetCoreRunning && def && def->key) {
-            if (!libretro_host_isCoreOptionVisible(def->key)) {
-                continue;
-            }
-        }
-        const char *defCat = def ? def->category_key : NULL;
-        if (!defCat || !*defCat) {
-            if (isAmiga && def && def->key) {
-                if (strcmp(def->key, "puae_video_options_display") == 0 ||
-                    strcmp(def->key, "puae_audio_options_display") == 0 ||
-                    strcmp(def->key, "puae_mapping_options_display") == 0 ||
-                    strcmp(def->key, "puae_model_options_display") == 0) {
-                    continue;
-                }
-            }
-            return 1;
-        }
-    }
-    return 0;
-}
+
 
 static int
 core_options_categoryHasVisibleDefs(const core_options_modal_state_t *st, const char *categoryKey)
@@ -815,160 +730,9 @@ core_options_saveClicked(e9ui_context_t *ctx, void *user)
     if (!st) {
         return;
     }
-    int anyChange = 0;
-
     const e9k_system_config_t *cfg = core_options_selectConfig();
-    if (cfg && cfg->coreSystem == DEBUGGER_SYSTEM_AMIGA) {
-        for (size_t i = 0; i < st->entryCount; ++i) {
-            const char *key = st->entries[i].key;
-            const char *value = st->entries[i].value;
-            if (!key || !*key) {
-                continue;
-            }
-            const char *defValue = core_options_findDefaultValue(st, key);
-            const char *desired = NULL;
-            if (!defValue || !value || strcmp(defValue, value) != 0) {
-                desired = value ? value : "";
-            }
-            const char *existing = amiga_uaeGetPuaeOptionValue(key);
-            if (!desired) {
-                if (!existing) {
-                    continue;
-                }
-                amiga_uaeSetPuaeOptionValue(key, NULL);
-                anyChange = 1;
-            } else {
-                if (existing && core_options_stringsEqual(existing, desired)) {
-                    continue;
-                }
-                amiga_uaeSetPuaeOptionValue(key, desired);
-                anyChange = 1;
-            }
-        }
-        if (anyChange) {
-            settings_markCoreOptionsDirty();
-        }
-        if (anyChange && e9ui->settingsSaveButton) {
-            e9ui_button_setGlowPulse(e9ui->settingsSaveButton, 1);
-        }
-        settings_refreshSaveLabel();
-        e9ui_showTransientMessage(anyChange ? "CORE OPTIONS STAGED" : "CORE OPTIONS: NO CHANGES");
-        core_options_closeModal();
-        return;
-    }
 
-    if (cfg && cfg->coreSystem == DEBUGGER_SYSTEM_NEOGEO && e9ui && e9ui->settingsModal) {
-        for (size_t i = 0; i < st->entryCount; ++i) {
-            const char *key = st->entries[i].key;
-            const char *value = st->entries[i].value;
-            if (!key || !*key) {
-                continue;
-            }
-            if (strcmp(key, "geolith_system_type") == 0) {
-                continue;
-            }
-            const char *defValue = core_options_findDefaultValue(st, key);
-            const char *desired = NULL;
-            if (!defValue || !value || strcmp(defValue, value) != 0) {
-                desired = value ? value : "";
-            }
-            const char *existing = neogeo_coreOptionsGetValue(key);
-            if (!desired) {
-                if (!existing) {
-                    continue;
-                }
-                neogeo_coreOptionsSetValue(key, NULL);
-                anyChange = 1;
-            } else {
-                if (existing && core_options_stringsEqual(existing, desired)) {
-                    continue;
-                }
-                neogeo_coreOptionsSetValue(key, desired);
-                anyChange = 1;
-            }
-        }
-        if (anyChange) {
-            settings_markCoreOptionsDirty();
-        }
-        if (anyChange && e9ui->settingsSaveButton) {
-            e9ui_button_setGlowPulse(e9ui->settingsSaveButton, 1);
-        }
-        settings_refreshSaveLabel();
-        e9ui_showTransientMessage(anyChange ? "CORE OPTIONS STAGED" : "CORE OPTIONS: NO CHANGES");
-        core_options_closeModal();
-        return;
-    }
-
-    for (size_t i = 0; i < st->entryCount; ++i) {
-        const char *key = st->entries[i].key;
-        const char *value = st->entries[i].value;
-        if (!key || !*key) {
-            continue;
-        }
-        if (cfg && cfg->coreSystem == DEBUGGER_SYSTEM_NEOGEO) {
-            if (strcmp(key, "geolith_system_type") == 0) {
-                continue;
-            }
-        }
-        const char *defValue = core_options_findDefaultValue(st, key);
-        const char *desired = NULL;
-        if (!defValue || !value || strcmp(defValue, value) != 0) {
-            desired = value ? value : "";
-        }
-        const char *existing = libretro_host_getCoreOptionOverrideValue(key);
-        if (!desired) {
-            if (!existing) {
-                continue;
-            }
-            libretro_host_setCoreOption(key, NULL);
-            anyChange = 1;
-        } else {
-            if (existing && core_options_stringsEqual(existing, desired)) {
-                continue;
-            }
-            libretro_host_setCoreOption(key, desired);
-            anyChange = 1;
-        }
-    }
-    if (cfg && cfg->coreSystem == DEBUGGER_SYSTEM_NEOGEO) {
-        const char *romPath = libretro_host_getRomPath();
-        const char *saveDir = debugger.libretro.saveDir;
-        if (romPath && *romPath && saveDir && *saveDir) {
-            neogeo_coreOptionsClear();
-            for (size_t i = 0; i < st->entryCount; ++i) {
-                const char *key = st->entries[i].key;
-                const char *value = st->entries[i].value;
-                if (!key || !*key) {
-                    continue;
-                }
-                if (strcmp(key, "geolith_system_type") == 0) {
-                    continue;
-                }
-                const char *defValue = core_options_findDefaultValue(st, key);
-                if (defValue && value && strcmp(defValue, value) == 0) {
-                    continue;
-                }
-                neogeo_coreOptionsSetValue(key, value ? value : "");
-            }
-            neogeo_coreOptionsWriteToFile(saveDir, romPath);
-            neogeo_coreOptionsClear();
-        }
-    }
-    if (e9ui && e9ui->settingsModal && anyChange) {
-        settings_markCoreOptionsDirty();
-        if (e9ui->settingsSaveButton) {
-            e9ui_button_setGlowPulse(e9ui->settingsSaveButton, 1);
-        }
-        settings_refreshSaveLabel();
-    }
-    if (!anyChange) {
-        e9ui_showTransientMessage("CORE OPTIONS: NO CHANGES");
-    } else if (st->targetCoreRunning) {
-        e9ui_showTransientMessage("CORE OPTIONS UPDATED (restart may be required)");
-    } else {
-        e9ui_showTransientMessage("CORE OPTIONS SAVED (applies on next core start)");
-    }
-    core_options_closeModal();
+    cfg->target->coreOptionsSaveClicked(ctx, st);
 }
 
 static void
@@ -1131,8 +895,7 @@ core_options_buildCategories(core_options_modal_state_t *st, e9ui_context_t *ctx
     core_options_clearCategoryCbs(st);
 
     const e9k_system_config_t *cfg = core_options_selectConfig();
-    debugger_system_type_t coreSystem = cfg ? cfg->coreSystem : DEBUGGER_SYSTEM_NEOGEO;
-    e9ui_component_t *badge = core_options_makeSystemBadge(ctx, coreSystem);
+    e9ui_component_t *badge = core_options_makeSystemBadge(ctx, cfg->target);
     if (badge) {
         e9ui_stack_addFixed(st->categoryStack, badge);
         int gap = e9ui_scale_px(ctx, 12);
@@ -1142,14 +905,7 @@ core_options_buildCategories(core_options_modal_state_t *st, e9ui_context_t *ctx
         e9ui_stack_addFixed(st->categoryStack, e9ui_vspacer_make(gap));
     }
 
-    int includeGeneral = 0;
-    if (!st->cats || st->catCount == 0) {
-        includeGeneral = 1;
-    } else if (cfg && cfg->coreSystem == DEBUGGER_SYSTEM_NEOGEO) {
-        includeGeneral = 1;
-    } else if (core_options_hasUncategorizedDefs(st)) {
-        includeGeneral = 1;
-    }
+    int includeGeneral = cfg->target->coreOptionsHasGeneral(st);
 
     if (includeGeneral) {
         core_options_category_cb_t *generalCb = (core_options_category_cb_t*)alloc_calloc(1, sizeof(*generalCb));
@@ -1329,6 +1085,17 @@ core_options_showModal(e9ui_context_t *ctx)
             continue;
         }
         const char *initial = NULL;
+#if 1
+	if (cfg && e9ui && e9ui->settingsModal) {
+	  initial = cfg->target->coreOptionGetValue(def->key);
+	}
+
+	if (!initial && st->targetCoreRunning) {
+	  initial = libretro_host_getCoreOptionValue(def->key);
+        } else {
+	  initial = libretro_host_getCoreOptionOverrideValue(def->key);
+        }
+#else //TODO
         if (cfg && cfg->coreSystem == DEBUGGER_SYSTEM_AMIGA) {
             initial = amiga_uaeGetPuaeOptionValue(def->key);
         } else if (cfg && cfg->coreSystem == DEBUGGER_SYSTEM_NEOGEO && e9ui && e9ui->settingsModal) {
@@ -1341,6 +1108,7 @@ core_options_showModal(e9ui_context_t *ctx)
         } else {
             initial = libretro_host_getCoreOptionOverrideValue(def->key);
         }
+#endif
         if (!initial) {
             initial = def->default_value ? def->default_value : "";
         }

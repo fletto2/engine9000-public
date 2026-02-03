@@ -48,6 +48,8 @@ flow_measure_children(e9ui_component_t* self, e9ui_context_t *ctx)
     int w = 80, h = 24;
     if (child->name && strcmp(child->name, "e9ui_button") == 0) {
       e9ui_button_measure(child, ctx, &w, &h);
+    } else if (child->name && strcmp(child->name, "e9ui_checkbox") == 0) {
+      e9ui_checkbox_measure(child, ctx, &w, &h);
     } else if (child->name && strcmp(child->name, "e9ui_separator") == 0) {
       e9ui_separator_measure(child, ctx, &w, &h);
     } else if (child->preferredHeight) {

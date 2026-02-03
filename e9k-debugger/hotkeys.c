@@ -29,14 +29,10 @@ static int hotkeys_enabled = 1;
 static void
 hotkeys_toggleCoreSystemAndRestart(void)
 {
-    debugger_system_type_t nextSystem = (debugger.config.coreSystem == DEBUGGER_SYSTEM_AMIGA) ?
-        DEBUGGER_SYSTEM_NEOGEO : DEBUGGER_SYSTEM_AMIGA;
-    debugger_setCoreSystem(nextSystem);
-    if (nextSystem == DEBUGGER_SYSTEM_AMIGA) {
-        e9ui_showTransientMessage("RESTARTING AS AMIGA");
-    } else {
-        e9ui_showTransientMessage("RESTARTING AS NEO GEO");
-    }
+    target_nextTarget();
+    char message[64];
+  
+    snprintf(message, sizeof(message), "RESTARTING AS %s", target->name);
     config_saveConfig();
     debugger.restartRequested = 1;
 }
