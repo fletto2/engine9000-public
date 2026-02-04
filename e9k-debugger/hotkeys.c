@@ -81,6 +81,9 @@ hotkeys_dispatchHotkey(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
     if (!kev) {
         return 0;
     }
+    if (kev->repeat != 0) {
+        return 0;
+    }
     SDL_Keycode key = kev->keysym.sym;
     SDL_Keymod rawMods = kev->keysym.mod;
     SDL_Keymod mods = 0;

@@ -1,5 +1,17 @@
-AMIGA_TESTS=test-amigasmoke test-amigacoreoptions test-amigaexample test-amigasavestate test-amigaconfig test-amigalocals
-AMIGA_REMAKE=remake-test-amigasmoke remake-test-amigacoreoptions remake-test-amigaexample remake-test-amigasavestate remake-test-amigaconfig remake-test-amigalocals
+AMIGA_TESTS=test-amigasmoke \
+	    test-amigacoreoptions \
+            test-amigaexample \
+            test-amigasavestate \
+            test-amigaconfig \
+            test-amigalocals \
+            test-amigastepping
+
+AMIGA_REMAKE=remake-test-amigacoreoptions \
+             remake-test-amigaexample \
+             remake-test-amigasavestate \
+             remake-test-amigaconfig \
+	     remake-test-amigalocals \
+	     remake-test-amigastepping
 
 # makers
 
@@ -38,9 +50,6 @@ remake-test-amigaexample: all tests/amiga/example/example.adf
 
 remake-test-amigacoreoptions: all tests/amiga/example/example.adf
 	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --remake-test tests/results/amiga/amigacoreoptions
-
-remake-test-amigasmoke: all tests/amiga/smoke/smoke.adf
-	./e9k-debugger --amiga --uae=./tests/amiga/smoke/smoke.uae --make-smoke tests/results/amiga/smoke
 
 remake-test-amigasavestate: all tests/amiga/smoke/smoke.adf
 	./e9k-debugger --amiga --uae=./tests/amiga/smoke/smoke.uae --remake-test tests/results/amiga/savestate
@@ -84,7 +93,7 @@ test-amigasavestate: all tests/amiga/smoke/smoke.adf
 
 test-amigastepping: all tests/amiga/stepping/stepping.adf
 	@printf "AMIGA STEPPING ($@) ..."
-	./e9k-debugger --amiga --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae \
+	@./e9k-debugger $(HEADLESS) --volume=0 --amiga --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae \
 	--hunk=./tests/amiga/stepping/stepping --test tests/results/amiga/stepping >> test.log 2>&1
 	@echo "PASSED ✅"
 # assets

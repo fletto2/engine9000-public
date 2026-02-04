@@ -1,8 +1,10 @@
 AMIGA_GCC=/opt/amiga/bin/m68k-amigaos-gcc
-CFLAGS=-fomit-frame-pointer -noixemul -Wall -Werror
+DEBUG_PREFIX_MAP=-fdebug-prefix-map=$(shell pwd)=.
+CFLAGS=-fomit-frame-pointer -noixemul -Wall -Werror $(DEBUG_PREFIX_MAP)
 ADF=locals.adf
 ADF9000=../../../../tools/amiga/adf9000/adf9000
 LOAD9000=../../../../tools/amiga/load9000/load9000
+
 
 all: $(ADF)
 

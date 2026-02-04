@@ -34,6 +34,12 @@ typedef struct registers_state {
     uint32_t pendingAddr;
     int pendingX;
     int pendingY;
+    uint32_t lastPc;
+    int hasLastPc;
+    uint32_t lastValues[19];
+    int lastValid[19];
+    uint32_t prevValues[19];
+    int prevValid[19];
 } registers_state_t;
 
 static int
@@ -166,6 +172,7 @@ registers_render(e9ui_component_t *self, e9ui_context_t *ctx)
     int curX = r.x + padX;
     int curY = r.y + padY;
     SDL_Color txt = (SDL_Color){220,220,220,255};
+    SDL_Color changedLabelCol = (SDL_Color){220,80,80,255};
     SDL_Color bpCol = (SDL_Color){120,200,120,255};
     int spaceW = 4;
     int forceBreaks = 0;
@@ -191,7 +198,22 @@ registers_render(e9ui_component_t *self, e9ui_context_t *ctx)
         "A0","A1","A2","A3","A4","A5","A6","A7",
         "SP","PC","SR"
     };
-    for (size_t i = 0; i < sizeof(order)/sizeof(order[0]); ++i) {
+    const size_t registerCount = sizeof(order)/sizeof(order[0]);
+    uint32_t currentValues[19];
+    int currentValid[19];
+    memset(currentValues, 0, sizeof(currentValues));
+    memset(currentValid, 0, sizeof(currentValid));
+    unsigned long pcNow = 0;
+    int hasPcNow = 0;
+    {
+        const char *alts[] = { "PC", "pc" };
+        hasPcNow = registers_findAny(alts, (int)(sizeof(alts)/sizeof(alts[0])), &pcNow);
+    }
+    if (st && st->hasLastPc && hasPcNow && ((uint32_t)pcNow != st->lastPc)) {
+        memcpy(st->prevValues, st->lastValues, sizeof(st->prevValues));
+        memcpy(st->prevValid, st->lastValid, sizeof(st->prevValid));
+    }
+    for (size_t i = 0; i < registerCount; ++i) {
         unsigned long v = 0;
         int found = 0;
         if (strcmp(order[i], "A6") == 0) {
@@ -209,6 +231,8 @@ registers_render(e9ui_component_t *self, e9ui_context_t *ctx)
         if (!found) {
             v = 0;
         }
+        currentValues[i] = (uint32_t)v;
+        currentValid[i] = found ? 1 : 0;
         char label[32];
         char value[32];
         snprintf(label, sizeof(label), "%s:", order[i]);
@@ -225,8 +249,14 @@ registers_render(e9ui_component_t *self, e9ui_context_t *ctx)
             curY += lh + padY;
             if (curY + lh > r.y + r.h - padY) { break; }
         }
+        int labelChanged = 0;
+        if (st && i < (sizeof(st->prevValues)/sizeof(st->prevValues[0])) &&
+            st->prevValid[i] && found && st->prevValues[i] != (uint32_t)v) {
+            labelChanged = 1;
+        }
         if (font) {
-            SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, font, label, txt, NULL, NULL);
+            SDL_Color labelColor = labelChanged ? changedLabelCol : txt;
+            SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, font, label, labelColor, NULL, NULL);
             if (t) {
                 SDL_Rect tr = { curX, curY, labelW, labelH };
                 SDL_RenderCopy(ctx->renderer, t, NULL, &tr);
@@ -251,6 +281,14 @@ registers_render(e9ui_component_t *self, e9ui_context_t *ctx)
             if (curY + lh > r.y + r.h - padY) {
                 break;
             }
+        }
+    }
+    if (st) {
+        memcpy(st->lastValues, currentValues, sizeof(st->lastValues));
+        memcpy(st->lastValid, currentValid, sizeof(st->lastValid));
+        if (hasPcNow) {
+            st->lastPc = (uint32_t)pcNow;
+            st->hasLastPc = 1;
         }
     }
 }
