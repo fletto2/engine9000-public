@@ -1796,6 +1796,16 @@ print_debuginfo_objdump_stabs_loadLocals(const char *elfPath, print_index_t *ind
                             (void)print_debuginfo_objdump_stabs_addStabsVar(index, name, typeRef, scopeIndex,
                                                                            print_stabs_var_reg, 0, (uint8_t)nValue, 0, 0);
                         }
+                    } else if (strcmp(stabType, "PSYM") == 0) {
+                        if (hasNValue) {
+                            (void)print_debuginfo_objdump_stabs_addStabsVar(index, name, typeRef, scopeIndex,
+                                                                           print_stabs_var_stack, (int32_t)nValue, 0, 0, 0);
+                            print_stabs_func_t *cur = &index->stabsFuncs[currentFuncIndex];
+                            if (!cur->hasParamBase || (int32_t)nValue < cur->paramBaseOffset) {
+                                cur->paramBaseOffset = (int32_t)nValue;
+                                cur->hasParamBase = 1;
+                            }
+                        }
                     } else if (hasNValue) {
                         (void)print_debuginfo_objdump_stabs_addStabsVar(index, name, typeRef, scopeIndex,
                                                                        print_stabs_var_stack, (int32_t)nValue, 0, 0, 0);

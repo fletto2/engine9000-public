@@ -6,6 +6,7 @@
  * See COPYING for license details
  */
 
+#include <ctype.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -146,6 +147,32 @@ dasm_ami_stripBytes(const char *text)
     return p;
 }
 
+static int
+dasm_ami_isIllegalMnemonic(const char *text)
+{
+    const char *p = dasm_ami_stripBytes(text);
+    if (!p) {
+        return 1;
+    }
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    static const char *illegal = "illegal";
+    for (int i = 0; illegal[i]; ++i) {
+        if (!p[i]) {
+            return 0;
+        }
+        if (tolower((unsigned char)p[i]) != illegal[i]) {
+            return 0;
+        }
+    }
+    char tail = p[7];
+    if (tail == '\0' || tail == ' ' || tail == '\t') {
+        return 1;
+    }
+    return 0;
+}
+
 static uint32_t
 dasm_ami_normAddr(uint32_t addr)
 {
@@ -184,6 +211,9 @@ dasm_ami_prevInstr(uint32_t addr)
         return 0u;
     }
     uint32_t prev = dasm_ami_normAddr(cur - 2u);
+    uint32_t bestPrev = prev;
+    uint32_t bestBack = UINT32_MAX;
+    int bestRank = -1;
     const uint32_t maxBackBytes = 64u;
     for (uint32_t back = 2u; back <= maxBackBytes && back <= cur; back += 2u) {
         uint32_t cand = dasm_ami_normAddr(cur - back);
@@ -197,9 +227,17 @@ dasm_ami_prevInstr(uint32_t addr)
         }
         uint32_t next = dasm_ami_normAddr(cand + (uint32_t)len);
         if (next == cur) {
-            prev = cand;
-            break;
+            int rank = dasm_ami_isIllegalMnemonic(buf) ? 0 : 1;
+            if (rank > bestRank ||
+                (rank == bestRank && back < bestBack)) {
+                bestRank = rank;
+                bestBack = back;
+                bestPrev = cand;
+            }
         }
+    }
+    if (bestRank >= 0) {
+        return bestPrev;
     }
     return prev;
 }

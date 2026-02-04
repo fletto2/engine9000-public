@@ -288,6 +288,57 @@ ui_test_clearPngOnly(const char *path)
 #endif
 }
 
+static void
+ui_test_clearMismatchArtifacts(const char *path)
+{
+    if (!path || !*path) {
+        return;
+    }
+#ifdef _WIN32
+    char pattern[PATH_MAX];
+    snprintf(pattern, sizeof(pattern), "%s\\*.*", path);
+    WIN32_FIND_DATAA data;
+    HANDLE h = FindFirstFileA(pattern, &data);
+    if (h == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    do {
+        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
+            continue;
+        }
+        if (!strstr(data.cFileName, "mismatch-")) {
+            continue;
+        }
+        char full[PATH_MAX];
+        if (!debugger_platform_pathJoin(full, sizeof(full), path, data.cFileName)) {
+            continue;
+        }
+        DeleteFileA(full);
+    } while (FindNextFileA(h, &data));
+    FindClose(h);
+#else
+    DIR *dir = opendir(path);
+    if (!dir) {
+        return;
+    }
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        if (!strstr(ent->d_name, "mismatch-")) {
+            continue;
+        }
+        char full[PATH_MAX];
+        if (!debugger_platform_pathJoin(full, sizeof(full), path, ent->d_name)) {
+            continue;
+        }
+        unlink(full);
+    }
+    closedir(dir);
+#endif
+}
+
 int
 ui_test_init(void)
 {
@@ -309,6 +360,9 @@ ui_test_init(void)
         return 0;
     }
     ui_test_clearTempConfigOnFirstRun();
+    if (ui_test_restartCount() == 0) {
+        ui_test_clearMismatchArtifacts(ui_test_folder);
+    }
     if (ui_test_mode == UI_TEST_MODE_RECORD && ui_test_restartCount() == 0) {
         ui_test_clearFolder(ui_test_folder);
     } else if (ui_test_mode == UI_TEST_MODE_REMAKE && ui_test_restartCount() == 0) {
@@ -756,6 +810,7 @@ ui_test_writeDiffScript(uint64_t frame, const char *refPath, const char *testPat
 #endif
     system(cmdCompare);
     system(cmdMontage);
+    remove(scriptPath);
 
     if (outMontage && cap > 0) {
         strncpy(outMontage, montagePath, cap - 1);

@@ -453,6 +453,218 @@ print_eval_stabsScopeContainsPc(const print_stabs_scope_t *scope, uint32_t pcRel
 }
 
 static int
+print_eval_stabsPushSizeFromMnemonic(const char *line)
+{
+    if (!line || !*line) {
+        return 0;
+    }
+    if (strstr(line, "pea ") != NULL) {
+        return 4;
+    }
+    if (strstr(line, ".b") != NULL) {
+        return 1;
+    }
+    if (strstr(line, ".w") != NULL) {
+        return 2;
+    }
+    if (strstr(line, ".l") != NULL) {
+        return 4;
+    }
+    return 4;
+}
+
+static int
+print_eval_stabsParseImmAfterHash(const char *line, int32_t *outValue)
+{
+    if (outValue) {
+        *outValue = 0;
+    }
+    if (!line || !outValue) {
+        return 0;
+    }
+    const char *hash = strchr(line, '#');
+    if (!hash || !hash[1]) {
+        return 0;
+    }
+    errno = 0;
+    char *end = NULL;
+    long v = strtol(hash + 1, &end, 0);
+    if (errno != 0 || !end || end == hash + 1) {
+        return 0;
+    }
+    *outValue = (int32_t)v;
+    return 1;
+}
+
+static int
+print_eval_stabsParseLeaSpAdjust(const char *line, int32_t *outValue)
+{
+    if (outValue) {
+        *outValue = 0;
+    }
+    if (!line || !outValue) {
+        return 0;
+    }
+    const char *tail = strstr(line, "(sp),sp");
+    if (!tail) {
+        return 0;
+    }
+    const char *end = tail;
+    while (end > line && isspace((unsigned char)end[-1])) {
+        --end;
+    }
+    const char *start = end;
+    while (start > line) {
+        char c = start[-1];
+        if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == 'x' || c == 'X' ||
+            (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+            --start;
+            continue;
+        }
+        break;
+    }
+    if (start >= end) {
+        return 0;
+    }
+    char buf[32];
+    size_t n = (size_t)(end - start);
+    if (n >= sizeof(buf)) {
+        n = sizeof(buf) - 1;
+    }
+    memcpy(buf, start, n);
+    buf[n] = '\0';
+    errno = 0;
+    char *numEnd = NULL;
+    long v = strtol(buf, &numEnd, 0);
+    if (errno != 0 || !numEnd || numEnd == buf || *numEnd != '\0') {
+        return 0;
+    }
+    *outValue = (int32_t)v;
+    return 1;
+}
+
+static int
+print_eval_estimateStabsStackBase(const print_stabs_func_t *func, uint32_t pcAbs, uint32_t spNow, uint32_t *outBase)
+{
+    if (outBase) {
+        *outBase = spNow;
+    }
+    if (!func || !outBase) {
+        return 0;
+    }
+    uint32_t startAbs = func->startPc;
+    uint32_t textBase = debugger.machine.textBaseAddr;
+    if (textBase != 0) {
+        startAbs = (startAbs + textBase) & 0x00ffffffu;
+    }
+    if (pcAbs <= startAbs) {
+        *outBase = spNow;
+        return 1;
+    }
+
+    uint32_t cur = startAbs;
+    int32_t pendingCallArgs = 0;
+    int seenNonPrologue = 0;
+    int seenFrameAccess = 0;
+    for (int steps = 0; cur < pcAbs && steps < 512; ++steps) {
+        char disBuf[160];
+        char lowerBuf[160];
+        lowerBuf[0] = '\0';
+        size_t insnLen = 0;
+        if (!libretro_host_debugDisassembleQuick(cur, disBuf, sizeof(disBuf), &insnLen) || insnLen == 0) {
+            insnLen = 2;
+        }
+        if (insnLen > 64) {
+            insnLen = 2;
+        }
+        for (size_t i = 0; i < sizeof(lowerBuf) - 1 && disBuf[i]; ++i) {
+            lowerBuf[i] = (char)tolower((unsigned char)disBuf[i]);
+            lowerBuf[i + 1] = '\0';
+        }
+
+        int isPea = strstr(lowerBuf, "pea") != NULL;
+        int isPush = isPea || strstr(lowerBuf, "-(sp)") != NULL || strstr(lowerBuf, "-(a7)") != NULL;
+        int isCall = strstr(lowerBuf, "jsr") != NULL || strstr(lowerBuf, "bsr") != NULL;
+        int isRegSavePush = 0;
+        if (isPush) {
+            if (strstr(lowerBuf, "movem") != NULL) {
+                isRegSavePush = 1;
+            } else if ((strstr(lowerBuf, "move.l a") != NULL || strstr(lowerBuf, "move.w a") != NULL ||
+                        strstr(lowerBuf, "move.b a") != NULL || strstr(lowerBuf, "move.l d") != NULL ||
+                        strstr(lowerBuf, "move.w d") != NULL || strstr(lowerBuf, "move.b d") != NULL) &&
+                       (strstr(lowerBuf, ",-(sp)") != NULL || strstr(lowerBuf, ",-(a7)") != NULL)) {
+                isRegSavePush = 1;
+            }
+        }
+        int hasFrameAccess = 0;
+        if (strstr(lowerBuf, "(sp,$") != NULL || strstr(lowerBuf, "(a7,$") != NULL ||
+            strstr(lowerBuf, "(sp)") != NULL || strstr(lowerBuf, "(a7)") != NULL) {
+            hasFrameAccess = 1;
+        }
+        int32_t cleanup = 0;
+        int hasCleanup = 0;
+
+        int32_t imm = 0;
+        if ((strstr(disBuf, "addq") != NULL || strstr(disBuf, "adda") != NULL || strstr(disBuf, "add.") != NULL) &&
+            strstr(disBuf, ",sp") != NULL &&
+            print_eval_stabsParseImmAfterHash(disBuf, &imm) &&
+            imm > 0) {
+            cleanup = imm;
+            hasCleanup = 1;
+        } else if (strstr(disBuf, "lea") != NULL &&
+                   strstr(disBuf, "(sp),sp") != NULL &&
+                   print_eval_stabsParseLeaSpAdjust(disBuf, &imm) &&
+                   imm > 0) {
+            cleanup = imm;
+            hasCleanup = 1;
+        } else if (strstr(disBuf, "(sp)+") != NULL) {
+            cleanup = print_eval_stabsPushSizeFromMnemonic(disBuf);
+            hasCleanup = cleanup > 0;
+        }
+
+        if (isPush) {
+            if (seenNonPrologue) {
+                if (!(isRegSavePush && !seenFrameAccess)) {
+                    int pushSize = print_eval_stabsPushSizeFromMnemonic(disBuf);
+                    if (pushSize > 0) {
+                        pendingCallArgs -= pushSize;
+                    }
+                }
+            }
+        } else if (isCall) {
+            // Keep pending pushes as call-argument candidates across jsr/bsr.
+        } else if (hasCleanup) {
+            if (cleanup > 0 && pendingCallArgs < 0) {
+                int32_t use = cleanup;
+                int32_t need = -pendingCallArgs;
+                if (use > need) {
+                    use = need;
+                }
+                pendingCallArgs += use;
+            } else {
+                pendingCallArgs = 0;
+            }
+        }
+        if (!seenNonPrologue && !isPush && !isCall) {
+            seenNonPrologue = 1;
+        }
+        if (hasFrameAccess && !isPush && !isCall) {
+            seenFrameAccess = 1;
+        }
+
+        uint32_t next = (cur + (uint32_t)insnLen) & 0x00ffffffu;
+        if (next == cur) {
+            next = (cur + 2u) & 0x00ffffffu;
+        }
+        cur = next;
+    }
+
+    int64_t base64 = (int64_t)(uint64_t)spNow - (int64_t)pendingCallArgs;
+    *outBase = (uint32_t)base64;
+    return 1;
+}
+
+static int
 print_eval_resolveLocalStabs(const char *name, print_index_t *index, print_value_t *out, int typeOnly)
 {
     if (!name || !*name || !index || !out) {
@@ -529,11 +741,25 @@ print_eval_resolveLocalStabs(const char *name, print_index_t *index, print_value
         return 0;
     }
 
-    unsigned long spRaw = 0;
-    if (!machine_findReg(&debugger.machine, "A7", &spRaw)) {
-        return 0;
+    uint32_t stackBase = 0;
+    int hasStackBase = 0;
+    if (func->hasParamBase) {
+        uint32_t cfa = 0;
+        if (print_eval_computeCfa(index, pc, &cfa)) {
+            int64_t base64 = (int64_t)(uint64_t)cfa - (int64_t)func->paramBaseOffset;
+            stackBase = (uint32_t)base64;
+            hasStackBase = 1;
+        }
     }
-    uint32_t sp = (uint32_t)spRaw;
+    if (!hasStackBase) {
+        unsigned long spRaw = 0;
+        if (!machine_findReg(&debugger.machine, "A7", &spRaw)) {
+            return 0;
+        }
+        uint32_t sp = (uint32_t)spRaw;
+        stackBase = sp;
+        (void)print_eval_estimateStabsStackBase(func, pc, sp, &stackBase);
+    }
 
     int scopeIndex = bestScopeIndex;
     while (scopeIndex >= 0 && scopeIndex < index->stabsScopeCount) {
@@ -563,7 +789,7 @@ print_eval_resolveLocalStabs(const char *name, print_index_t *index, print_value
             }
 
             if (var->kind == print_stabs_var_stack) {
-                int64_t addr64 = (int64_t)(uint64_t)sp + (int64_t)var->stackOffset;
+                int64_t addr64 = (int64_t)(uint64_t)stackBase + (int64_t)var->stackOffset;
                 uint32_t addr = (uint32_t)addr64 & 0x00ffffffu;
                 if (typeOnly) {
                     *out = print_eval_makeAddressValue(type, 0);

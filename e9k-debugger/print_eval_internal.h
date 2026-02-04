@@ -135,6 +135,8 @@ typedef struct print_stabs_func {
     uint32_t startPc;
     uint32_t endPc;
     int hasEnd;
+    int32_t paramBaseOffset;
+    int hasParamBase;
     int rootScopeIndex;
     int scopeStart;
     int scopeCount;
