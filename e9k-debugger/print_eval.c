@@ -486,13 +486,47 @@ print_eval_stabsParseImmAfterHash(const char *line, int32_t *outValue)
     if (!hash || !hash[1]) {
         return 0;
     }
-    errno = 0;
-    char *end = NULL;
-    long v = strtol(hash + 1, &end, 0);
-    if (errno != 0 || !end || end == hash + 1) {
+    const char *num = hash + 1;
+    while (*num && isspace((unsigned char)*num)) {
+        ++num;
+    }
+    int sign = 1;
+    if (*num == '+') {
+        ++num;
+    } else if (*num == '-') {
+        sign = -1;
+        ++num;
+    }
+    if (!*num) {
         return 0;
     }
-    *outValue = (int32_t)v;
+    if (*num == '$') {
+        ++num;
+        if (!isxdigit((unsigned char)*num)) {
+            return 0;
+        }
+        int64_t value = 0;
+        while (isxdigit((unsigned char)*num)) {
+            char c = *num++;
+            int digit = 0;
+            if (c >= '0' && c <= '9') {
+                digit = c - '0';
+            } else {
+                c = (char)tolower((unsigned char)c);
+                digit = 10 + (c - 'a');
+            }
+            value = (value << 4) + digit;
+        }
+        *outValue = (int32_t)(sign * value);
+        return 1;
+    }
+    errno = 0;
+    char *end = NULL;
+    long v = strtol(num, &end, 0);
+    if (errno != 0 || !end || end == num) {
+        return 0;
+    }
+    *outValue = (int32_t)(sign * v);
     return 1;
 }
 
@@ -507,6 +541,9 @@ print_eval_stabsParseLeaSpAdjust(const char *line, int32_t *outValue)
     }
     const char *tail = strstr(line, "(sp),sp");
     if (!tail) {
+        tail = strstr(line, "(a7),a7");
+    }
+    if (!tail) {
         return 0;
     }
     const char *end = tail;
@@ -517,7 +554,7 @@ print_eval_stabsParseLeaSpAdjust(const char *line, int32_t *outValue)
     while (start > line) {
         char c = start[-1];
         if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == 'x' || c == 'X' ||
-            (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+            c == '$' || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
             --start;
             continue;
         }
@@ -533,18 +570,56 @@ print_eval_stabsParseLeaSpAdjust(const char *line, int32_t *outValue)
     }
     memcpy(buf, start, n);
     buf[n] = '\0';
-    errno = 0;
-    char *numEnd = NULL;
-    long v = strtol(buf, &numEnd, 0);
-    if (errno != 0 || !numEnd || numEnd == buf || *numEnd != '\0') {
+    int sign = 1;
+    const char *num = buf;
+    if (*num == '+') {
+        ++num;
+    } else if (*num == '-') {
+        sign = -1;
+        ++num;
+    }
+    if (!*num) {
         return 0;
     }
-    *outValue = (int32_t)v;
+    if (*num == '$') {
+        ++num;
+        if (!isxdigit((unsigned char)*num)) {
+            return 0;
+        }
+        int64_t value = 0;
+        while (isxdigit((unsigned char)*num)) {
+            char c = *num++;
+            int digit = 0;
+            if (c >= '0' && c <= '9') {
+                digit = c - '0';
+            } else {
+                c = (char)tolower((unsigned char)c);
+                digit = 10 + (c - 'a');
+            }
+            value = (value << 4) + digit;
+        }
+        if (*num != '\0') {
+            return 0;
+        }
+        *outValue = (int32_t)(sign * value);
+        return 1;
+    }
+    errno = 0;
+    char *numEnd = NULL;
+    long v = strtol(num, &numEnd, 0);
+    if (errno != 0 || !numEnd || numEnd == num || *numEnd != '\0') {
+        return 0;
+    }
+    *outValue = (int32_t)(sign * v);
     return 1;
 }
 
 static int
-print_eval_estimateStabsStackBase(const print_stabs_func_t *func, uint32_t pcAbs, uint32_t spNow, uint32_t *outBase)
+print_eval_estimateStabsStackBase(const print_stabs_func_t *func,
+                                  const char *debugName,
+                                  uint32_t pcAbs,
+                                  uint32_t spNow,
+                                  uint32_t *outBase)
 {
     if (outBase) {
         *outBase = spNow;
@@ -562,10 +637,31 @@ print_eval_estimateStabsStackBase(const print_stabs_func_t *func, uint32_t pcAbs
         return 1;
     }
 
-    uint32_t cur = startAbs;
+    uint32_t scanStart = startAbs;
+    if (pcAbs > startAbs) {
+        uint32_t delta = pcAbs - startAbs;
+        const uint32_t maxScanBytes = 128u;
+        if (delta > maxScanBytes) {
+            scanStart = pcAbs - maxScanBytes;
+        }
+    }
+    scanStart &= ~1u;
+
+    uint32_t cur = scanStart;
     int32_t pendingCallArgs = 0;
-    int seenNonPrologue = 0;
-    int seenFrameAccess = 0;
+    int seenNonPrologue = (scanStart != startAbs);
+    int seenFrameAccess = (scanStart != startAbs);
+    int debugOn = print_eval_debugEnabled() &&
+                  print_eval_debugWantsSymbol(debugName ? debugName : (func->name ? func->name : ""));
+    if (debugOn) {
+        debug_printf("print: stabs est name='%s' func='%s' start=0x%06X scanStart=0x%06X pc=0x%06X sp=0x%06X\n",
+                     debugName ? debugName : "?",
+                     func->name ? func->name : "?",
+                     (unsigned)startAbs,
+                     (unsigned)scanStart,
+                     (unsigned)pcAbs,
+                     (unsigned)spNow);
+    }
     for (int steps = 0; cur < pcAbs && steps < 512; ++steps) {
         char disBuf[160];
         char lowerBuf[160];
@@ -605,20 +701,20 @@ print_eval_estimateStabsStackBase(const print_stabs_func_t *func, uint32_t pcAbs
         int hasCleanup = 0;
 
         int32_t imm = 0;
-        if ((strstr(disBuf, "addq") != NULL || strstr(disBuf, "adda") != NULL || strstr(disBuf, "add.") != NULL) &&
-            strstr(disBuf, ",sp") != NULL &&
-            print_eval_stabsParseImmAfterHash(disBuf, &imm) &&
+        if ((strstr(lowerBuf, "addq") != NULL || strstr(lowerBuf, "adda") != NULL || strstr(lowerBuf, "add.") != NULL) &&
+            (strstr(lowerBuf, ",sp") != NULL || strstr(lowerBuf, ",a7") != NULL) &&
+            print_eval_stabsParseImmAfterHash(lowerBuf, &imm) &&
             imm > 0) {
             cleanup = imm;
             hasCleanup = 1;
-        } else if (strstr(disBuf, "lea") != NULL &&
-                   strstr(disBuf, "(sp),sp") != NULL &&
-                   print_eval_stabsParseLeaSpAdjust(disBuf, &imm) &&
+        } else if (strstr(lowerBuf, "lea") != NULL &&
+                   (strstr(lowerBuf, "(sp),sp") != NULL || strstr(lowerBuf, "(a7),a7") != NULL) &&
+                   print_eval_stabsParseLeaSpAdjust(lowerBuf, &imm) &&
                    imm > 0) {
             cleanup = imm;
             hasCleanup = 1;
-        } else if (strstr(disBuf, "(sp)+") != NULL) {
-            cleanup = print_eval_stabsPushSizeFromMnemonic(disBuf);
+        } else if (strstr(lowerBuf, "(sp)+") != NULL || strstr(lowerBuf, "(a7)+") != NULL) {
+            cleanup = print_eval_stabsPushSizeFromMnemonic(lowerBuf);
             hasCleanup = cleanup > 0;
         }
 
@@ -628,11 +724,19 @@ print_eval_estimateStabsStackBase(const print_stabs_func_t *func, uint32_t pcAbs
                     int pushSize = print_eval_stabsPushSizeFromMnemonic(disBuf);
                     if (pushSize > 0) {
                         pendingCallArgs -= pushSize;
+                        if (debugOn) {
+                            debug_printf("print: stabs est push pc=0x%06X sz=%d pending=%d ins='%s'\n",
+                                         (unsigned)cur, pushSize, (int)pendingCallArgs, disBuf);
+                        }
                     }
                 }
             }
         } else if (isCall) {
             // Keep pending pushes as call-argument candidates across jsr/bsr.
+            if (debugOn) {
+                debug_printf("print: stabs est call pc=0x%06X pending=%d ins='%s'\n",
+                             (unsigned)cur, (int)pendingCallArgs, disBuf);
+            }
         } else if (hasCleanup) {
             if (cleanup > 0 && pendingCallArgs < 0) {
                 int32_t use = cleanup;
@@ -641,8 +745,16 @@ print_eval_estimateStabsStackBase(const print_stabs_func_t *func, uint32_t pcAbs
                     use = need;
                 }
                 pendingCallArgs += use;
+                if (debugOn) {
+                    debug_printf("print: stabs est cleanup pc=0x%06X clean=%d used=%d pending=%d ins='%s'\n",
+                                 (unsigned)cur, (int)cleanup, (int)use, (int)pendingCallArgs, disBuf);
+                }
             } else {
                 pendingCallArgs = 0;
+                if (debugOn) {
+                    debug_printf("print: stabs est reset pc=0x%06X clean=%d pending=%d ins='%s'\n",
+                                 (unsigned)cur, (int)cleanup, (int)pendingCallArgs, disBuf);
+                }
             }
         }
         if (!seenNonPrologue && !isPush && !isCall) {
@@ -661,6 +773,10 @@ print_eval_estimateStabsStackBase(const print_stabs_func_t *func, uint32_t pcAbs
 
     int64_t base64 = (int64_t)(uint64_t)spNow - (int64_t)pendingCallArgs;
     *outBase = (uint32_t)base64;
+    if (debugOn) {
+        debug_printf("print: stabs est end pending=%d stackBase=0x%06X\n",
+                     (int)pendingCallArgs, (unsigned)*outBase);
+    }
     return 1;
 }
 
@@ -758,7 +874,7 @@ print_eval_resolveLocalStabs(const char *name, print_index_t *index, print_value
         }
         uint32_t sp = (uint32_t)spRaw;
         stackBase = sp;
-        (void)print_eval_estimateStabsStackBase(func, pc, sp, &stackBase);
+        (void)print_eval_estimateStabsStackBase(func, name, pc, sp, &stackBase);
     }
 
     int scopeIndex = bestScopeIndex;
