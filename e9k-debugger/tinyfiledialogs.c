@@ -101,6 +101,30 @@ misrepresented as being the original software.
 
 #include "tinyfiledialogs.h"
 
+#if defined(__APPLE__)
+char *
+tinyfiledialogs_osxOpenFileDialog(
+		char const * aTitle ,
+		char const * aDefaultPathAndOrFile ,
+		int aNumOfFilterPatterns ,
+		char const * const * aFilterPatterns ,
+		char const * aSingleFilterDescription ,
+		int aAllowMultipleSelects ) ;
+
+char *
+tinyfiledialogs_osxSaveFileDialog(
+		char const * aTitle ,
+		char const * aDefaultPathAndOrFile ,
+		int aNumOfFilterPatterns ,
+		char const * const * aFilterPatterns ,
+		char const * aSingleFilterDescription ) ;
+
+char *
+tinyfiledialogs_osxSelectFolderDialog(
+		char const * aTitle ,
+		char const * aDefaultPath ) ;
+#endif
+
 #define MAX_PATH_OR_CMD 1024 /* _MAX_PATH or MAX_PATH */
 
 #ifndef MAX_MULTIPLE_FILES
@@ -6291,17 +6315,43 @@ char * tinyfd_saveFileDialog(
 				if (tfd_quoteDetected(aTitle)) return tinyfd_saveFileDialog("INVALID TITLE WITH QUOTES", aDefaultPathAndOrFile, aNumOfFilterPatterns, aFilterPatterns, aSingleFilterDescription);
 				if (tfd_quoteDetected(aDefaultPathAndOrFile)) return tinyfd_saveFileDialog(aTitle, "INVALID DEFAULT_PATH WITH QUOTES", aNumOfFilterPatterns, aFilterPatterns, aSingleFilterDescription);
 				if (tfd_quoteDetected(aSingleFilterDescription)) return tinyfd_saveFileDialog(aTitle, aDefaultPathAndOrFile, aNumOfFilterPatterns, aFilterPatterns, "INVALID FILTER_DESCRIPTION WITH QUOTES");
-				for (i = 0; i < aNumOfFilterPatterns; i++)
-				{
-						if (tfd_quoteDetected(aFilterPatterns[i])) return tinyfd_saveFileDialog("INVALID FILTER_PATTERN WITH QUOTES: use the GRAVE ACCENT \\x60 instead.", aDefaultPathAndOrFile, 0, NULL, NULL);
-				}
+			for (i = 0; i < aNumOfFilterPatterns; i++)
+			{
+					if (tfd_quoteDetected(aFilterPatterns[i])) return tinyfd_saveFileDialog("INVALID FILTER_PATTERN WITH QUOTES: use the GRAVE ACCENT \\x60 instead.", aDefaultPathAndOrFile, 0, NULL, NULL);
+			}
 
-		if ( osascriptPresent( ) )
-		{
-				if (aTitle&&!strcmp(aTitle,"tinyfd_query")){strcpy(tinyfd_response,"applescript");return (char *)1;}
-				strcpy( lDialogString , "osascript ");
-				if ( ! osx9orBetter() ) strcat( lDialogString , " -e 'tell application \"Finder\"' -e 'Activate'");
-				strcat( lDialogString , " -e 'try' -e 'POSIX path of ( choose file name " );
+#if defined(__APPLE__)
+			if ( tfd_isDarwin( ) && graphicMode( ) && !tinyfd_forceConsole && !getenv("SSH_TTY") )
+			{
+					char * lOsxPath ;
+					if (aTitle&&!strcmp(aTitle,"tinyfd_query")){strcpy(tinyfd_response,"cocoa");return (char *)1;}
+					lOsxPath = tinyfiledialogs_osxSaveFileDialog(
+									aTitle,
+									aDefaultPathAndOrFile,
+									aNumOfFilterPatterns,
+									aFilterPatterns,
+									aSingleFilterDescription );
+					if ( !lOsxPath )
+					{
+							return NULL;
+					}
+					if ( strlen( lOsxPath ) >= MAX_PATH_OR_CMD )
+					{
+							free( lOsxPath );
+							return NULL;
+					}
+					strcpy( lBuff , lOsxPath );
+					free( lOsxPath );
+					return lBuff ;
+			}
+#endif
+
+			if ( osascriptPresent( ) )
+			{
+					if (aTitle&&!strcmp(aTitle,"tinyfd_query")){strcpy(tinyfd_response,"applescript");return (char *)1;}
+					strcpy( lDialogString , "osascript ");
+					if ( ! osx9orBetter() ) strcat( lDialogString , " -e 'tell application \"Finder\"' -e 'Activate'");
+					strcat( lDialogString , " -e 'try' -e 'POSIX path of ( choose file name " );
 				if ( aTitle && strlen(aTitle) )
 				{
 						strcat(lDialogString, "with prompt \"") ;
@@ -6778,15 +6828,39 @@ char * tinyfd_openFileDialog(
 								lBuff = (char *) malloc(lFullBuffLen * sizeof(char));
 						}
 						if (!lBuff) return NULL;
-						lBuff[0]='\0';
-				}
+							lBuff[0]='\0';
+					}
 
-		if ( osascriptPresent( ) )
-		{
-				if (aTitle&&!strcmp(aTitle,"tinyfd_query")){strcpy(tinyfd_response,"applescript");return (char *)1;}
-				strcpy( lDialogString , "osascript ");
-				if ( ! osx9orBetter() ) strcat( lDialogString , " -e 'tell application \"System Events\"' -e 'Activate'");
-				strcat( lDialogString , " -e 'try' -e '" );
+#if defined(__APPLE__)
+			if ( tfd_isDarwin( ) && graphicMode( ) && !tinyfd_forceConsole && !getenv("SSH_TTY") )
+			{
+					char * lOsxPath ;
+					if (aTitle&&!strcmp(aTitle,"tinyfd_query")){strcpy(tinyfd_response,"cocoa");return (char *)1;}
+					lOsxPath = tinyfiledialogs_osxOpenFileDialog(
+									aTitle,
+									aDefaultPathAndOrFile,
+									aNumOfFilterPatterns,
+									aFilterPatterns,
+									aSingleFilterDescription,
+									aAllowMultipleSelects );
+					if ( !lOsxPath )
+					{
+							free( lBuff );
+							lBuff = NULL ;
+							return NULL;
+					}
+					free( lBuff );
+					lBuff = lOsxPath ;
+					return lBuff ;
+			}
+#endif
+
+			if ( osascriptPresent( ) )
+			{
+					if (aTitle&&!strcmp(aTitle,"tinyfd_query")){strcpy(tinyfd_response,"applescript");return (char *)1;}
+					strcpy( lDialogString , "osascript ");
+					if ( ! osx9orBetter() ) strcat( lDialogString , " -e 'tell application \"System Events\"' -e 'Activate'");
+					strcat( lDialogString , " -e 'try' -e '" );
 	if ( ! aAllowMultipleSelects )
 	{
 
@@ -7313,15 +7387,36 @@ char * tinyfd_selectFolderDialog(
     int lWasXterm = 0 ;
     lBuff[0]='\0';
 
-    if (tfd_quoteDetected(aTitle)) return tinyfd_selectFolderDialog("INVALID TITLE WITH QUOTES", aDefaultPath);
-    if (tfd_quoteDetected(aDefaultPath)) return tinyfd_selectFolderDialog(aTitle, "INVALID DEFAULT_PATH WITH QUOTES");
+	    if (tfd_quoteDetected(aTitle)) return tinyfd_selectFolderDialog("INVALID TITLE WITH QUOTES", aDefaultPath);
+	    if (tfd_quoteDetected(aDefaultPath)) return tinyfd_selectFolderDialog(aTitle, "INVALID DEFAULT_PATH WITH QUOTES");
 
-		if ( osascriptPresent( ))
+#if defined(__APPLE__)
+		if ( tfd_isDarwin( ) && graphicMode( ) && !tinyfd_forceConsole && !getenv("SSH_TTY") )
 		{
-				if (aTitle&&!strcmp(aTitle,"tinyfd_query")){strcpy(tinyfd_response,"applescript");return (char *)1;}
-				strcpy( lDialogString , "osascript ");
-				if ( ! osx9orBetter() ) strcat( lDialogString , " -e 'tell application \"System Events\"' -e 'Activate'");
-				strcat( lDialogString , " -e 'try' -e 'POSIX path of ( choose folder ");
+				char * lOsxPath ;
+				if (aTitle&&!strcmp(aTitle,"tinyfd_query")){strcpy(tinyfd_response,"cocoa");return (char *)1;}
+				lOsxPath = tinyfiledialogs_osxSelectFolderDialog( aTitle , aDefaultPath );
+				if ( !lOsxPath )
+				{
+						return NULL;
+				}
+				if ( strlen( lOsxPath ) >= MAX_PATH_OR_CMD )
+				{
+						free( lOsxPath );
+						return NULL;
+				}
+				strcpy( lBuff , lOsxPath );
+				free( lOsxPath );
+				return lBuff ;
+		}
+#endif
+
+			if ( osascriptPresent( ))
+			{
+					if (aTitle&&!strcmp(aTitle,"tinyfd_query")){strcpy(tinyfd_response,"applescript");return (char *)1;}
+					strcpy( lDialogString , "osascript ");
+					if ( ! osx9orBetter() ) strcat( lDialogString , " -e 'tell application \"System Events\"' -e 'Activate'");
+					strcat( lDialogString , " -e 'try' -e 'POSIX path of ( choose folder ");
 				if ( aTitle && strlen(aTitle) )
 				{
 				strcat(lDialogString, "with prompt \"") ;

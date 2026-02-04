@@ -105,6 +105,43 @@ typedef struct print_variable {
     int hasByteSize;
 } print_variable_t;
 
+typedef enum print_stabs_var_kind {
+    print_stabs_var_stack = 0,
+    print_stabs_var_reg,
+    print_stabs_var_const
+} print_stabs_var_kind_t;
+
+typedef struct print_stabs_scope {
+    uint32_t startPc;
+    uint32_t endPc;
+    int parentIndex;
+    uint8_t depth;
+    int hasEnd;
+} print_stabs_scope_t;
+
+typedef struct print_stabs_var {
+    char *name;
+    uint32_t typeRef;
+    int scopeIndex;
+    print_stabs_var_kind_t kind;
+    int32_t stackOffset;
+    uint8_t reg;
+    uint64_t constValue;
+    int hasConstValue;
+} print_stabs_var_t;
+
+typedef struct print_stabs_func {
+    char *name;
+    uint32_t startPc;
+    uint32_t endPc;
+    int hasEnd;
+    int rootScopeIndex;
+    int scopeStart;
+    int scopeCount;
+    int varStart;
+    int varCount;
+} print_stabs_func_t;
+
 typedef struct print_cfi_row {
     uint32_t loc;
     uint8_t cfaReg;
@@ -170,6 +207,15 @@ typedef struct print_index {
     print_variable_t *vars;
     int varCount;
     int varCap;
+    print_stabs_func_t *stabsFuncs;
+    int stabsFuncCount;
+    int stabsFuncCap;
+    print_stabs_scope_t *stabsScopes;
+    int stabsScopeCount;
+    int stabsScopeCap;
+    print_stabs_var_t *stabsVars;
+    int stabsVarCount;
+    int stabsVarCap;
     print_type_t **types;
     int typeCount;
     int typeCap;

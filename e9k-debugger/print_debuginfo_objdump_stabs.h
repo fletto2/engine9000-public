@@ -15,3 +15,7 @@
 int
 print_debuginfo_objdump_stabs_loadSymbols(const char *elfPath, print_index_t *index);
 
+// Load local variable information from STABS via objdump -G.
+// This is intended for Amiga hunk binaries where readelf/DWARF dumping is unavailable.
+int
+print_debuginfo_objdump_stabs_loadLocals(const char *elfPath, print_index_t *index);

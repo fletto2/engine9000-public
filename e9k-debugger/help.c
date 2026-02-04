@@ -194,7 +194,7 @@ help_showModal(e9ui_context_t *ctx)
                                    "Screenshot to clipboard",
                                    "Amiga <-> Neo Geo",
                                    "Toggle rolling state record",
-                                   "Speed toggle",
+                                   "Warp",
                                    "Toggle audio",
                                    "Save state",
                                    "Restore state",

@@ -763,7 +763,12 @@ target_neogeo_audioEnable(int enabled)
 static SDL_Texture *
 target_neogeo_getBadgeTexture(SDL_Renderer *renderer, target_iface_t* t, int* outW, int* outH)
 {
-  if (!t->badge) {    
+  if (t->badge && t->badgeRenderer != renderer) {
+    SDL_DestroyTexture(t->badge);
+    t->badge = NULL;
+  }
+  t->badgeRenderer = renderer;
+  if (!t->badge) {
     t->badge = system_badge_loadTexture(renderer, "assets/neogeo.png", &t->badgeW, &t->badgeH);
   }
 

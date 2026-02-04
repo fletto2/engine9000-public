@@ -11,11 +11,46 @@
 #include "ui_test.h"
 
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 #include <errno.h>
+
+static const char debugger_testConfigName[] = ".e9k-debugger.cfg";
+static const char debugger_testTempConfigPrefix[] = "e9k-debugger-test-";
+static const char debugger_testTempConfigSuffix[] = ".cfg";
+
+static int
+debugger_platform_configExists(const char *path)
+{
+    if (!path || !*path) {
+        return 0;
+    }
+    DWORD attr = GetFileAttributesA(path);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        return 0;
+    }
+    if ((attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static uint64_t
+debugger_platform_hashPath(const char *path)
+{
+    uint64_t hash = 1469598103934665603ull;
+    if (!path) {
+        return hash;
+    }
+    while (*path) {
+        hash ^= (uint8_t)(*path++);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
 
 int
 debugger_platform_pathJoin(char *out, size_t cap, const char *dir, const char *name)
@@ -76,14 +111,26 @@ char *
 debugger_configPath(void)
 {
     static char pathbuf[1024];
-    if (ui_test_getMode() == UI_TEST_MODE_COMPARE || ui_test_getMode() == UI_TEST_MODE_REMAKE) {
+    ui_test_mode_t mode = ui_test_getMode();
+    const char *testTempPath = debugger_configTempPath();
+    if (mode != UI_TEST_MODE_NONE && debugger_getLoadTestTempConfig() && debugger_platform_configExists(testTempPath)) {
+        return (char *)testTempPath;
+    }
+    if (mode == UI_TEST_MODE_RECORD || mode == UI_TEST_MODE_COMPARE || mode == UI_TEST_MODE_REMAKE) {
         const char *folder = ui_test_getFolder();
         if (folder && *folder) {
-            if (debugger_platform_pathJoin(pathbuf, sizeof(pathbuf), folder, ".e9k-debugger.cfg")) {
+            if (debugger_platform_pathJoin(pathbuf, sizeof(pathbuf), folder, debugger_testConfigName)) {
                 return pathbuf;
             }
         }
     }
+    return debugger_defaultConfigPath();
+}
+
+char *
+debugger_defaultConfigPath(void)
+{
+    static char pathbuf[1024];
     const char *home = getenv("APPDATA");
     if (!home || !*home) {
         home = getenv("USERPROFILE");
@@ -92,6 +139,36 @@ debugger_configPath(void)
         return NULL;
     }
     snprintf(pathbuf, sizeof(pathbuf), "%s\\e9k-debugger.cfg", home);
+    return pathbuf;
+}
+
+char *
+debugger_configTempPath(void)
+{
+    static char pathbuf[1024];
+    static char namebuf[96];
+    const char *folder = ui_test_getFolder();
+    if (!folder || !*folder) {
+        return NULL;
+    }
+    const char *tmpDir = getenv("TEMP");
+    if (!tmpDir || !*tmpDir) {
+        tmpDir = getenv("TMP");
+    }
+    if (!tmpDir || !*tmpDir) {
+        tmpDir = getenv("APPDATA");
+    }
+    if (!tmpDir || !*tmpDir) {
+        return NULL;
+    }
+    uint64_t folderHash = debugger_platform_hashPath(folder);
+    snprintf(namebuf, sizeof(namebuf), "%s%016llx%s",
+             debugger_testTempConfigPrefix,
+             (unsigned long long)folderHash,
+             debugger_testTempConfigSuffix);
+    if (!debugger_platform_pathJoin(pathbuf, sizeof(pathbuf), tmpDir, namebuf)) {
+        return NULL;
+    }
     return pathbuf;
 }
 

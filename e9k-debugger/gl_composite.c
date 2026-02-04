@@ -1231,6 +1231,15 @@ gl_composite_captureToRenderer(SDL_Renderer *renderer, const uint8_t *data, int 
 
 glc_capture_readback:
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+#ifdef GL_PACK_IMAGE_HEIGHT
+    glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0);
+#endif
+#ifdef GL_PACK_SKIP_IMAGES
+    glPixelStorei(GL_PACK_SKIP_IMAGES, 0);
+#endif
     if (glc_glReadBuffer) {
         glc_glReadBuffer(glc_framebufferColorAttachment);
     }

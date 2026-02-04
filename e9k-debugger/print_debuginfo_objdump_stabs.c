@@ -425,6 +425,32 @@ print_debuginfo_objdump_stabs_parseVarTypeId(const char *stabStr, uint32_t *outT
 }
 
 static int
+print_debuginfo_objdump_stabs_parseVarTypeIdLoose(const char *stabStr, uint32_t *outTypeId)
+{
+    if (outTypeId) {
+        *outTypeId = 0;
+    }
+    if (!stabStr || !outTypeId) {
+        return 0;
+    }
+    const char *colon = strchr(stabStr, ':');
+    if (!colon || !colon[1]) {
+        return 0;
+    }
+    const char *p = colon + 1;
+    while (*p && isalpha((unsigned char)*p)) {
+        ++p;
+    }
+    uint32_t typeId = 0;
+    const char *end = NULL;
+    if (!print_debuginfo_objdump_stabs_parseTypeId(p, &end, &typeId)) {
+        return 0;
+    }
+    *outTypeId = typeId;
+    return 1;
+}
+
+static int
 print_debuginfo_objdump_stabs_parseFullTypeDef(const char *stabStr, uint32_t *outTypeId, const char **outDef)
 {
     if (outTypeId) {
@@ -454,6 +480,129 @@ print_debuginfo_objdump_stabs_parseFullTypeDef(const char *stabStr, uint32_t *ou
     ++p;
     *outTypeId = typeId;
     *outDef = p;
+    return 1;
+}
+
+static int
+print_debuginfo_objdump_stabs_addStabsFunc(print_index_t *index, const char *name, uint32_t startPc, int *outFuncIndex)
+{
+    if (outFuncIndex) {
+        *outFuncIndex = -1;
+    }
+    if (!index || !name || !*name) {
+        return 0;
+    }
+    if (index->stabsFuncCount >= index->stabsFuncCap) {
+        int next = index->stabsFuncCap ? index->stabsFuncCap * 2 : 64;
+        print_stabs_func_t *nextFuncs =
+            (print_stabs_func_t *)alloc_realloc(index->stabsFuncs, sizeof(*nextFuncs) * (size_t)next);
+        if (!nextFuncs) {
+            return 0;
+        }
+        index->stabsFuncs = nextFuncs;
+        index->stabsFuncCap = next;
+    }
+    print_stabs_func_t *f = &index->stabsFuncs[index->stabsFuncCount];
+    memset(f, 0, sizeof(*f));
+    f->name = print_debuginfo_objdump_stabs_strdup(name);
+    if (!f->name) {
+        return 0;
+    }
+    f->startPc = startPc;
+    f->rootScopeIndex = -1;
+    f->scopeStart = index->stabsScopeCount;
+    f->varStart = index->stabsVarCount;
+    if (outFuncIndex) {
+        *outFuncIndex = index->stabsFuncCount;
+    }
+    index->stabsFuncCount++;
+    return 1;
+}
+
+static int
+print_debuginfo_objdump_stabs_addStabsScope(print_index_t *index,
+                                            uint32_t startPc,
+                                            int parentIndex,
+                                            uint8_t depth,
+                                            int *outScopeIndex)
+{
+    if (outScopeIndex) {
+        *outScopeIndex = -1;
+    }
+    if (!index) {
+        return 0;
+    }
+    if (index->stabsScopeCount >= index->stabsScopeCap) {
+        int next = index->stabsScopeCap ? index->stabsScopeCap * 2 : 256;
+        print_stabs_scope_t *nextScopes =
+            (print_stabs_scope_t *)alloc_realloc(index->stabsScopes, sizeof(*nextScopes) * (size_t)next);
+        if (!nextScopes) {
+            return 0;
+        }
+        index->stabsScopes = nextScopes;
+        index->stabsScopeCap = next;
+    }
+    print_stabs_scope_t *s = &index->stabsScopes[index->stabsScopeCount];
+    memset(s, 0, sizeof(*s));
+    s->startPc = startPc;
+    s->parentIndex = parentIndex;
+    s->depth = depth;
+    if (outScopeIndex) {
+        *outScopeIndex = index->stabsScopeCount;
+    }
+    index->stabsScopeCount++;
+    return 1;
+}
+
+static int
+print_debuginfo_objdump_stabs_setStabsScopeEnd(print_index_t *index, int scopeIndex, uint32_t endPc)
+{
+    if (!index || scopeIndex < 0 || scopeIndex >= index->stabsScopeCount) {
+        return 0;
+    }
+    print_stabs_scope_t *s = &index->stabsScopes[scopeIndex];
+    s->endPc = endPc;
+    s->hasEnd = 1;
+    return 1;
+}
+
+static int
+print_debuginfo_objdump_stabs_addStabsVar(print_index_t *index,
+                                          const char *name,
+                                          uint32_t typeRef,
+                                          int scopeIndex,
+                                          print_stabs_var_kind_t kind,
+                                          int32_t stackOffset,
+                                          uint8_t reg,
+                                          uint64_t constValue,
+                                          int hasConstValue)
+{
+    if (!index || !name || !*name) {
+        return 0;
+    }
+    if (index->stabsVarCount >= index->stabsVarCap) {
+        int next = index->stabsVarCap ? index->stabsVarCap * 2 : 256;
+        print_stabs_var_t *nextVars =
+            (print_stabs_var_t *)alloc_realloc(index->stabsVars, sizeof(*nextVars) * (size_t)next);
+        if (!nextVars) {
+            return 0;
+        }
+        index->stabsVars = nextVars;
+        index->stabsVarCap = next;
+    }
+    print_stabs_var_t *v = &index->stabsVars[index->stabsVarCount++];
+    memset(v, 0, sizeof(*v));
+    v->name = print_debuginfo_objdump_stabs_strdup(name);
+    if (!v->name) {
+        return 0;
+    }
+    v->typeRef = typeRef;
+    v->scopeIndex = scopeIndex;
+    v->kind = kind;
+    v->stackOffset = stackOffset;
+    v->reg = reg;
+    v->constValue = constValue;
+    v->hasConstValue = hasConstValue ? 1 : 0;
     return 1;
 }
 
@@ -1015,6 +1164,17 @@ print_debuginfo_objdump_stabs_loadSymbols(const char *elfPath, print_index_t *in
             continue;
         }
 
+        const char *nValueStr = tokens[4];
+        uint32_t nValue = 0;
+        int hasNValue = 0;
+        if (nValueStr && *nValueStr) {
+            errno = 0;
+            nValue = (uint32_t)strtoul(nValueStr, NULL, 16);
+            if (errno == 0) {
+                hasNValue = 1;
+            }
+        }
+
         // Collect STABS type definitions from LSYM entries.
         if (strcmp(stabType, "LSYM") == 0) {
             int startedTypeDef = 0;
@@ -1099,14 +1259,7 @@ print_debuginfo_objdump_stabs_loadSymbols(const char *elfPath, print_index_t *in
         }
         // Some toolchains emit inline type definitions on variable stabs, e.g. "name:G479=B477".
         print_debuginfo_objdump_stabs_maybeParseInlineTypeDef(stabStr, &typeDefs, &typeCap);
-
-        const char *nValueStr = tokens[4];
-        if (!nValueStr || !*nValueStr) {
-            continue;
-        }
-        errno = 0;
-        uint32_t nValue = (uint32_t)strtoul(nValueStr, NULL, 16);
-        if (errno != 0) {
+        if (!hasNValue) {
             continue;
         }
         char name[256];
@@ -1372,4 +1525,316 @@ print_debuginfo_objdump_stabs_loadSymbols(const char *elfPath, print_index_t *in
     }
     alloc_free(typeDefs);
     return added;
+}
+
+int
+print_debuginfo_objdump_stabs_loadLocals(const char *elfPath, print_index_t *index)
+{
+    if (!elfPath || !*elfPath || !index) {
+        return 0;
+    }
+    if (index->stabsFuncCount > 0) {
+        return 1;
+    }
+
+    print_debuginfo_objdump_stabs_type_def_t *typeDefs = NULL;
+    size_t typeCap = 0;
+
+    int currentFuncIndex = -1;
+    int scopeStack[64];
+    int scopeDepth = 0;
+
+    char objdump[PATH_MAX];
+    if (!debugger_toolchainBuildBinary(objdump, sizeof(objdump), "objdump")) {
+        return 0;
+    }
+    char cmd[PATH_MAX * 2];
+    snprintf(cmd, sizeof(cmd), "%s -G '%s'", objdump, elfPath);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        alloc_free(typeDefs);
+        return 0;
+    }
+    uint32_t pendingTypeId = 0;
+    char *pendingTypeDef = NULL;
+    int pendingTypeContinue = 0;
+    char line[2048];
+    while (fgets(line, sizeof(line), fp)) {
+        char *tokens[12];
+        int count = 0;
+        char *cursor = line;
+        while (*cursor && isspace((unsigned char)*cursor)) {
+            ++cursor;
+        }
+        if (!*cursor) {
+            continue;
+        }
+        while (count < (int)(sizeof(tokens) / sizeof(tokens[0]))) {
+            while (*cursor && isspace((unsigned char)*cursor)) {
+                ++cursor;
+            }
+            if (!*cursor) {
+                break;
+            }
+            tokens[count++] = cursor;
+            while (*cursor && !isspace((unsigned char)*cursor)) {
+                ++cursor;
+            }
+            if (*cursor) {
+                *cursor++ = '\0';
+            }
+        }
+        if (count < 7) {
+            continue;
+        }
+        const char *stabType = tokens[1];
+        if (!stabType) {
+            continue;
+        }
+        const char *stabStr = tokens[count - 1];
+        if (!stabStr || !*stabStr) {
+            continue;
+        }
+
+        const char *nValueStr = tokens[4];
+        uint32_t nValue = 0;
+        int hasNValue = 0;
+        if (nValueStr && *nValueStr) {
+            errno = 0;
+            nValue = (uint32_t)strtoul(nValueStr, NULL, 16);
+            if (errno == 0) {
+                hasNValue = 1;
+            }
+        }
+
+        // Collect STABS type definitions from LSYM entries.
+        if (strcmp(stabType, "LSYM") == 0) {
+            int handledType = 0;
+            int startedTypeDef = 0;
+            uint32_t typeId = 0;
+            uint32_t alias = 0;
+            uint32_t bits = 0;
+            const char *def = NULL;
+            if (print_debuginfo_objdump_stabs_parseFullTypeDef(stabStr, &typeId, &def)) {
+                startedTypeDef = 1;
+                handledType = 1;
+                if (pendingTypeDef) {
+                    print_debuginfo_objdump_stabs_typeEnsure(&typeDefs, &typeCap, pendingTypeId);
+                    if (pendingTypeId < typeCap && !typeDefs[pendingTypeId].def) {
+                        typeDefs[pendingTypeId].def = pendingTypeDef;
+                        pendingTypeDef = NULL;
+                        print_debuginfo_objdump_stabs_splitNestedAliasDef(&typeDefs, &typeCap, pendingTypeId);
+                    } else {
+                        alloc_free(pendingTypeDef);
+                        pendingTypeDef = NULL;
+                    }
+                    pendingTypeId = 0;
+                    pendingTypeContinue = 0;
+                }
+                print_debuginfo_objdump_stabs_typeEnsure(&typeDefs, &typeCap, typeId);
+                if (typeId < typeCap) {
+                    if (def && *def) {
+                        pendingTypeId = typeId;
+                        pendingTypeDef = print_debuginfo_objdump_stabs_strdup(def);
+                        if (pendingTypeDef) {
+                            pendingTypeContinue = print_debuginfo_objdump_stabs_stripslash(pendingTypeDef);
+                            if (!pendingTypeContinue && !typeDefs[typeId].def) {
+                                typeDefs[typeId].def = pendingTypeDef;
+                                pendingTypeDef = NULL;
+                                print_debuginfo_objdump_stabs_splitNestedAliasDef(&typeDefs, &typeCap, typeId);
+                            }
+                        }
+                    }
+                    if (!typeDefs[typeId].name) {
+                        char typeName[256];
+                        if (print_debuginfo_objdump_stabs_parseStabStringName(stabStr, typeName, sizeof(typeName))) {
+                            typeDefs[typeId].name = print_debuginfo_objdump_stabs_strdup(typeName);
+                        }
+                    }
+                }
+            }
+            if (print_debuginfo_objdump_stabs_parseTypeDef(stabStr, &typeId, &alias, &bits)) {
+                handledType = 1;
+                print_debuginfo_objdump_stabs_typeEnsure(&typeDefs, &typeCap, typeId);
+                if (typeId < typeCap) {
+                    if (alias != 0) {
+                        typeDefs[typeId].alias = alias;
+                    }
+                    if (bits != 0) {
+                        typeDefs[typeId].bits = bits;
+                    }
+                }
+            }
+            if (!startedTypeDef && pendingTypeDef && pendingTypeContinue) {
+                handledType = 1;
+                char pieceBuf[2048];
+                strncpy(pieceBuf, stabStr, sizeof(pieceBuf) - 1);
+                pieceBuf[sizeof(pieceBuf) - 1] = '\0';
+                int cont = print_debuginfo_objdump_stabs_stripslash(pieceBuf);
+                (void)print_debuginfo_objdump_stabs_appendString(&pendingTypeDef, pieceBuf);
+                pendingTypeContinue = cont;
+                if (!pendingTypeContinue) {
+                    print_debuginfo_objdump_stabs_typeEnsure(&typeDefs, &typeCap, pendingTypeId);
+                    if (pendingTypeId < typeCap && !typeDefs[pendingTypeId].def) {
+                        typeDefs[pendingTypeId].def = pendingTypeDef;
+                        pendingTypeDef = NULL;
+                        print_debuginfo_objdump_stabs_splitNestedAliasDef(&typeDefs, &typeCap, pendingTypeId);
+                    } else {
+                        alloc_free(pendingTypeDef);
+                        pendingTypeDef = NULL;
+                    }
+                    pendingTypeId = 0;
+                    pendingTypeContinue = 0;
+                }
+            }
+            if (handledType) {
+                continue;
+            }
+        }
+
+        if (strcmp(stabType, "FUN") == 0) {
+            char funcName[256];
+            int hasName = print_debuginfo_objdump_stabs_parseStabStringName(stabStr, funcName, sizeof(funcName));
+            if (hasName && hasNValue) {
+                if (currentFuncIndex >= 0) {
+                    print_stabs_func_t *prev = &index->stabsFuncs[currentFuncIndex];
+                    prev->scopeCount = index->stabsScopeCount - prev->scopeStart;
+                    prev->varCount = index->stabsVarCount - prev->varStart;
+                }
+                currentFuncIndex = -1;
+                scopeDepth = 0;
+                if (print_debuginfo_objdump_stabs_addStabsFunc(index, funcName, nValue, &currentFuncIndex)) {
+                    print_stabs_func_t *cur = &index->stabsFuncs[currentFuncIndex];
+                    int rootScopeIndex = -1;
+                    if (print_debuginfo_objdump_stabs_addStabsScope(index, nValue, -1, 0, &rootScopeIndex)) {
+                        cur->rootScopeIndex = rootScopeIndex;
+                        scopeStack[0] = rootScopeIndex;
+                        scopeDepth = 1;
+                    }
+                }
+            } else if (!hasName && currentFuncIndex >= 0 && hasNValue && nValue != 0) {
+                print_stabs_func_t *cur = &index->stabsFuncs[currentFuncIndex];
+                if (!cur->hasEnd) {
+                    cur->endPc = cur->startPc + nValue;
+                    cur->hasEnd = 1;
+                    if (cur->rootScopeIndex >= 0 && cur->rootScopeIndex < index->stabsScopeCount) {
+                        (void)print_debuginfo_objdump_stabs_setStabsScopeEnd(index, cur->rootScopeIndex, cur->endPc);
+                    }
+                }
+            }
+            continue;
+        }
+
+        if (strcmp(stabType, "ENSYM") == 0) {
+            if (currentFuncIndex >= 0 && hasNValue) {
+                print_stabs_func_t *cur = &index->stabsFuncs[currentFuncIndex];
+                if (!cur->hasEnd && nValue > cur->startPc) {
+                    cur->endPc = nValue;
+                    cur->hasEnd = 1;
+                    if (cur->rootScopeIndex >= 0 && cur->rootScopeIndex < index->stabsScopeCount) {
+                        (void)print_debuginfo_objdump_stabs_setStabsScopeEnd(index, cur->rootScopeIndex, cur->endPc);
+                    }
+                }
+            }
+            continue;
+        }
+
+        if (strcmp(stabType, "LBRAC") == 0) {
+            if (currentFuncIndex >= 0 && hasNValue && scopeDepth > 0 && scopeDepth < (int)(sizeof(scopeStack) / sizeof(scopeStack[0]))) {
+                int parent = scopeStack[scopeDepth - 1];
+                uint8_t depth = (uint8_t)scopeDepth;
+                int scopeIndex = -1;
+                if (print_debuginfo_objdump_stabs_addStabsScope(index, nValue, parent, depth, &scopeIndex)) {
+                    scopeStack[scopeDepth++] = scopeIndex;
+                }
+            }
+            continue;
+        }
+
+        if (strcmp(stabType, "RBRAC") == 0) {
+            if (currentFuncIndex >= 0 && hasNValue && scopeDepth > 1) {
+                int scopeIndex = scopeStack[scopeDepth - 1];
+                (void)print_debuginfo_objdump_stabs_setStabsScopeEnd(index, scopeIndex, nValue);
+                --scopeDepth;
+                print_stabs_func_t *cur = &index->stabsFuncs[currentFuncIndex];
+                if (cur->rootScopeIndex >= 0 && cur->rootScopeIndex < index->stabsScopeCount && !cur->hasEnd) {
+                    int parent = index->stabsScopes[scopeIndex].parentIndex;
+                    if (parent == cur->rootScopeIndex && nValue > cur->startPc) {
+                        cur->endPc = nValue;
+                        cur->hasEnd = 1;
+                        (void)print_debuginfo_objdump_stabs_setStabsScopeEnd(index, cur->rootScopeIndex, cur->endPc);
+                    }
+                }
+            }
+            continue;
+        }
+
+        if (strcmp(stabType, "PSYM") == 0 || strcmp(stabType, "RSYM") == 0 || strcmp(stabType, "LSYM") == 0) {
+            if (currentFuncIndex >= 0) {
+                print_debuginfo_objdump_stabs_maybeParseInlineTypeDef(stabStr, &typeDefs, &typeCap);
+
+                char name[256];
+                if (print_debuginfo_objdump_stabs_parseStabStringName(stabStr, name, sizeof(name))) {
+                    uint32_t typeId = 0;
+                    (void)print_debuginfo_objdump_stabs_parseVarTypeIdLoose(stabStr, &typeId);
+                    uint32_t typeRef = 0;
+                    if (typeId != 0 && typeId < typeCap) {
+                        print_type_t *t = print_debuginfo_objdump_stabs_buildType(index, typeDefs, typeCap, typeId, 0);
+                        if (t) {
+                            typeRef = t->dieOffset;
+                        }
+                    }
+                    int scopeIndex = -1;
+                    if (scopeDepth > 0) {
+                        scopeIndex = scopeStack[scopeDepth - 1];
+                    } else {
+                        print_stabs_func_t *cur = &index->stabsFuncs[currentFuncIndex];
+                        scopeIndex = cur->rootScopeIndex;
+                    }
+                    if (strcmp(stabType, "RSYM") == 0) {
+                        if (hasNValue) {
+                            (void)print_debuginfo_objdump_stabs_addStabsVar(index, name, typeRef, scopeIndex,
+                                                                           print_stabs_var_reg, 0, (uint8_t)nValue, 0, 0);
+                        }
+                    } else if (hasNValue) {
+                        (void)print_debuginfo_objdump_stabs_addStabsVar(index, name, typeRef, scopeIndex,
+                                                                       print_stabs_var_stack, (int32_t)nValue, 0, 0, 0);
+                    }
+                }
+            }
+            continue;
+        }
+    }
+    pclose(fp);
+
+    if (pendingTypeDef) {
+        print_debuginfo_objdump_stabs_typeEnsure(&typeDefs, &typeCap, pendingTypeId);
+        if (pendingTypeId < typeCap && !typeDefs[pendingTypeId].def) {
+            typeDefs[pendingTypeId].def = pendingTypeDef;
+            pendingTypeDef = NULL;
+            print_debuginfo_objdump_stabs_splitNestedAliasDef(&typeDefs, &typeCap, pendingTypeId);
+        } else {
+            alloc_free(pendingTypeDef);
+            pendingTypeDef = NULL;
+        }
+        pendingTypeId = 0;
+        pendingTypeContinue = 0;
+    }
+
+    if (currentFuncIndex >= 0) {
+        print_stabs_func_t *cur = &index->stabsFuncs[currentFuncIndex];
+        cur->scopeCount = index->stabsScopeCount - cur->scopeStart;
+        cur->varCount = index->stabsVarCount - cur->varStart;
+    }
+    if (typeDefs) {
+        for (size_t i = 0; i < typeCap; ++i) {
+            alloc_free(typeDefs[i].def);
+            typeDefs[i].def = NULL;
+            alloc_free(typeDefs[i].name);
+            typeDefs[i].name = NULL;
+        }
+    }
+    alloc_free(typeDefs);
+
+    return index->stabsFuncCount > 0 ? 1 : 0;
 }

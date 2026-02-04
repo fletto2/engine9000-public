@@ -138,10 +138,20 @@ config_persistConfig(FILE *f)
 void
 config_saveConfig(void)
 {
-  if (debugger.smokeTestMode != 0 || ui_test_getMode() != UI_TEST_MODE_NONE) {
-    return;
-  }
-  e9ui_saveLayout(debugger_configPath());
+    if (debugger.smokeTestMode != 0) {
+        return;
+    }
+    const char *path = debugger_configPath();
+    if (ui_test_getMode() != UI_TEST_MODE_NONE) {
+        const char *tempPath = debugger_configTempPath();
+        if (tempPath && *tempPath) {
+            path = tempPath;
+        }
+    }
+    if (!path || !*path) {
+        return;
+    }
+    e9ui_saveLayout(path);
 }
 
 void

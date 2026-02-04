@@ -61,6 +61,7 @@ typedef struct target_iface
     void (*audioEnable)(int enabled);
     int coreIndex;
     int mousePort;
+    SDL_Renderer *badgeRenderer;
     SDL_Texture *badge;
     int badgeW;
     int badgeH;

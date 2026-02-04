@@ -1,8 +1,5 @@
 UI_TESTS=test-uibasic
 
-HEADLESS=
-HEADLESS+=--headless
-
 # makers
 
 make-test-uibasic: all 
@@ -17,7 +14,7 @@ remake-test-uibasic: all
 # testers
 
 test-uibasic: all
-	@printf "UI BASIC EXAMPLE..."
+	@printf "UI BASIC EXAMPLE ($@) ..."
 	@./e9k-debugger $(HEADLESS) --neogeo --source-dir=./tests/neogeo/basic --elf=./tests/neogeo/basic/basic.elf --rom=./tests/neogeo/basic/basic.neo --test tests/results/ui/basic >> test.log 2>&1
 	@echo "PASSED ✅"
 

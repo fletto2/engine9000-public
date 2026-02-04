@@ -265,9 +265,17 @@ settings_applyToolbarMode(void)
     }
     int childTotal = e9ui_child_enumerateREMOVETHIS(e9ui->toolbar, &e9ui->ctx, kids, childCount);
     for (int childIndex = 0; childIndex < childTotal; ++childIndex) {
-        if (kids[childIndex] && kids[childIndex] != e9ui->settingsButton) {
-            e9ui_childRemove(e9ui->toolbar, kids[childIndex], &e9ui->ctx);
+        e9ui_component_t *child = kids[childIndex];
+        if (!child) {
+            continue;
         }
+        if (child == e9ui->settingsButton) {
+            continue;
+        }
+        if (child->name && strcmp(child->name, "e9ui_button") != 0) {
+            continue;
+        }
+        e9ui_childRemove(e9ui->toolbar, child, &e9ui->ctx);
     }
     alloc_free(kids);
     e9ui->profileButton = NULL;

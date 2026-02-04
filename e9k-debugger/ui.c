@@ -555,7 +555,7 @@ ui_build(void)
 
     e9ui_component_t *btn_speed = e9ui_button_make("", ui_speedToggle, NULL);
     e9ui_button_setIconAsset(btn_speed, "assets/icons/speed_normal.png");
-    e9ui_setTooltip(btn_speed, "Speed toggle - F5");
+    e9ui_setTooltip(btn_speed, "Warp - F5");
     e9ui_button_registerHotkey(btn_speed, &e9ui->ctx, SDLK_F5, 0, 0);
     e9ui->speedButton = btn_speed;
     ui_speedButtonRefresh();

@@ -280,7 +280,7 @@ print_eval_resolveAbstractOrigin(print_index_t *index, const print_dwarf_node_t 
 }
 
 static int
-print_eval_resolveLocal(const char *name, print_index_t *index, print_value_t *out, int typeOnly)
+print_eval_resolveLocalDwarf(const char *name, print_index_t *index, print_value_t *out, int typeOnly)
 {
     if (!name || !*name || !index || !out) {
         return 0;
@@ -438,6 +438,180 @@ print_eval_resolveLocal(const char *name, print_index_t *index, print_value_t *o
 }
 
 static int
+print_eval_stabsScopeContainsPc(const print_stabs_scope_t *scope, uint32_t pcRel)
+{
+    if (!scope) {
+        return 0;
+    }
+    if (pcRel < scope->startPc) {
+        return 0;
+    }
+    if (scope->hasEnd && pcRel >= scope->endPc) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+print_eval_resolveLocalStabs(const char *name, print_index_t *index, print_value_t *out, int typeOnly)
+{
+    if (!name || !*name || !index || !out) {
+        return 0;
+    }
+    if (machine_getRunning(debugger.machine)) {
+        return 0;
+    }
+    if (index->stabsFuncCount <= 0 || index->stabsScopeCount <= 0 || index->stabsVarCount <= 0) {
+        return 0;
+    }
+    unsigned long pcRaw = 0;
+    if (!machine_findReg(&debugger.machine, "PC", &pcRaw)) {
+        return 0;
+    }
+    uint32_t pc = (uint32_t)pcRaw & 0x00ffffffu;
+    uint32_t pcRel = pc;
+    uint32_t base = debugger.machine.textBaseAddr;
+    if (base != 0 && pcRel >= base) {
+        pcRel -= base;
+    }
+
+    int funcIndex = -1;
+    uint32_t bestStart = 0;
+    for (int i = 0; i < index->stabsFuncCount; ++i) {
+        print_stabs_func_t *f = &index->stabsFuncs[i];
+        if (!f->name || !*f->name) {
+            continue;
+        }
+        if (pcRel < f->startPc) {
+            continue;
+        }
+        if (f->hasEnd && pcRel >= f->endPc) {
+            continue;
+        }
+        if (funcIndex < 0 || f->startPc >= bestStart) {
+            funcIndex = i;
+            bestStart = f->startPc;
+        }
+    }
+    if (funcIndex < 0) {
+        return 0;
+    }
+
+    print_stabs_func_t *func = &index->stabsFuncs[funcIndex];
+    int bestScopeIndex = func->rootScopeIndex;
+    int bestDepth = -1;
+    uint64_t bestSize = UINT64_MAX;
+    int scopeBegin = func->scopeStart;
+    int scopeEnd = func->scopeStart + func->scopeCount;
+    if (scopeBegin < 0) {
+        scopeBegin = 0;
+    }
+    if (scopeEnd > index->stabsScopeCount) {
+        scopeEnd = index->stabsScopeCount;
+    }
+    for (int i = scopeBegin; i < scopeEnd; ++i) {
+        print_stabs_scope_t *s = &index->stabsScopes[i];
+        if (!print_eval_stabsScopeContainsPc(s, pcRel)) {
+            continue;
+        }
+        uint64_t size = UINT64_MAX;
+        if (s->hasEnd && s->endPc > s->startPc) {
+            size = (uint64_t)(s->endPc - s->startPc);
+        }
+        int depth = (int)s->depth;
+        if (depth > bestDepth || (depth == bestDepth && size < bestSize)) {
+            bestScopeIndex = i;
+            bestDepth = depth;
+            bestSize = size;
+        }
+    }
+    if (bestScopeIndex < 0 || bestScopeIndex >= index->stabsScopeCount) {
+        return 0;
+    }
+
+    unsigned long spRaw = 0;
+    if (!machine_findReg(&debugger.machine, "A7", &spRaw)) {
+        return 0;
+    }
+    uint32_t sp = (uint32_t)spRaw;
+
+    int scopeIndex = bestScopeIndex;
+    while (scopeIndex >= 0 && scopeIndex < index->stabsScopeCount) {
+        int varBegin = func->varStart;
+        int varEnd = func->varStart + func->varCount;
+        if (varBegin < 0) {
+            varBegin = 0;
+        }
+        if (varEnd > index->stabsVarCount) {
+            varEnd = index->stabsVarCount;
+        }
+        for (int v = varBegin; v < varEnd; ++v) {
+            print_stabs_var_t *var = &index->stabsVars[v];
+            if (var->scopeIndex != scopeIndex) {
+                continue;
+            }
+            if (!var->name || strcmp(var->name, name) != 0) {
+                continue;
+            }
+
+            print_type_t *type = NULL;
+            if (var->typeRef != 0) {
+                type = print_eval_getType(index, var->typeRef);
+            }
+            if (!type) {
+                type = print_eval_defaultU32(index);
+            }
+
+            if (var->kind == print_stabs_var_stack) {
+                int64_t addr64 = (int64_t)(uint64_t)sp + (int64_t)var->stackOffset;
+                uint32_t addr = (uint32_t)addr64 & 0x00ffffffu;
+                if (typeOnly) {
+                    *out = print_eval_makeAddressValue(type, 0);
+                    out->hasAddress = 0;
+                } else {
+                    *out = print_eval_makeAddressValue(type, addr);
+                }
+                return 1;
+            }
+            if (var->kind == print_stabs_var_reg) {
+                uint32_t regVal = 0;
+                if (!print_eval_getRegValueByDwarfReg(var->reg, &regVal)) {
+                    return 0;
+                }
+                if (typeOnly) {
+                    *out = print_eval_makeImmediateValue(type, 0);
+                    out->hasImmediate = 0;
+                } else {
+                    *out = print_eval_makeImmediateValue(type, (uint64_t)regVal);
+                }
+                return 1;
+            }
+            if (var->kind == print_stabs_var_const && var->hasConstValue) {
+                if (typeOnly) {
+                    *out = print_eval_makeImmediateValue(type, 0);
+                    out->hasImmediate = 0;
+                } else {
+                    *out = print_eval_makeImmediateValue(type, var->constValue);
+                }
+                return 1;
+            }
+            return 0;
+        }
+        scopeIndex = index->stabsScopes[scopeIndex].parentIndex;
+    }
+    return 0;
+}
+
+static int
+print_eval_resolveLocal(const char *name, print_index_t *index, print_value_t *out, int typeOnly)
+{
+    if (print_eval_resolveLocalDwarf(name, index, out, typeOnly)) {
+        return 1;
+    }
+    return print_eval_resolveLocalStabs(name, index, out, typeOnly);
+}
+
+static int
 print_eval_addVariable(print_index_t *index, const char *name, uint32_t addr, uint32_t typeRef, size_t byteSize, int hasByteSize)
 {
     if (!index || !name || !*name) {
@@ -504,6 +678,24 @@ print_eval_clearIndex(print_index_t *index)
     index->vars = NULL;
     index->varCount = 0;
     index->varCap = 0;
+    for (int i = 0; i < index->stabsFuncCount; ++i) {
+        print_eval_freeString(index->stabsFuncs[i].name);
+    }
+    alloc_free(index->stabsFuncs);
+    index->stabsFuncs = NULL;
+    index->stabsFuncCount = 0;
+    index->stabsFuncCap = 0;
+    alloc_free(index->stabsScopes);
+    index->stabsScopes = NULL;
+    index->stabsScopeCount = 0;
+    index->stabsScopeCap = 0;
+    for (int i = 0; i < index->stabsVarCount; ++i) {
+        print_eval_freeString(index->stabsVars[i].name);
+    }
+    alloc_free(index->stabsVars);
+    index->stabsVars = NULL;
+    index->stabsVarCount = 0;
+    index->stabsVarCap = 0;
     for (int i = 0; i < index->typeCount; ++i) {
         print_type_t *type = index->types[i];
         if (type) {
@@ -1032,8 +1224,11 @@ print_eval_loadIndex(print_index_t *index)
             debug_printf("print: falling back to objdump -G (STABS)\n");
         }
         (void)print_debuginfo_objdump_stabs_loadSymbols(elfPath, index);
+        (void)print_debuginfo_objdump_stabs_loadLocals(elfPath, index);
         if (print_eval_debugEnabled()) {
-            debug_printf("print: stabs pass symbols=%d\n", index->symbolCount);
+            debug_printf("print: stabs pass symbols=%d vars=%d stabsFuncs=%d stabsScopes=%d stabsVars=%d\n",
+                         index->symbolCount, index->varCount,
+                         index->stabsFuncCount, index->stabsScopeCount, index->stabsVarCount);
         }
     }
     print_eval_buildSymbolLookup(index);

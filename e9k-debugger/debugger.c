@@ -51,8 +51,34 @@ e9k_debugger_t debugger;
 e9ui_global_t *e9ui = &_e9ui;
 
 static int debugger_analyseInitFailed = 0;
+static int debugger_loadTestTempConfig = 0;
+static int debugger_testRestartCount = 0;
 
 static int debugger_pathExistsFile(const char *path);
+
+void
+debugger_setLoadTestTempConfig(int enabled)
+{
+    debugger_loadTestTempConfig = enabled ? 1 : 0;
+}
+
+int
+debugger_getLoadTestTempConfig(void)
+{
+    return debugger_loadTestTempConfig ? 1 : 0;
+}
+
+void
+debugger_setTestRestartCount(int count)
+{
+    debugger_testRestartCount = count > 0 ? count : 0;
+}
+
+int
+debugger_getTestRestartCount(void)
+{
+    return debugger_testRestartCount;
+}
 
 void
 debugger_onSetDebugBaseFromCore(uint32_t section, uint32_t base)
@@ -458,7 +484,7 @@ debugger_main(int argc, char **argv)
   if (!ui_test_bootstrap()) {
     return 1;
   }
-  if (ui_test_getMode() == UI_TEST_MODE_COMPARE || ui_test_getMode() == UI_TEST_MODE_REMAKE) {
+  if (ui_test_getMode() != UI_TEST_MODE_NONE) {
     config_loadConfig();
     debugger_captureBootSaveDirs();
     if (debugger.cliCoreSystemOverride) {

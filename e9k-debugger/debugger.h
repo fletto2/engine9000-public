@@ -71,6 +71,7 @@ typedef struct amiga_debug {
 } amiga_debug_t;
 
 typedef struct e9k_system_config {
+    //debugger_system_type_t coreSystem;
     struct target_iface* target;
     e9k_neogeo_config_t neogeo;
     e9k_amiga_config_t amiga;
@@ -146,6 +147,24 @@ extern e9k_debugger_t debugger;
 
 char *
 debugger_configPath(void);
+
+char *
+debugger_defaultConfigPath(void);
+
+char *
+debugger_configTempPath(void);
+
+void
+debugger_setLoadTestTempConfig(int enabled);
+
+int
+debugger_getLoadTestTempConfig(void);
+
+void
+debugger_setTestRestartCount(int count);
+
+int
+debugger_getTestRestartCount(void);
 
 void
 debugger_toggleSpeed(void);

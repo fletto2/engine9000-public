@@ -17,9 +17,19 @@ main(int argc, char **argv)
 #endif
 {
   int rc = 0;
+  int loadTestTempConfig = 0;
+  int testRestartCount = 0;
   cli_setArgv0((argc > 0 && argv) ? argv[0] : NULL);
   do {
+    debugger_setLoadTestTempConfig(loadTestTempConfig);
+    debugger_setTestRestartCount(testRestartCount);
     rc = debugger_main(argc, argv);
+    if (rc == 2) {
+      loadTestTempConfig = 1;
+      testRestartCount++;
+    } else {
+      loadTestTempConfig = 0;
+    }
   } while (rc == 2);
   return rc;
 }

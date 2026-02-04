@@ -46,6 +46,57 @@ static uint8_t *ui_test_captureFrameBuf = NULL;
 static size_t ui_test_captureFrameCap = 0;
 static const char ui_test_sessionConfigName[] = ".e9k-debugger.cfg";
 
+static int
+ui_test_restartCount(void)
+{
+    int count = debugger_getTestRestartCount();
+    return count > 0 ? count : 0;
+}
+
+static void
+ui_test_prefix(char *out, size_t cap)
+{
+    if (!out || cap == 0) {
+        return;
+    }
+    int restartCount = ui_test_restartCount();
+    if (restartCount <= 0) {
+        out[0] = '\0';
+        return;
+    }
+    snprintf(out, cap, "r%d-", restartCount);
+}
+
+static void
+ui_test_formatFrameName(char *out, size_t cap, uint64_t frame)
+{
+    if (!out || cap == 0) {
+        return;
+    }
+    char prefix[32];
+    ui_test_prefix(prefix, sizeof(prefix));
+    if (prefix[0]) {
+        snprintf(out, cap, "%s%llu.png", prefix, (unsigned long long)frame);
+    } else {
+        snprintf(out, cap, "%llu.png", (unsigned long long)frame);
+    }
+}
+
+static void
+ui_test_formatMismatchName(char *out, size_t cap, uint64_t frame, const char *suffix)
+{
+    if (!out || cap == 0) {
+        return;
+    }
+    char prefix[32];
+    ui_test_prefix(prefix, sizeof(prefix));
+    if (prefix[0]) {
+        snprintf(out, cap, "%smismatch-%llu%s", prefix, (unsigned long long)frame, suffix ? suffix : "");
+    } else {
+        snprintf(out, cap, "mismatch-%llu%s", (unsigned long long)frame, suffix ? suffix : "");
+    }
+}
+
 void
 ui_test_setFolder(const char *path)
 {
@@ -254,9 +305,9 @@ ui_test_init(void)
         ui_test_enabled = 0;
         return 0;
     }
-    if (ui_test_mode == UI_TEST_MODE_RECORD) {
+    if (ui_test_mode == UI_TEST_MODE_RECORD && ui_test_restartCount() == 0) {
         ui_test_clearFolder(ui_test_folder);
-    } else if (ui_test_mode == UI_TEST_MODE_REMAKE) {
+    } else if (ui_test_mode == UI_TEST_MODE_REMAKE && ui_test_restartCount() == 0) {
         ui_test_clearPngOnly(ui_test_folder);
     }
     if (ui_test_mode == UI_TEST_MODE_NONE) {
@@ -356,7 +407,7 @@ ui_test_copySessionConfigForRecord(void)
         return 0;
     }
 
-    const char *srcPath = debugger_configPath();
+    const char *srcPath = debugger_defaultConfigPath();
     if (!srcPath || !*srcPath) {
         return 0;
     }
@@ -476,7 +527,15 @@ ui_test_getRecordPath(char *out, size_t cap)
     if (!out || cap == 0 || !ui_test_folder[0]) {
         return 0;
     }
-    return debugger_platform_pathJoin(out, cap, ui_test_folder, "uitest.inp");
+    char name[128];
+    char prefix[32];
+    ui_test_prefix(prefix, sizeof(prefix));
+    if (prefix[0]) {
+        snprintf(name, sizeof(name), "%suitest.inp", prefix);
+    } else {
+        snprintf(name, sizeof(name), "uitest.inp");
+    }
+    return debugger_platform_pathJoin(out, cap, ui_test_folder, name);
 }
 
 int
@@ -485,14 +544,22 @@ ui_test_getUiEventPath(char *out, size_t cap)
     if (!out || cap == 0 || !ui_test_folder[0]) {
         return 0;
     }
-    return debugger_platform_pathJoin(out, cap, ui_test_folder, "uitest.evt");
+    char name[128];
+    char prefix[32];
+    ui_test_prefix(prefix, sizeof(prefix));
+    if (prefix[0]) {
+        snprintf(name, sizeof(name), "%suitest.evt", prefix);
+    } else {
+        snprintf(name, sizeof(name), "uitest.evt");
+    }
+    return debugger_platform_pathJoin(out, cap, ui_test_folder, name);
 }
 
 static int
 ui_test_writeFrame(uint64_t frame, const uint8_t *data, int width, int height, size_t pitch)
 {
-    char name[64];
-    snprintf(name, sizeof(name), "%llu.png", (unsigned long long)frame);
+    char name[128];
+    ui_test_formatFrameName(name, sizeof(name), frame);
     char path[PATH_MAX];
     if (!debugger_platform_pathJoin(path, sizeof(path), ui_test_folder, name)) {
         return 0;
@@ -514,8 +581,8 @@ static int
 ui_test_writeMismatchImage(uint64_t frame, const uint8_t *data, int width, int height, size_t pitch,
                             char *outPath, size_t cap)
 {
-    char name[64];
-    snprintf(name, sizeof(name), "mismatch-%llu.png", (unsigned long long)frame);
+    char name[128];
+    ui_test_formatMismatchName(name, sizeof(name), frame, ".png");
     char path[PATH_MAX];
     if (!debugger_platform_pathJoin(path, sizeof(path), ui_test_folder, name)) {
         return 0;
@@ -544,26 +611,26 @@ ui_test_writeDiffScript(uint64_t frame, const char *refPath, const char *testPat
         return 0;
     }
 
-    char compareName[64];
-    snprintf(compareName, sizeof(compareName), "mismatch-%llu-compare.png", (unsigned long long)frame);
+    char compareName[128];
+    ui_test_formatMismatchName(compareName, sizeof(compareName), frame, "-compare.png");
     char comparePath[PATH_MAX];
     if (!debugger_platform_pathJoin(comparePath, sizeof(comparePath), ui_test_folder, compareName)) {
         return 0;
     }
 
-    char montageName[64];
-    snprintf(montageName, sizeof(montageName), "mismatch-%llu-triple.png", (unsigned long long)frame);
+    char montageName[128];
+    ui_test_formatMismatchName(montageName, sizeof(montageName), frame, "-triple.png");
     char montagePath[PATH_MAX];
     if (!debugger_platform_pathJoin(montagePath, sizeof(montagePath), ui_test_folder, montageName)) {
         return 0;
     }
 
 #ifdef _WIN32
-    char scriptName[64];
-    snprintf(scriptName, sizeof(scriptName), "mismatch-%llu.cmd", (unsigned long long)frame);
+    char scriptName[128];
+    ui_test_formatMismatchName(scriptName, sizeof(scriptName), frame, ".cmd");
 #else
-    char scriptName[64];
-    snprintf(scriptName, sizeof(scriptName), "mismatch-%llu.sh", (unsigned long long)frame);
+    char scriptName[128];
+    ui_test_formatMismatchName(scriptName, sizeof(scriptName), frame, ".sh");
 #endif
     char scriptPath[PATH_MAX];
     if (!debugger_platform_pathJoin(scriptPath, sizeof(scriptPath), ui_test_folder, scriptName)) {
@@ -665,8 +732,8 @@ ui_test_updatePrevFrame(const uint8_t *data, int width, int height, size_t pitch
 static int
 ui_test_compareFrame(uint64_t frame, const uint8_t *data, int width, int height, size_t pitch)
 {
-    char name[64];
-    snprintf(name, sizeof(name), "%llu.png", (unsigned long long)frame);
+    char name[128];
+    ui_test_formatFrameName(name, sizeof(name), frame);
     char path[PATH_MAX];
     if (!debugger_platform_pathJoin(path, sizeof(path), ui_test_folder, name)) {
         return 0;

@@ -156,7 +156,7 @@ Global debugger hotkeys
 | `F2` | Screenshot to clipboard |
 | `F3` | Amiga <-> Neo Geo |
 | `F4` | Toggle rolling state record |
-| `F5` | Speed toggle |
+| `F5` | Warp |
 | `F6` | Toggle audio |
 | `F7` | Save state |
 | `F8` | Restore state |
