@@ -156,3 +156,17 @@ test-neogeo: $(NEOGEO_TESTS)
 	@echo
 	@echo "✅✅✅ NEO GEO TESTS PASSED ✅✅✅"
 
+test-remake-amiga: $(AMIGA_REMAKE)
+	@echo
+	@echo "✅✅✅ REMAKE AMIGA COMPLETE ✅✅✅"
+
+test-remake-ui: $(UI_REMAKE)
+	@echo
+	@echo "✅✅✅ REMAKE UI COMPLETE ✅✅✅"
+
+test-remake-neogeo: $(NEOGEO_REMAKE)
+	@echo
+	@echo "✅✅✅ REMAKE NEOGEO COMPLETE ✅✅✅"
+
+test-show: HEADLESS :=
+test-show: test

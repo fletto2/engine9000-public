@@ -4,6 +4,8 @@ Amiga/Neo Geo debugger/profiler - under heavy development so likely to be unstab
 
 Expect file format changes, regressions and other incompatibilities with new versions. 
 
+NOTE: You might see automated tests in this repo - these are currently not useable (for anyone but me) as they require data that's not yet in this repo - stay tuned
+
 The UI is custom SDL2, so expect some weird UI experiences.
 
 <p align="center">

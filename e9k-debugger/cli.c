@@ -6,6 +6,7 @@
  * See COPYING for license details
  */
 
+#include <sys/stat.h>
 
 #include "cli.h"
 #include "debugger.h"
@@ -49,6 +50,26 @@ cli_setError(const char *message)
         debug_error("%s", message);
     }
     cli_errorFlag = 1;
+}
+
+static int
+cli_uiTestSessionConfigExists(const char *folder, char *outCfgPath, size_t outCap)
+{
+    if (!folder || !*folder || !outCfgPath || outCap == 0) {
+        return 0;
+    }
+    if (!debugger_platform_pathJoin(outCfgPath, outCap, folder, ".e9k-debugger.cfg")) {
+        outCfgPath[0] = '\0';
+        return 0;
+    }
+    struct stat st;
+    if (stat(outCfgPath, &st) != 0) {
+        return 0;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        return 0;
+    }
+    return 1;
 }
 
 static const target_iface_t*
@@ -422,6 +443,15 @@ cli_parseArgs(int argc, char **argv)
             char folder[PATH_MAX];
             folder[0] = '\0';
             cli_copyPath(folder, sizeof(folder), argv[++i]);
+            char cfgPath[PATH_MAX];
+            cfgPath[0] = '\0';
+            if (!cli_uiTestSessionConfigExists(folder, cfgPath, sizeof(cfgPath))) {
+                char msg[PATH_MAX + 128];
+                snprintf(msg, sizeof(msg), "remake-test: missing %s (create with --make-test first)", cfgPath[0] ? cfgPath : ".e9k-debugger.cfg");
+                msg[sizeof(msg) - 1] = '\0';
+                cli_setError(msg);
+                return;
+            }
             ui_test_registerRequestedMode(folder, UI_TEST_MODE_REMAKE);
             continue;
         }
@@ -437,6 +467,15 @@ cli_parseArgs(int argc, char **argv)
             char folder[PATH_MAX];
             folder[0] = '\0';
             cli_copyPath(folder, sizeof(folder), argv[i] + sizeof("--remake-test=") - 1);
+            char cfgPath[PATH_MAX];
+            cfgPath[0] = '\0';
+            if (!cli_uiTestSessionConfigExists(folder, cfgPath, sizeof(cfgPath))) {
+                char msg[PATH_MAX + 128];
+                snprintf(msg, sizeof(msg), "remake-test: missing %s (create with --make-test first)", cfgPath[0] ? cfgPath : ".e9k-debugger.cfg");
+                msg[sizeof(msg) - 1] = '\0';
+                cli_setError(msg);
+                return;
+            }
             ui_test_registerRequestedMode(folder, UI_TEST_MODE_REMAKE);
             continue;
         }
@@ -444,6 +483,15 @@ cli_parseArgs(int argc, char **argv)
             char folder[PATH_MAX];
             folder[0] = '\0';
             cli_copyPath(folder, sizeof(folder), argv[++i]);
+            char cfgPath[PATH_MAX];
+            cfgPath[0] = '\0';
+            if (!cli_uiTestSessionConfigExists(folder, cfgPath, sizeof(cfgPath))) {
+                char msg[PATH_MAX + 128];
+                snprintf(msg, sizeof(msg), "test: missing %s (create with --make-test first)", cfgPath[0] ? cfgPath : ".e9k-debugger.cfg");
+                msg[sizeof(msg) - 1] = '\0';
+                cli_setError(msg);
+                return;
+            }
             ui_test_registerRequestedMode(folder, UI_TEST_MODE_COMPARE);
             continue;
         }
@@ -459,6 +507,15 @@ cli_parseArgs(int argc, char **argv)
             char folder[PATH_MAX];
             folder[0] = '\0';
             cli_copyPath(folder, sizeof(folder), argv[i] + sizeof("--test=") - 1);
+            char cfgPath[PATH_MAX];
+            cfgPath[0] = '\0';
+            if (!cli_uiTestSessionConfigExists(folder, cfgPath, sizeof(cfgPath))) {
+                char msg[PATH_MAX + 128];
+                snprintf(msg, sizeof(msg), "test: missing %s (create with --make-test first)", cfgPath[0] ? cfgPath : ".e9k-debugger.cfg");
+                msg[sizeof(msg) - 1] = '\0';
+                cli_setError(msg);
+                return;
+            }
             ui_test_registerRequestedMode(folder, UI_TEST_MODE_COMPARE);
             continue;
         }

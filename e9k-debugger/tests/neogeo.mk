@@ -1,4 +1,5 @@
 NEOGEO_TESTS=test-neogeobasic test-neogeosavestate test-neogeostepping
+NEOGEO_REMAKE=remake-test-neogeobasic remake-test-neogeosavestate remake-test-neogeostepping
 
 # makers
 
@@ -19,6 +20,10 @@ remake-test-neogeobasic: all
 
 remake-test-neogeosavestate: all 
 	./e9k-debugger --neogeo --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/savestate
+
+remake-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
+	./e9k-debugger --neogeo --source-dir=./tests/neogeo/stepping --elf=./tests/neogeo/stepping/build/rom.elf --rom=./tests/neogeo/stepping/build/stepping.neo --remake-test tests/results/neogeo/stepping
+
 
 # testers
 

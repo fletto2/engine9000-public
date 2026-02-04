@@ -46,6 +46,9 @@ static uint8_t *ui_test_captureFrameBuf = NULL;
 static size_t ui_test_captureFrameCap = 0;
 static const char ui_test_sessionConfigName[] = ".e9k-debugger.cfg";
 
+static void
+ui_test_clearTempConfigOnFirstRun(void);
+
 static int
 ui_test_restartCount(void)
 {
@@ -305,6 +308,7 @@ ui_test_init(void)
         ui_test_enabled = 0;
         return 0;
     }
+    ui_test_clearTempConfigOnFirstRun();
     if (ui_test_mode == UI_TEST_MODE_RECORD && ui_test_restartCount() == 0) {
         ui_test_clearFolder(ui_test_folder);
     } else if (ui_test_mode == UI_TEST_MODE_REMAKE && ui_test_restartCount() == 0) {
@@ -407,29 +411,110 @@ ui_test_copySessionConfigForRecord(void)
         return 0;
     }
 
-    const char *srcPath = debugger_defaultConfigPath();
-    if (!srcPath || !*srcPath) {
-        return 0;
-    }
-
     char dstPath[PATH_MAX];
     if (!debugger_platform_pathJoin(dstPath, sizeof(dstPath), ui_test_folder, ui_test_sessionConfigName)) {
         return 0;
     }
 
-    if (ui_test_copyFile(srcPath, dstPath)) {
+    struct stat st;
+    if (stat(dstPath, &st) == 0) {
+        if (!S_ISREG(st.st_mode)) {
+            debug_error("ui-test: config path is not a file: %s", dstPath);
+            return 0;
+        }
         return 1;
+    }
+
+    const char *srcPath = debugger_defaultConfigPath();
+    if (srcPath && *srcPath) {
+        if (ui_test_copyFile(srcPath, dstPath)) {
+            return 1;
+        }
     }
 
     FILE *dst = fopen(dstPath, "w");
     if (!dst) {
-        debug_error("ui-test: failed to copy %s to %s", srcPath, dstPath);
+        debug_error("ui-test: failed to create session config %s", dstPath);
         return 0;
     }
     config_persistConfig(dst);
     fclose(dst);
-    debug_printf("ui-test: source config missing/unreadable, wrote session config to %s", dstPath);
+    debug_printf("ui-test: created session config %s", dstPath);
     return 1;
+}
+
+static void
+ui_test_clearTempConfigOnFirstRun(void)
+{
+    if (ui_test_restartCount() != 0) {
+        return;
+    }
+    const char *tempPath = debugger_configTempPath();
+    if (!tempPath || !*tempPath) {
+        return;
+    }
+
+    {
+        char tempSaveDir[PATH_MAX];
+        int written = snprintf(tempSaveDir, sizeof(tempSaveDir), "%s.rom", tempPath);
+        if (written > 0 && (size_t)written < sizeof(tempSaveDir)) {
+            struct stat st;
+            if (stat(tempSaveDir, &st) == 0 && S_ISDIR(st.st_mode)) {
+#ifdef _WIN32
+                char pattern[PATH_MAX];
+                snprintf(pattern, sizeof(pattern), "%s\\*.*", tempSaveDir);
+                WIN32_FIND_DATAA data;
+                HANDLE h = FindFirstFileA(pattern, &data);
+                if (h != INVALID_HANDLE_VALUE) {
+                    do {
+                        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
+                            continue;
+                        }
+                        char full[PATH_MAX];
+                        if (!debugger_platform_pathJoin(full, sizeof(full), tempSaveDir, data.cFileName)) {
+                            continue;
+                        }
+                        DeleteFileA(full);
+                    } while (FindNextFileA(h, &data));
+                    FindClose(h);
+                }
+                RemoveDirectoryA(tempSaveDir);
+#else
+                DIR *dir = opendir(tempSaveDir);
+                if (dir) {
+                    struct dirent *ent;
+                    while ((ent = readdir(dir)) != NULL) {
+                        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+                            continue;
+                        }
+                        char full[PATH_MAX];
+                        if (!debugger_platform_pathJoin(full, sizeof(full), tempSaveDir, ent->d_name)) {
+                            continue;
+                        }
+                        struct stat entSt;
+                        if (stat(full, &entSt) != 0) {
+                            continue;
+                        }
+                        if (S_ISDIR(entSt.st_mode)) {
+                            continue;
+                        }
+                        unlink(full);
+                    }
+                    closedir(dir);
+                }
+                rmdir(tempSaveDir);
+#endif
+            }
+        }
+    }
+
+    errno = 0;
+    if (remove(tempPath) != 0) {
+        if (errno != ENOENT) {
+            debug_error("ui-test: failed to clear temp config %s: %s", tempPath, strerror(errno));
+        }
+        return;
+    }
 }
 
 static int
@@ -902,6 +987,7 @@ ui_test_captureWindowFrame(uint64_t frame, SDL_Renderer *renderer)
         ui_test_captureFrameBuf = buf;
         ui_test_captureFrameCap = needed;
     }
+    SDL_RenderFlush(renderer);
     if (SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_XRGB8888,
                              ui_test_captureFrameBuf, (int)pitch) != 0) {
         debug_error("ui-test: SDL_RenderReadPixels failed: %s", SDL_GetError());

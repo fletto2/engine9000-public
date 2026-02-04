@@ -20,3 +20,7 @@ clean:
 	$(MAKE) $(JOBS) -C geo9000/libretro clean
 	$(MAKE) $(JOBS) -C e9k-debugger clean
 	$(MAKE) $(JOBS) -C tools/amiga/adf9000 clean
+
+test:
+	make -C e9k-debugger test
+	make -C tools/amiga/adf9000 test
