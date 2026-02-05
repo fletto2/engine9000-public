@@ -637,7 +637,7 @@ console_cmd_base(int argc, char **argv)
         sectionName = "bss";
         argIndex = 2;
     } else if (strcasecmp(argv[1], "clear") == 0) {
-        debugger.machine.textBaseAddr = 0;
+        debugger_setTextBaseAddress(0);
         debugger.machine.dataBaseAddr = 0;
         debugger.machine.bssBaseAddr = 0;
         debug_printf("base: cleared\n");
@@ -649,7 +649,11 @@ console_cmd_base(int argc, char **argv)
         return 1;
     }
     if (strcasecmp(argv[argIndex], "clear") == 0) {
-        *dest = 0;
+        if (dest == &debugger.machine.textBaseAddr) {
+            debugger_setTextBaseAddress(0);
+        } else {
+            *dest = 0;
+        }
         debug_printf("base: cleared %s\n", sectionName);
         return 1;
     }
@@ -658,7 +662,11 @@ console_cmd_base(int argc, char **argv)
         debug_error("base: invalid address '%s' (use decimal or 0x...)", argv[argIndex]);
         return 0;
     }
-    *dest = addr;
+    if (dest == &debugger.machine.textBaseAddr) {
+        debugger_setTextBaseAddress(addr);
+    } else {
+        *dest = addr;
+    }
     debug_printf("base: set %s to 0x%08X\n", sectionName, (unsigned)*dest);
     return 1;
 }

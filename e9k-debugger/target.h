@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 #include "emu.h"
 #include "dasm.h"
 #include "settings.h"
@@ -65,6 +67,7 @@ typedef struct target_iface
     SDL_Texture *badge;
     int badgeW;
     int badgeH;
+    int (*memoryGetLimits)(uint32_t *outMinAddr, uint32_t *outMaxAddr);
     SDL_Texture *(*getBadgeTexture)(SDL_Renderer *renderer, struct target_iface *t, int *outW, int *outH);
     void (*configControllerPorts)(void);
     int (*controllerMapButton)(SDL_GameControllerButton button, unsigned *outId);

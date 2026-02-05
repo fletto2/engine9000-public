@@ -83,6 +83,15 @@ machine_clearBreakpoints(machine_t *m);
 int
 machine_getBreakpoints(machine_t *m, const machine_breakpoint_t **out, int *count);
 
+uint32_t
+machine_textBaseToRelativeAddr(machine_t *m, uint32_t addr);
+
+uint32_t
+machine_textBaseFromRelativeAddr(machine_t *m, uint32_t relativeAddr);
+
+void
+machine_rebaseTextBreakpoints(machine_t *m, uint32_t oldBaseAddr, uint32_t newBaseAddr);
+
 machine_breakpoint_t *
 machine_addBreakpoint(machine_t *m, uint32_t addr, int enabled);
 

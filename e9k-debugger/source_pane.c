@@ -3144,7 +3144,7 @@ source_pane_make(void)
   st->scrollIndexValid = 0;
   st->ownerPane = c;
   c->state = st;
-  c->focusable = 0;
+  c->focusable = 1;
   c->preferredHeight = source_pane_preferredHeight;
   c->layout = source_pane_layoutComp;
   c->render = source_pane_render;

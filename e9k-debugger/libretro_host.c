@@ -2273,6 +2273,17 @@ libretro_host_resetCore(void)
         return false;
     }
     libretro_host.reset();
+    const machine_breakpoint_t *bps = NULL;
+    int bpCount = 0;
+    if (machine_getBreakpoints(&debugger.machine, &bps, &bpCount) && bps && bpCount > 0) {
+        for (int i = 0; i < bpCount; ++i) {
+            if (!bps[i].enabled) {
+                continue;
+            }
+            uint32_t addr = (uint32_t)(bps[i].addr & 0x00ffffffu);
+            libretro_host_debugAddBreakpoint(addr);
+        }
+    }
     if (debugger.config.neogeo.skipBiosLogo) {
         libretro_host.autoPressDelayFrames = 80;
         libretro_host.autoPressHoldFrames = 3;
@@ -2461,7 +2472,7 @@ libretro_host_restoreState(size_t *out_size)
     if (!state_wrap_parse((const uint8_t *)libretro_host.stateData, libretro_host.stateSize, &info)) {
         return false;
     }
-    debugger.machine.textBaseAddr = info.textBaseAddr;
+    debugger_setTextBaseAddress(info.textBaseAddr);
     debugger.machine.dataBaseAddr = info.dataBaseAddr;
     debugger.machine.bssBaseAddr = info.bssBaseAddr;
     if (!libretro_host.unserialize(info.payload, info.payloadSize)) {

@@ -679,6 +679,14 @@ target_amiga_settingsClearOptions(void)
     amiga_uaeClearPuaeOptions();
 }
 
+static int
+target_amiga_memoryGetLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
+{
+    (void)outMinAddr;
+    (void)outMaxAddr;
+    return 0;
+}
+
 static target_iface_t _target_amiga = {
     .name = "AMIGA",
     .dasm = &dasm_ami_iface,
@@ -713,6 +721,7 @@ static target_iface_t _target_amiga = {
     .audioEnabled = target_amiga_audioEnabled,
     .audioEnable = target_amiga_audioEnable,
     .mousePort = LIBRETRO_HOST_MAX_PORTS,
+    .memoryGetLimits = target_amiga_memoryGetLimits,
     .getBadgeTexture = target_amiga_getBadgeTexture,
     .configControllerPorts = target_amiga_configControllerPorts,
     .controllerMapButton = target_amiga_controllerMapButton,

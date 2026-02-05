@@ -57,6 +57,7 @@ static int debugger_loadTestTempConfig = 0;
 static int debugger_testRestartCount = 0;
 
 static int debugger_pathExistsFile(const char *path);
+static void debugger_syncCoreBreakpointsForTextBaseChange(uint32_t oldBaseAddr, uint32_t newBaseAddr);
 
 void
 debugger_setLoadTestTempConfig(int enabled)
@@ -88,7 +89,7 @@ debugger_onSetDebugBaseFromCore(uint32_t section, uint32_t base)
     const char *name = "unknown";
     switch (section) {
     case 0u:
-        debugger.machine.textBaseAddr = base;
+        debugger_setTextBaseAddress(base);
         name = "text";
         break;
     case 1u:
@@ -105,6 +106,52 @@ debugger_onSetDebugBaseFromCore(uint32_t section, uint32_t base)
         break;
     }
     debug_printf("base: set %s to 0x%08X (from core)\n", name, (unsigned)base);
+}
+
+static void
+debugger_syncCoreBreakpointsForTextBaseChange(uint32_t oldBaseAddr, uint32_t newBaseAddr)
+{
+    const machine_breakpoint_t *bps = NULL;
+    int count = 0;
+    if (!machine_getBreakpoints(&debugger.machine, &bps, &count) || !bps || count <= 0) {
+        debugger.machine.textBaseAddr = newBaseAddr;
+        return;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        if (!bps[i].enabled) {
+            continue;
+        }
+        uint32_t addr = (uint32_t)(bps[i].addr & 0x00ffffffu);
+        libretro_host_debugRemoveBreakpoint(addr);
+    }
+
+    machine_rebaseTextBreakpoints(&debugger.machine, oldBaseAddr, newBaseAddr);
+    debugger.machine.textBaseAddr = newBaseAddr;
+
+    for (int i = 0; i < count; ++i) {
+        machine_breakpoint_t *bp = (machine_breakpoint_t*)&bps[i];
+        if (!bp->enabled) {
+            breakpoints_resolveLocation(bp);
+            continue;
+        }
+        uint32_t addr = (uint32_t)(bp->addr & 0x00ffffffu);
+        libretro_host_debugAddBreakpoint(addr);
+        breakpoints_resolveLocation(bp);
+    }
+    breakpoints_markDirty();
+}
+
+void
+debugger_setTextBaseAddress(uint32_t base)
+{
+    uint32_t newBaseAddr = base & 0x00ffffffu;
+    uint32_t oldBaseAddr = debugger.machine.textBaseAddr & 0x00ffffffu;
+    if (oldBaseAddr == newBaseAddr) {
+        debugger.machine.textBaseAddr = newBaseAddr;
+        return;
+    }
+    debugger_syncCoreBreakpointsForTextBaseChange(oldBaseAddr, newBaseAddr);
 }
 
 void

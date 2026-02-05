@@ -217,4 +217,7 @@ void
 debugger_onSetDebugBaseFromCore(uint32_t section, uint32_t base);
 
 void
+debugger_setTextBaseAddress(uint32_t base);
+
+void
 debugger_onAddBreakpointFromCore(uint32_t addr);

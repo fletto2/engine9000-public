@@ -63,6 +63,7 @@ typedef struct prompt_state {
     char histSavedLine[PROMPT_MAX];
     int histSavedLen;
     int histSavedCursor;
+    int suppressHistoryNavReset;
     e9ui_component_t *textbox;
     char **cmpl;
     int cmplCount;
@@ -494,6 +495,8 @@ prompt_onSubmit(e9ui_context_t *ctx, void *user)
     if (ctx && ctx->sendLine) {
         ctx->sendLine(run ? run : "");
     }
+    st->histNavActive = 0;
+    st->histNavIndex = -1;
     prompt_setTextCursor(st, "", 0);
 }
 
@@ -503,6 +506,10 @@ prompt_onChange(e9ui_context_t *ctx, void *user)
     (void)ctx;
     prompt_state_t *st = (prompt_state_t*)user;
     if (!st) {
+        return;
+    }
+    if (st->suppressHistoryNavReset) {
+        st->suppressHistoryNavReset = 0;
         return;
     }
     st->cmplVisible = 0;
@@ -726,6 +733,7 @@ prompt_keyHandler(e9ui_context_t *ctx, SDL_Keycode kc, SDL_Keymod km, void *user
         if (st->histNavIndex >= 0) {
             HIST_ENTRY *he = history_get(history_base + st->histNavIndex);
             if (he && he->line) {
+                st->suppressHistoryNavReset = 1;
                 prompt_setTextCursor(st, he->line, (int)strlen(he->line));
             }
         }
@@ -738,9 +746,11 @@ prompt_keyHandler(e9ui_context_t *ctx, SDL_Keycode kc, SDL_Keymod km, void *user
                 st->histNavIndex++;
                 HIST_ENTRY *he = history_get(history_base + st->histNavIndex);
                 if (he && he->line) {
+                    st->suppressHistoryNavReset = 1;
                     prompt_setTextCursor(st, he->line, (int)strlen(he->line));
                 }
             } else {
+                st->suppressHistoryNavReset = 1;
                 prompt_setTextCursor(st, st->histSavedLine, st->histSavedCursor);
                 st->histNavActive = 0;
                 st->histNavIndex = -1;

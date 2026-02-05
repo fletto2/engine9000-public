@@ -792,6 +792,18 @@ target_neogeo_configControllerPorts(void)
 
 }
 
+static int
+target_neogeo_memoryGetLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
+{
+    if (outMinAddr) {
+        *outMinAddr = 0x00100000u;
+    }
+    if (outMaxAddr) {
+        *outMaxAddr = 0x001fffffu;
+    }
+    return 1;
+}
+
 
 static  int
 target_neogeo_controllerMapButton(SDL_GameControllerButton button, unsigned *outId)
@@ -850,6 +862,7 @@ static target_iface_t _target_neogeo = {
     .audioEnabled = target_neogeo_audioEnabled,
     .audioEnable = target_neogeo_audioEnable,
     .mousePort = -1,
+    .memoryGetLimits = target_neogeo_memoryGetLimits,
     .getBadgeTexture = target_neogeo_getBadgeTexture,
     .configControllerPorts = target_neogeo_configControllerPorts,
     .controllerMapButton = target_neogeo_controllerMapButton,

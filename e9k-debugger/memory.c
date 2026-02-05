@@ -8,6 +8,7 @@
 
 #include <SDL.h>
 #include <SDL_ttf.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -21,7 +22,6 @@
 #include "e9ui_text_cache.h"
 #include "debugger.h"
 #include "libretro_host.h"
-#include "libretro.h"
 
 typedef struct memory_view_state {
     unsigned int   base;
@@ -33,8 +33,86 @@ typedef struct memory_view_state {
 
 static memory_view_state_t *g_memory_view_state = NULL;
 
-#define GEO_MAIN_RAM_BASE 0x00100000u
-#define GEO_MAIN_RAM_END  0x001fffffu
+static void
+memory_fillFromram(memory_view_state_t *st, unsigned int base);
+
+static int
+memory_getAddressLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
+{
+    if (outMinAddr) {
+        *outMinAddr = 0;
+    }
+    if (outMaxAddr) {
+        *outMaxAddr = 0x00ffffffu;
+    }
+    if (target && target->memoryGetLimits) {
+        return target->memoryGetLimits(outMinAddr, outMaxAddr);
+    }
+    return 0;
+}
+
+static void
+memory_syncTextboxFromBase(memory_view_state_t *st)
+{
+    if (!st || !st->textbox) {
+        return;
+    }
+    char addrText[32];
+    snprintf(addrText, sizeof(addrText), "0x%06X", st->base & 0x00ffffffu);
+    e9ui_textbox_setText(st->textbox, addrText);
+}
+
+static uint32_t
+memory_clampBaseForView(memory_view_state_t *st, uint32_t base)
+{
+    if (!st) {
+        return base & 0x00ffffffu;
+    }
+    uint32_t minAddr = 0;
+    uint32_t maxAddr = 0x00ffffffu;
+    if (!memory_getAddressLimits(&minAddr, &maxAddr)) {
+        minAddr = 0;
+        maxAddr = 0x00ffffffu;
+    }
+    uint64_t span = st->size > 0 ? (uint64_t)(st->size - 1u) : 0ull;
+    uint32_t maxBase = maxAddr;
+    if ((uint64_t)maxAddr >= span) {
+        maxBase = (uint32_t)((uint64_t)maxAddr - span);
+    } else {
+        maxBase = minAddr;
+    }
+    if (maxBase < minAddr) {
+        maxBase = minAddr;
+    }
+    uint32_t base24 = base & 0x00ffffffu;
+    if (base24 < minAddr) {
+        base24 = minAddr;
+    }
+    if (base24 > maxBase) {
+        base24 = maxBase;
+    }
+    return base24;
+}
+
+static void
+memory_scrollRows(memory_view_state_t *st, int rows)
+{
+    if (!st || rows == 0) {
+        return;
+    }
+    int64_t delta = (int64_t)rows * 16ll;
+    int64_t rawBase = (int64_t)(uint32_t)(st->base & 0x00ffffffu) + delta;
+    if (rawBase < 0) {
+        rawBase = 0;
+    }
+    uint32_t clamped = memory_clampBaseForView(st, (uint32_t)rawBase);
+    if (clamped == st->base) {
+        return;
+    }
+    st->base = clamped;
+    memory_syncTextboxFromBase(st);
+    memory_fillFromram(st, st->base);
+}
 
 static void
 memory_setError(memory_view_state_t *panel, const char *fmt, ...)
@@ -86,8 +164,15 @@ memory_parseAddress(memory_view_state_t *st, unsigned int *out_addr)
         memory_setError(st, "Invalid address: \"%s\"", t);
         return 0;
     }
-    if (val < GEO_MAIN_RAM_BASE || val > GEO_MAIN_RAM_END) {
-        memory_setError(st, "Address outside main RAM (0x%06X-0x%06X)", GEO_MAIN_RAM_BASE, GEO_MAIN_RAM_END);
+    if (val > 0x00ffffffull) {
+        memory_setError(st, "Address outside 24-bit range (0x000000-0xFFFFFF)");
+        return 0;
+    }
+    uint32_t minAddr = 0;
+    uint32_t maxAddr = 0x00ffffffu;
+    int hasLimits = memory_getAddressLimits(&minAddr, &maxAddr);
+    if (hasLimits && ((uint32_t)val < minAddr || (uint32_t)val > maxAddr)) {
+        memory_setError(st, "Address outside range (0x%06X-0x%06X)", minAddr, maxAddr);
         return 0;
     }
     *out_addr = (unsigned int)val;
@@ -100,32 +185,34 @@ memory_fillFromram(memory_view_state_t *st, unsigned int base)
     if (!st || !st->data) {
         return;
     }
-    size_t ram_size = 0;
-    const unsigned char *ram = (const unsigned char *)libretro_host_getMemory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
-    if (!ram || ram_size == 0) {
-        memory_clearData(st);
-        memory_setError(st, "Main RAM unavailable");
-        return;
-    }
+    uint32_t minAddr = 0;
+    uint32_t maxAddr = 0x00ffffffu;
+    int hasLimits = memory_getAddressLimits(&minAddr, &maxAddr);
     memory_setError(st, NULL);
     int range_error = 0;
     for (unsigned int i = 0; i < st->size; ++i) {
-        unsigned int addr = base + i;
-        if (addr < GEO_MAIN_RAM_BASE || addr > GEO_MAIN_RAM_END) {
+        uint32_t addr = base + i;
+        if (addr > 0x00ffffffu) {
             st->data[i] = 0;
             range_error = 1;
             continue;
         }
-        unsigned int offset = addr & 0xFFFFu;
-        if (offset >= ram_size) {
+        if (hasLimits && (addr < minAddr || addr > maxAddr)) {
             st->data[i] = 0;
             range_error = 1;
             continue;
         }
-        st->data[i] = ram[offset];
+        if (!libretro_host_debugReadMemory(addr, &st->data[i], 1)) {
+            st->data[i] = 0;
+            range_error = 1;
+        }
     }
     if (range_error) {
-        memory_setError(st, "Range exceeds main RAM (0x%06X-0x%06X)", GEO_MAIN_RAM_BASE, GEO_MAIN_RAM_END);
+        if (hasLimits) {
+            memory_setError(st, "Range exceeds limits (0x%06X-0x%06X)", minAddr, maxAddr);
+        } else {
+            memory_setError(st, "Range exceeds 24-bit address space (0x000000-0xFFFFFF)");
+        }
     }
 }
 
@@ -141,8 +228,54 @@ memory_onAddressSubmit(e9ui_context_t *ctx, void *user)
     if (!memory_parseAddress(st, &addr)) {
         return;
     }
-    st->base = addr;
+    st->base = memory_clampBaseForView(st, addr);
+    memory_syncTextboxFromBase(st);
     memory_fillFromram(st, st->base);
+}
+
+static int
+memory_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+{
+    if (!self || !ctx || !ev) {
+        return 0;
+    }
+    memory_view_state_t *st = (memory_view_state_t*)self->state;
+    if (!st) {
+        return 0;
+    }
+
+    if (ev->type == SDL_MOUSEWHEEL) {
+        int mx = ctx->mouseX;
+        int my = ctx->mouseY;
+        if (mx < self->bounds.x || mx >= self->bounds.x + self->bounds.w ||
+            my < self->bounds.y || my >= self->bounds.y + self->bounds.h) {
+            return 0;
+        }
+        if (ev->wheel.y != 0) {
+            memory_scrollRows(st, -ev->wheel.y * 3);
+        }
+        return 1;
+    }
+    if (ev->type == SDL_KEYDOWN && ctx && e9ui_getFocus(ctx) == self) {
+        SDL_Keycode kc = ev->key.keysym.sym;
+        if (kc == SDLK_PAGEUP) {
+            memory_scrollRows(st, -32);
+            return 1;
+        }
+        if (kc == SDLK_PAGEDOWN) {
+            memory_scrollRows(st, 32);
+            return 1;
+        }
+        if (kc == SDLK_UP) {
+            memory_scrollRows(st, -1);
+            return 1;
+        }
+        if (kc == SDLK_DOWN) {
+            memory_scrollRows(st, 1);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int
@@ -254,9 +387,18 @@ memory_makeComponent(void)
     c->preferredHeight = memory_preferredHeight;
     c->layout = memory_layout;
     c->render = memory_render;
+    c->handleEvent = memory_handleEvent;
     c->dtor = memory_dtor;
+    c->focusable = 1;
     
-    st->base = 0x00100000u;
+    uint32_t minAddr = 0;
+    uint32_t maxAddr = 0x00ffffffu;
+    if (memory_getAddressLimits(&minAddr, &maxAddr)) {
+        st->base = minAddr;
+    } else {
+        st->base = 0;
+    }
+    st->base = memory_clampBaseForView(st, st->base);
     st->size = 16u * 32u;
     st->data = (unsigned char*)alloc_alloc(st->size);
     memory_clearData(st);
@@ -266,7 +408,7 @@ memory_makeComponent(void)
     e9ui_setDisableVariable(st->textbox, machine_getRunningState(debugger.machine), 1);        
 
     e9ui_textbox_setPlaceholder(st->textbox, "Base address (hex)");
-    e9ui_textbox_setText(st->textbox, "0x00100000");
+    memory_syncTextboxFromBase(st);
     
     e9ui_stack_addFixed(stack, st->textbox);
 

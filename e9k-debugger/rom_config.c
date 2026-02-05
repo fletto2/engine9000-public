@@ -45,6 +45,7 @@ typedef struct rom_config_data {
     uint64_t romChecksum;
     rom_config_bp_entry_t *breakpoints;
     size_t breakpointCount;
+    int breakpointsTextRelative;
     rom_config_protect_entry_t *protects;
     size_t protectCount;
     char elfPath[PATH_MAX];
@@ -580,6 +581,13 @@ rom_config_parseFile(const char *path, rom_config_data_t *outData)
     uint64_t checksum = 0;
     (void)rom_config_jsonGetU64(rom_config_jsonObjectFind(object, "rom_checksum"), &checksum);
     outData->romChecksum = checksum;
+    char breakpointAddrMode[64];
+    breakpointAddrMode[0] = '\0';
+    if (rom_config_jsonGetString(rom_config_jsonObjectFind(object, "breakpoint_addr_mode"),
+                                 breakpointAddrMode, sizeof(breakpointAddrMode)) &&
+        strcmp(breakpointAddrMode, "text_relative") == 0) {
+        outData->breakpointsTextRelative = 1;
+    }
 
     struct json_object_s *cfgObj = json_value_as_object(rom_config_jsonObjectFind(object, "config"));
     if (cfgObj) {
@@ -695,6 +703,8 @@ rom_config_writeJsonFile(const char *path, const char *romPath, const rom_config
     fprintf(f, "{\n");
     fprintf(f, "  \"rom_checksum\": %llu,\n", (unsigned long long)data->romChecksum);
     fprintf(f, "  \"rom_filename\": \"%s\",\n", jsonName);
+    fprintf(f, "  \"breakpoint_addr_mode\": \"%s\",\n",
+            data->breakpointsTextRelative ? "text_relative" : "absolute");
 
     fprintf(f, "  \"config\": {\n");
     fprintf(f, "    \"elf\": \"%s\",\n", data->hasElf ? data->elfPath : "");
@@ -1003,12 +1013,16 @@ rom_config_loadRuntimeStateOnBoot(void)
 
     for (size_t i = 0; i < data.breakpointCount; ++i) {
         const rom_config_bp_entry_t *bp = &data.breakpoints[i];
-        machine_breakpoint_t *added = machine_addBreakpoint(&debugger.machine, bp->addr, bp->enabled);
+        uint32_t runtimeAddr = bp->addr & 0x00ffffffu;
+        if (data.breakpointsTextRelative) {
+            runtimeAddr = machine_textBaseFromRelativeAddr(&debugger.machine, runtimeAddr);
+        }
+        machine_breakpoint_t *added = machine_addBreakpoint(&debugger.machine, runtimeAddr, bp->enabled);
         if (added) {
             breakpoints_resolveLocation(added);
         }
         if (bp->enabled) {
-            libretro_host_debugAddBreakpoint(bp->addr & 0x00ffffffu);
+            libretro_host_debugAddBreakpoint(runtimeAddr & 0x00ffffffu);
         }
     }
 
@@ -1076,12 +1090,14 @@ rom_config_saveOnExit(void)
     const machine_breakpoint_t *bps = NULL;
     int bpCount = 0;
     machine_getBreakpoints(&debugger.machine, &bps, &bpCount);
+    data.breakpointsTextRelative = 1;
     if (bps && bpCount > 0) {
         data.breakpoints = (rom_config_bp_entry_t*)alloc_calloc((size_t)bpCount, sizeof(*data.breakpoints));
         if (data.breakpoints) {
             data.breakpointCount = (size_t)bpCount;
             for (int i = 0; i < bpCount; ++i) {
-                data.breakpoints[i].addr = (uint32_t)(bps[i].addr & 0x00ffffffu);
+                data.breakpoints[i].addr =
+                    machine_textBaseToRelativeAddr(&debugger.machine, (uint32_t)(bps[i].addr & 0x00ffffffu));
                 data.breakpoints[i].enabled = bps[i].enabled ? 1 : 0;
             }
         }

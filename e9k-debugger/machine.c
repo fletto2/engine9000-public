@@ -118,6 +118,58 @@ machine_getBreakpoints(machine_t *m, const machine_breakpoint_t **out, int *coun
     return 1;
 }
 
+uint32_t
+machine_textBaseToRelativeAddr(machine_t *m, uint32_t addr)
+{
+    uint32_t addr24 = addr & 0x00ffffffu;
+    if (!m) {
+        return addr24;
+    }
+    uint32_t base24 = m->textBaseAddr & 0x00ffffffu;
+    if (base24 != 0 && addr24 >= base24) {
+        return (addr24 - base24) & 0x00ffffffu;
+    }
+    return addr24;
+}
+
+uint32_t
+machine_textBaseFromRelativeAddr(machine_t *m, uint32_t relativeAddr)
+{
+    uint32_t relative24 = relativeAddr & 0x00ffffffu;
+    if (!m) {
+        return relative24;
+    }
+    uint32_t base24 = m->textBaseAddr & 0x00ffffffu;
+    if (base24 != 0) {
+        return (relative24 + base24) & 0x00ffffffu;
+    }
+    return relative24;
+}
+
+void
+machine_rebaseTextBreakpoints(machine_t *m, uint32_t oldBaseAddr, uint32_t newBaseAddr)
+{
+    if (!m || m->breakpoint_count <= 0) {
+        return;
+    }
+    uint32_t oldBase24 = oldBaseAddr & 0x00ffffffu;
+    uint32_t newBase24 = newBaseAddr & 0x00ffffffu;
+    for (int i = 0; i < m->breakpoint_count; ++i) {
+        machine_breakpoint_t *bp = &m->breakpoints[i];
+        uint32_t oldAddr24 = (uint32_t)(bp->addr & 0x00ffffffu);
+        uint32_t relativeAddr = oldAddr24;
+        if (oldBase24 != 0 && oldAddr24 >= oldBase24) {
+            relativeAddr = (oldAddr24 - oldBase24) & 0x00ffffffu;
+        }
+        uint32_t newAddr24 = relativeAddr;
+        if (newBase24 != 0) {
+            newAddr24 = (relativeAddr + newBase24) & 0x00ffffffu;
+        }
+        bp->addr = newAddr24;
+        snprintf(bp->addr_text, sizeof(bp->addr_text), "0x%06X", (unsigned)newAddr24);
+    }
+}
+
 machine_breakpoint_t *
 machine_findBreakpointByAddr(machine_t *m, uint32_t addr)
 {
