@@ -6,6 +6,8 @@
 #include "blitter.h"
 #include "blitfunc.h"
 
+#define chipmem_wput_indirect blitter_chipmem_wput_indirect
+
 void blitdofast_0 (uaecptr pta, uaecptr ptb, uaecptr ptc, uaecptr ptd, struct bltinfo *b)
 {
 int i,j;

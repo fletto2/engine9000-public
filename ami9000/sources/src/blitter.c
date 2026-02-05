@@ -493,6 +493,15 @@ blitter_setDestinationWriteEnabled(int enabled)
 	blitter_destinationWriteEnabled = enabled ? 1 : 0;
 }
 
+void
+blitter_chipmem_wput_indirect(uaecptr addr, uae_u32 w)
+{
+	if (blitter_destinationWriteEnabled) {
+		chipmem_wput_indirect(addr, w);
+	}
+	regs.chipset_latch_rw = w;
+}
+
 
 static void blit_chipmem_agnus_wput(uaecptr addr, uae_u32 w, uae_u32 typemask)
 {
@@ -503,10 +512,7 @@ static void blit_chipmem_agnus_wput(uaecptr addr, uae_u32 w, uae_u32 typemask)
 #ifdef DEBUGGER
 		debug_putpeekdma_chipram(addr, w, typemask, 0x000, 0x054);
 #endif
-		if (blitter_destinationWriteEnabled) {
-			chipmem_wput_indirect(addr, w);
-		}
-		regs.chipset_latch_rw = w;
+		blitter_chipmem_wput_indirect(addr, w);
 	}
 }
 

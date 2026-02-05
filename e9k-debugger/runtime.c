@@ -78,6 +78,21 @@ runtime_restoreSuppressedBreakpoint(void)
     debugger.suppressBpActive = 0;
 }
 
+static int
+runtime_isBreakpointHit(void)
+{
+    unsigned long pc = 0;
+    if (!machine_findReg(&debugger.machine, "PC", &pc)) {
+        return 0;
+    }
+    machine_breakpoint_t *bp =
+        machine_findBreakpointByAddr(&debugger.machine, (uint32_t)(pc & 0x00ffffffu));
+    if (!bp) {
+        return 0;
+    }
+    return bp->enabled ? 1 : 0;
+}
+
 static void
 runtime_executeNextFrame(void)
 {
@@ -127,8 +142,10 @@ runtime_runLoop(void)
                 if (paused && wasRunning) {
                     debugger_clearFrameStep();
                     runtime_restoreSuppressedBreakpoint();
+                    int watchbreakHit = 0;
                     e9k_debug_watchbreak_t watchbreak;
                     if (libretro_host_debugConsumeWatchbreak(&watchbreak)) {
+                        watchbreakHit = 1;
                         train_setLastWatchbreak(&watchbreak);
                         if (protect_handleWatchbreak(&watchbreak)) {
                             libretro_host_debugResume();
@@ -152,6 +169,9 @@ runtime_runLoop(void)
                                         (unsigned)(watchbreak.access_addr & 0x00ffffffu),
                                         (unsigned)watchbreak.value);
                         }
+                    }
+                    if (!watchbreakHit && runtime_isBreakpointHit()) {
+                        e9ui_showTransientMessage("BREAKPOINT HIT");
                     }
                 }
             }
