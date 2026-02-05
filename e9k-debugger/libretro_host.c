@@ -98,6 +98,7 @@ typedef void (*e9k_debug_set_vblank_callback_fn_t)(void (*cb)(void *), void *use
 typedef int *(*e9k_debug_amiga_get_debug_dma_addr_fn_t)(void);
 typedef void (*e9k_debug_set_breakpoint_callback_fn_t)(void (*cb)(uint32_t addr));
 typedef void (*e9k_debug_set_source_location_resolver_fn_t)(int (*resolver)(uint32_t pc24, uint64_t *out_location, void *user), void *user);
+typedef void (*e9k_debug_set_debug_option_fn_t)(e9k_debug_option_t option, uint32_t argument, void *user);
 
 typedef struct libretro_option {
     const char *key;
@@ -197,6 +198,7 @@ typedef struct  {
     e9k_debug_set_base_callback_fn_t setDebugBaseCallback;
     e9k_debug_set_breakpoint_callback_fn_t setDebugBreakpointCallback;
     e9k_debug_set_source_location_resolver_fn_t debugSetSourceLocationResolver;
+    e9k_debug_set_debug_option_fn_t debugSetDebugOption;
     e9k_debug_neogeo_get_sprite_state_fn_t debugNeoGeoGetSpriteState;
     e9k_debug_neogeo_get_p1_rom_fn_t debugNeoGeoGetP1Rom;
     e9k_debug_disassemble_quick_fn_t debugDisassembleQuick;
@@ -1355,6 +1357,7 @@ libretro_host_start(const char *corePath, const char *romPath,
     libretro_host.setDebugBaseCallback = (e9k_debug_set_base_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_base_callback");
     libretro_host.setDebugBreakpointCallback = (e9k_debug_set_breakpoint_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_breakpoint_callback");
     libretro_host.debugSetSourceLocationResolver = (e9k_debug_set_source_location_resolver_fn_t)libretro_host_loadSymbol("e9k_debug_set_source_location_resolver");
+    libretro_host.debugSetDebugOption = (e9k_debug_set_debug_option_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_option");
     libretro_host.debugNeoGeoGetSpriteState = (e9k_debug_neogeo_get_sprite_state_fn_t)libretro_host_loadSymbol("e9k_debug_neogeo_get_sprite_state");
     if (!libretro_host.debugNeoGeoGetSpriteState) {
         libretro_host.debugNeoGeoGetSpriteState = (e9k_debug_neogeo_get_sprite_state_fn_t)libretro_host_loadSymbol("e9k_debug_get_sprite_state");
@@ -2348,6 +2351,16 @@ libretro_host_setDebugSourceLocationCallback(int (*cb)(uint32_t pc, uint64_t *ou
         return false;
     }
     libretro_host.debugSetSourceLocationResolver(cb, user);
+    return true;
+}
+
+bool
+libretro_host_debugSetDebugOption(e9k_debug_option_t option, uint32_t argument, void *user)
+{
+    if (!libretro_host.debugSetDebugOption) {
+        return false;
+    }
+    libretro_host.debugSetDebugOption(option, argument, user);
     return true;
 }
 

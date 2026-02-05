@@ -103,6 +103,7 @@ uae_u32 blit_masktable[BLITTER_MAX_WORDS];
 static int blit_cyclecounter, blit_waitcyclecounter;
 static int blit_maxcyclecounter, blit_slowdown, blit_totalcyclecounter;
 static int blit_misscyclecounter;
+static int blitter_destinationWriteEnabled = 1;
 
 #ifdef CPUEMU_13
 static int blitter_cyclecounter;
@@ -486,6 +487,12 @@ static void blitter_done_except_d(int hpos)
 	blitter_done_notify(blitline);
 }
 
+void
+blitter_setDestinationWriteEnabled(int enabled)
+{
+	blitter_destinationWriteEnabled = enabled ? 1 : 0;
+}
+
 
 static void blit_chipmem_agnus_wput(uaecptr addr, uae_u32 w, uae_u32 typemask)
 {
@@ -496,7 +503,9 @@ static void blit_chipmem_agnus_wput(uaecptr addr, uae_u32 w, uae_u32 typemask)
 #ifdef DEBUGGER
 		debug_putpeekdma_chipram(addr, w, typemask, 0x000, 0x054);
 #endif
-		chipmem_wput_indirect(addr, w);
+		if (blitter_destinationWriteEnabled) {
+			chipmem_wput_indirect(addr, w);
+		}
 		regs.chipset_latch_rw = w;
 	}
 }

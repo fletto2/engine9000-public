@@ -23,6 +23,7 @@
 #include "profile.h"
 #include "protect.h"
 #include "shader_ui.h"
+#include "custom_ui.h"
 #include "smoke_test.h"
 #include "ui_test.h"
 #include "state_buffer.h"
@@ -246,6 +247,7 @@ runtime_runLoop(void)
         profile_drainStream();
         ui_updateSourceTitle();
         e9ui_renderFrame();
+        custom_ui_render();
         shader_ui_render();
         memory_track_ui_render();
         if (debugger.smokeTestCompleted) {

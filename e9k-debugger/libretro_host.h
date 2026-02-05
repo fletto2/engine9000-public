@@ -241,6 +241,9 @@ libretro_host_setDebugBreakpointCallback(void (*cb)(uint32_t addr));
 bool
 libretro_host_setDebugSourceLocationCallback(int (*cb)(uint32_t pc, uint64_t *out_location, void *user), void *user);
 
+bool
+libretro_host_debugSetDebugOption(e9k_debug_option_t option, uint32_t argument, void *user);
+
 void
 libretro_host_setCoreOption(const char *key, const char *value);
 
@@ -285,4 +288,3 @@ libretro_host_isCoreOptionVisible(const char *key);
 
 void
 libretro_host_setControllerPortDevice(unsigned port, unsigned device);
-

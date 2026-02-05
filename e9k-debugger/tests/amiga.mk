@@ -40,22 +40,22 @@ make-test-amigastepping: all tests/amiga/stepping/stepping.adf
 # remakers
 
 remake-test-amigalocals: all tests/amiga/locals/locals.adf
-	./e9k-debugger --amiga --source-dir=./tests/amiga/locals/ --uae=./tests/amiga/locals/locals.uae --hunk=./tests/amiga/locals/locals --remake-test tests/results/amiga/locals
+	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/locals/ --uae=./tests/amiga/locals/locals.uae --hunk=./tests/amiga/locals/locals --remake-test tests/results/amiga/locals
 
 remake-test-amigaconfig: all 
-	./e9k-debugger --amiga --remake-test tests/results/amiga/config
+	./e9k-debugger --amiga --volume=0 --remake-test tests/results/amiga/config
 
 remake-test-amigaexample: all tests/amiga/example/example.adf
-	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --remake-test tests/results/amiga/example
+	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --remake-test tests/results/amiga/example
 
 remake-test-amigacoreoptions: all tests/amiga/example/example.adf
 	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --remake-test tests/results/amiga/amigacoreoptions
 
 remake-test-amigasavestate: all tests/amiga/smoke/smoke.adf
-	./e9k-debugger --amiga --uae=./tests/amiga/smoke/smoke.uae --remake-test tests/results/amiga/savestate
+	./e9k-debugger --amiga --volume=0 --uae=./tests/amiga/smoke/smoke.uae --remake-test tests/results/amiga/savestate
 
 remake-test-amigastepping: all tests/amiga/stepping/stepping.adf
-	./e9k-debugger --amiga --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae \
+	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae \
 	--hunk=./tests/amiga/stepping/stepping --remake-test tests/results/amiga/stepping
 
 

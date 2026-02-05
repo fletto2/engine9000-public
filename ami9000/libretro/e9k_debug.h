@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "uae/types.h"
+#include "e9k-lib.h"
 
 // Debug base register sections (passed to e9k_debug_set_debug_base_callback()).
 #define E9K_DEBUG_BASE_SECTION_TEXT 0u
@@ -83,3 +84,6 @@ e9k_debug_set_debug_breakpoint_callback(void (*cb)(uint32_t addr));
 // Optional host callback used for source location resolution in cores that support source-line stepping.
 void
 e9k_debug_set_source_location_resolver(int (*resolver)(uint32_t pc24, uint64_t *out_location, void *user), void *user);
+
+void
+e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *user);

@@ -27,6 +27,8 @@
 #include "libretro_host.h"
 #include "debug.h"
 #include "file.h"
+#include "syntax_highlight.h"
+#include "print_eval.h"
 
 typedef struct view_toggle_ctx {
   e9ui_component_t *pane;
@@ -62,6 +64,39 @@ typedef struct source_pane_state {
     source_pane_mode_t gutterMode;
     int               bucketSource;
     int               bucketAddr;
+    char*             fileSelectMeta;
+    view_toggle_t    *toggleCtx;
+    char             *manualSrcPath;
+    int               manualSrcActive;
+    char            **sourceFiles;
+    char            **sourceLabels;
+    e9ui_textbox_option_t *sourceOptions;
+    int               sourceFileCount;
+    int               sourceFileCap;
+    int               sourceFilesLoaded;
+    char              sourceFilesElf[PATH_MAX];
+    char              sourceFilesToolchain[PATH_MAX];
+    char             *functionSelectMeta;
+    char            **sourceFunctionNames;
+    char            **sourceFunctionLabels;
+    char            **sourceFunctionValues;
+    int              *sourceFunctionLines;
+    e9ui_textbox_option_t *sourceFunctionOptions;
+    int               sourceFunctionCount;
+    int               sourceFunctionCap;
+    int               sourceFunctionsLoaded;
+    char              sourceFunctionsElf[PATH_MAX];
+    char              sourceFunctionsToolchain[PATH_MAX];
+    char              sourceFunctionsFile[PATH_MAX];
+    int               functionScrollLock;
+    e9ui_component_t *ownerPane;
+    char              hoverExpr[256];
+    char              hoverTip[1024];
+    int               hoverLine;
+    int               hoverCol;
+    uint32_t          hoverPc;
+    uint32_t          hoverTick;
+    int               hoverActive;
 } source_pane_state_t;
 
 typedef struct source_pane_line_metrics {
@@ -71,13 +106,28 @@ typedef struct source_pane_line_metrics {
 } source_pane_line_metrics_t;
 
 static void
-source_pane_updateSourceLocation(source_pane_state_t *st);
+source_pane_updateSourceLocation(source_pane_state_t *st, int allowWhileRunning);
 
 static void
 source_pane_followCurrent(source_pane_state_t *st);
 
 static void
 source_pane_setModeInternal(e9ui_component_t *comp, source_pane_mode_t mode, int enforceElfValid);
+
+static void
+source_pane_refreshSourceFiles(e9ui_component_t *comp, source_pane_state_t *st);
+
+static void
+source_pane_syncFileSelect(e9ui_component_t *comp, source_pane_state_t *st);
+
+static void
+source_pane_syncFunctionSelect(e9ui_component_t *comp, source_pane_state_t *st);
+
+static void
+source_pane_clearFunctionScrollLock(source_pane_state_t *st);
+
+static void
+source_pane_trackCurrentFunction(e9ui_component_t *comp, source_pane_state_t *st, const char *path, int line);
 
 static const char *
 source_pane_basename(const char *path)
@@ -179,6 +229,46 @@ source_pane_parseHex(const char *s, uint32_t *out)
 }
 
 static int
+source_pane_parseHex64(const char *s, uint64_t *out)
+{
+    if (!s || !*s || !out) {
+        return 0;
+    }
+    char buf[32];
+    size_t len = strlen(s);
+    while (len > 0 && isspace((unsigned char)s[len - 1])) {
+        len--;
+    }
+    if (len > 0 && s[len - 1] == ':') {
+        len--;
+    }
+    if (len == 0 || len >= sizeof(buf)) {
+        return 0;
+    }
+    memcpy(buf, s, len);
+    buf[len] = '\0';
+    const char *p = buf;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+    }
+    if (!*p) {
+        return 0;
+    }
+    for (const char *q = p; *q; ++q) {
+        if (!isxdigit((unsigned char)*q)) {
+            return 0;
+        }
+    }
+    errno = 0;
+    unsigned long long v = strtoull(buf, NULL, 16);
+    if (errno != 0) {
+        return 0;
+    }
+    *out = (uint64_t)v;
+    return 1;
+}
+
+static int
 source_pane_fileMatches(const char *a, const char *b)
 {
     if (!a || !b) {
@@ -215,6 +305,898 @@ source_pane_fileMatches(const char *a, const char *b)
         }
     }
     return 0;
+}
+
+static int
+source_pane_hasCSourceExtension(const char *path)
+{
+    if (!path || !*path) {
+        return 0;
+    }
+    const char *dot = strrchr(path, '.');
+    if (!dot || !dot[1]) {
+        return 0;
+    }
+    return strcmp(dot, ".c") == 0 || strcmp(dot, ".cc") == 0 ||
+           strcmp(dot, ".cpp") == 0 || strcmp(dot, ".cxx") == 0;
+}
+
+static char *
+source_pane_parseValueAfterColon(const char *line)
+{
+    if (!line) {
+        return NULL;
+    }
+    const char *colon = strrchr(line, ':');
+    if (!colon || !colon[1]) {
+        return NULL;
+    }
+    const char *start = colon + 1;
+    while (*start && isspace((unsigned char)*start)) {
+        start++;
+    }
+    if (!*start) {
+        return NULL;
+    }
+    size_t len = strlen(start);
+    while (len > 0 && isspace((unsigned char)start[len - 1])) {
+        len--;
+    }
+    if (len == 0) {
+        return NULL;
+    }
+    char *out = (char*)alloc_calloc(len + 1, 1);
+    if (!out) {
+        return NULL;
+    }
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return out;
+}
+
+static void
+source_pane_clearSourceFiles(source_pane_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+    if (st->sourceFiles) {
+        for (int i = 0; i < st->sourceFileCount; ++i) {
+            alloc_free(st->sourceFiles[i]);
+            alloc_free(st->sourceLabels[i]);
+        }
+    }
+    alloc_free(st->sourceFiles);
+    alloc_free(st->sourceLabels);
+    alloc_free(st->sourceOptions);
+    st->sourceFiles = NULL;
+    st->sourceLabels = NULL;
+    st->sourceOptions = NULL;
+    st->sourceFileCount = 0;
+    st->sourceFileCap = 0;
+    st->sourceFilesLoaded = 0;
+    st->sourceFilesElf[0] = '\0';
+    st->sourceFilesToolchain[0] = '\0';
+}
+
+static void
+source_pane_clearSourceFunctions(source_pane_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+    if (st->sourceFunctionNames) {
+        for (int i = 0; i < st->sourceFunctionCount; ++i) {
+            alloc_free(st->sourceFunctionNames[i]);
+            alloc_free(st->sourceFunctionLabels[i]);
+            alloc_free(st->sourceFunctionValues[i]);
+        }
+    }
+    alloc_free(st->sourceFunctionNames);
+    alloc_free(st->sourceFunctionLabels);
+    alloc_free(st->sourceFunctionValues);
+    alloc_free(st->sourceFunctionLines);
+    alloc_free(st->sourceFunctionOptions);
+    st->sourceFunctionNames = NULL;
+    st->sourceFunctionLabels = NULL;
+    st->sourceFunctionValues = NULL;
+    st->sourceFunctionLines = NULL;
+    st->sourceFunctionOptions = NULL;
+    st->sourceFunctionCount = 0;
+    st->sourceFunctionCap = 0;
+    st->sourceFunctionsLoaded = 0;
+    st->sourceFunctionsElf[0] = '\0';
+    st->sourceFunctionsToolchain[0] = '\0';
+    st->sourceFunctionsFile[0] = '\0';
+}
+
+static int
+source_pane_parseFunctionValueLine(const char *value, int *out_line)
+{
+    if (!value || !*value || !out_line) {
+        return 0;
+    }
+    const char *sep = strchr(value, '|');
+    if (!sep) {
+        return 0;
+    }
+    size_t len = (size_t)(sep - value);
+    if (len == 0 || len > 15) {
+        return 0;
+    }
+    char line_buf[16];
+    memcpy(line_buf, value, len);
+    line_buf[len] = '\0';
+    int line = (int)strtol(line_buf, NULL, 10);
+    if (line <= 0) {
+        return 0;
+    }
+    *out_line = line;
+    return 1;
+}
+
+static int
+source_pane_addSourceFunction(source_pane_state_t *st, const char *name, int line)
+{
+    if (!st || !name || !*name || line <= 0) {
+        return 0;
+    }
+    for (int i = 0; i < st->sourceFunctionCount; ++i) {
+        if (st->sourceFunctionLines[i] == line &&
+            strcmp(st->sourceFunctionNames[i], name) == 0) {
+            return 0;
+        }
+    }
+    if (st->sourceFunctionCount >= st->sourceFunctionCap) {
+        int next_cap = st->sourceFunctionCap > 0 ? st->sourceFunctionCap * 2 : 64;
+        char **next_names = (char**)alloc_calloc((size_t)next_cap, sizeof(*next_names));
+        char **next_labels = (char**)alloc_calloc((size_t)next_cap, sizeof(*next_labels));
+        char **next_values = (char**)alloc_calloc((size_t)next_cap, sizeof(*next_values));
+        int *next_lines = (int*)alloc_calloc((size_t)next_cap, sizeof(*next_lines));
+        e9ui_textbox_option_t *next_options =
+            (e9ui_textbox_option_t*)alloc_calloc((size_t)next_cap, sizeof(*next_options));
+        if (!next_names || !next_labels || !next_values || !next_lines || !next_options) {
+            alloc_free(next_names);
+            alloc_free(next_labels);
+            alloc_free(next_values);
+            alloc_free(next_lines);
+            alloc_free(next_options);
+            return 0;
+        }
+        if (st->sourceFunctionCount > 0) {
+            size_t count = (size_t)st->sourceFunctionCount;
+            memcpy(next_names, st->sourceFunctionNames, sizeof(*next_names) * count);
+            memcpy(next_labels, st->sourceFunctionLabels, sizeof(*next_labels) * count);
+            memcpy(next_values, st->sourceFunctionValues, sizeof(*next_values) * count);
+            memcpy(next_lines, st->sourceFunctionLines, sizeof(*next_lines) * count);
+            memcpy(next_options, st->sourceFunctionOptions, sizeof(*next_options) * count);
+        }
+        alloc_free(st->sourceFunctionNames);
+        alloc_free(st->sourceFunctionLabels);
+        alloc_free(st->sourceFunctionValues);
+        alloc_free(st->sourceFunctionLines);
+        alloc_free(st->sourceFunctionOptions);
+        st->sourceFunctionNames = next_names;
+        st->sourceFunctionLabels = next_labels;
+        st->sourceFunctionValues = next_values;
+        st->sourceFunctionLines = next_lines;
+        st->sourceFunctionOptions = next_options;
+        st->sourceFunctionCap = next_cap;
+    }
+
+    char value_buf[32];
+    snprintf(value_buf, sizeof(value_buf), "%d|%s", line, name);
+    char label_buf[1024];
+    snprintf(label_buf, sizeof(label_buf), "%s:%d", name, line);
+
+    char *name_dup = alloc_strdup(name);
+    char *label_dup = alloc_strdup(label_buf);
+    char *value_dup = alloc_strdup(value_buf);
+    if (!name_dup || !label_dup || !value_dup) {
+        alloc_free(name_dup);
+        alloc_free(label_dup);
+        alloc_free(value_dup);
+        return 0;
+    }
+
+    int insert_at = st->sourceFunctionCount;
+    while (insert_at > 0) {
+        int prev = insert_at - 1;
+        int prev_line = st->sourceFunctionLines[prev];
+        int cmp = strcmp(st->sourceFunctionNames[prev], name_dup);
+        if (prev_line < line || (prev_line == line && cmp <= 0)) {
+            break;
+        }
+        st->sourceFunctionNames[insert_at] = st->sourceFunctionNames[prev];
+        st->sourceFunctionLabels[insert_at] = st->sourceFunctionLabels[prev];
+        st->sourceFunctionValues[insert_at] = st->sourceFunctionValues[prev];
+        st->sourceFunctionLines[insert_at] = st->sourceFunctionLines[prev];
+        st->sourceFunctionOptions[insert_at] = st->sourceFunctionOptions[prev];
+        insert_at--;
+    }
+
+    st->sourceFunctionNames[insert_at] = name_dup;
+    st->sourceFunctionLabels[insert_at] = label_dup;
+    st->sourceFunctionValues[insert_at] = value_dup;
+    st->sourceFunctionLines[insert_at] = line;
+    st->sourceFunctionOptions[insert_at].value = value_dup;
+    st->sourceFunctionOptions[insert_at].label = label_dup;
+    st->sourceFunctionCount++;
+    return 1;
+}
+
+static int
+source_pane_addSourceFile(source_pane_state_t *st, const char *path)
+{
+    if (!st || !path || !*path) {
+        return 0;
+    }
+    char resolved[PATH_MAX];
+    source_pane_resolveSourcePath(path, resolved, sizeof(resolved));
+    if (!source_pane_hasCSourceExtension(resolved)) {
+        return 0;
+    }
+    for (int i = 0; i < st->sourceFileCount; ++i) {
+        if (source_pane_fileMatches(st->sourceFiles[i], resolved)) {
+            return 0;
+        }
+    }
+    if (st->sourceFileCount >= st->sourceFileCap) {
+        int nextCap = st->sourceFileCap > 0 ? st->sourceFileCap * 2 : 32;
+        char **nextFiles = (char**)alloc_calloc((size_t)nextCap, sizeof(*nextFiles));
+        char **nextLabels = (char**)alloc_calloc((size_t)nextCap, sizeof(*nextLabels));
+        e9ui_textbox_option_t *nextOptions =
+            (e9ui_textbox_option_t*)alloc_calloc((size_t)nextCap, sizeof(*nextOptions));
+        if (!nextFiles || !nextLabels || !nextOptions) {
+            alloc_free(nextFiles);
+            alloc_free(nextLabels);
+            alloc_free(nextOptions);
+            return 0;
+        }
+        if (st->sourceFileCount > 0) {
+            memcpy(nextFiles, st->sourceFiles, sizeof(*nextFiles) * (size_t)st->sourceFileCount);
+            memcpy(nextLabels, st->sourceLabels, sizeof(*nextLabels) * (size_t)st->sourceFileCount);
+            memcpy(nextOptions, st->sourceOptions, sizeof(*nextOptions) * (size_t)st->sourceFileCount);
+        }
+        alloc_free(st->sourceFiles);
+        alloc_free(st->sourceLabels);
+        alloc_free(st->sourceOptions);
+        st->sourceFiles = nextFiles;
+        st->sourceLabels = nextLabels;
+        st->sourceOptions = nextOptions;
+        st->sourceFileCap = nextCap;
+    }
+    char *pathDup = alloc_strdup(resolved);
+    if (!pathDup) {
+        return 0;
+    }
+    const char *base = source_pane_basename(resolved);
+    char *labelDup = alloc_strdup(base && *base ? base : resolved);
+    if (!labelDup) {
+        alloc_free(pathDup);
+        return 0;
+    }
+    int idx = st->sourceFileCount++;
+    st->sourceFiles[idx] = pathDup;
+    st->sourceLabels[idx] = labelDup;
+    st->sourceOptions[idx].value = st->sourceFiles[idx];
+    st->sourceOptions[idx].label = st->sourceLabels[idx];
+    return 1;
+}
+
+static int
+source_pane_collectReadelfFiles(source_pane_state_t *st, const char *elfPath)
+{
+    if (!st || !elfPath || !*elfPath) {
+        return 0;
+    }
+    char readelf[PATH_MAX];
+    if (!debugger_toolchainBuildBinary(readelf, sizeof(readelf), "readelf")) {
+        return 0;
+    }
+    char readelfExe[PATH_MAX];
+    if (!file_findInPath(readelf, readelfExe, sizeof(readelfExe))) {
+        return 0;
+    }
+    char cmd[PATH_MAX * 2];
+    snprintf(cmd, sizeof(cmd), "%s --debug-dump=info '%s' 2>/dev/null", readelfExe, elfPath);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return 0;
+    }
+
+    int added = 0;
+    char line[1024];
+    int cuOpen = 0;
+    int cuDepth = 0;
+    char cuName[PATH_MAX];
+    char cuDir[PATH_MAX];
+    cuName[0] = '\0';
+    cuDir[0] = '\0';
+
+    while (fgets(line, sizeof(line), fp)) {
+        int depth = -1;
+        if (sscanf(line, " <%d><", &depth) == 1) {
+            int isCompileUnit = strstr(line, "DW_TAG_compile_unit") != NULL;
+            if (cuOpen && (isCompileUnit || depth <= cuDepth)) {
+                if (cuName[0]) {
+                    char fullPath[PATH_MAX];
+                    if (cuDir[0] && !source_pane_isAbsolutePath(cuName)) {
+                        snprintf(fullPath, sizeof(fullPath), "%s/%s", cuDir, cuName);
+                    } else {
+                        strncpy(fullPath, cuName, sizeof(fullPath) - 1);
+                        fullPath[sizeof(fullPath) - 1] = '\0';
+                    }
+                    added += source_pane_addSourceFile(st, fullPath);
+                }
+                cuOpen = 0;
+                cuName[0] = '\0';
+                cuDir[0] = '\0';
+            }
+            if (isCompileUnit) {
+                cuOpen = 1;
+                cuDepth = depth;
+                cuName[0] = '\0';
+                cuDir[0] = '\0';
+                continue;
+            }
+        }
+        if (!cuOpen) {
+            continue;
+        }
+        if (strstr(line, "DW_AT_name")) {
+            char *name = source_pane_parseValueAfterColon(line);
+            if (name) {
+                if (strcmp(name, "<artificial>") != 0) {
+                    strncpy(cuName, name, sizeof(cuName) - 1);
+                    cuName[sizeof(cuName) - 1] = '\0';
+                }
+                alloc_free(name);
+            }
+            continue;
+        }
+        if (strstr(line, "DW_AT_comp_dir")) {
+            char *dir = source_pane_parseValueAfterColon(line);
+            if (dir) {
+                strncpy(cuDir, dir, sizeof(cuDir) - 1);
+                cuDir[sizeof(cuDir) - 1] = '\0';
+                alloc_free(dir);
+            }
+            continue;
+        }
+    }
+
+    if (cuOpen && cuName[0]) {
+        char fullPath[PATH_MAX];
+        if (cuDir[0] && !source_pane_isAbsolutePath(cuName)) {
+            snprintf(fullPath, sizeof(fullPath), "%s/%s", cuDir, cuName);
+        } else {
+            strncpy(fullPath, cuName, sizeof(fullPath) - 1);
+            fullPath[sizeof(fullPath) - 1] = '\0';
+        }
+        added += source_pane_addSourceFile(st, fullPath);
+    }
+
+    pclose(fp);
+    return added;
+}
+
+static int
+source_pane_collectStabsFiles(source_pane_state_t *st, const char *elfPath)
+{
+    if (!st || !elfPath || !*elfPath) {
+        return 0;
+    }
+    char objdump[PATH_MAX];
+    if (!debugger_toolchainBuildBinary(objdump, sizeof(objdump), "objdump")) {
+        return 0;
+    }
+    char objdumpExe[PATH_MAX];
+    if (!file_findInPath(objdump, objdumpExe, sizeof(objdumpExe))) {
+        return 0;
+    }
+    char cmd[PATH_MAX * 2];
+    snprintf(cmd, sizeof(cmd), "%s -G '%s' 2>/dev/null", objdumpExe, elfPath);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return 0;
+    }
+
+    int added = 0;
+    char currentDir[PATH_MAX];
+    currentDir[0] = '\0';
+    char line[2048];
+    while (fgets(line, sizeof(line), fp)) {
+        char *tokens[12];
+        int count = 0;
+        char *cursor = line;
+        while (*cursor && isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        if (!*cursor) {
+            continue;
+        }
+        while (count < (int)(sizeof(tokens) / sizeof(tokens[0]))) {
+            while (*cursor && isspace((unsigned char)*cursor)) {
+                cursor++;
+            }
+            if (!*cursor) {
+                break;
+            }
+            tokens[count++] = cursor;
+            while (*cursor && !isspace((unsigned char)*cursor)) {
+                cursor++;
+            }
+            if (*cursor) {
+                *cursor++ = '\0';
+            }
+        }
+        if (count < 7) {
+            continue;
+        }
+        const char *stabType = tokens[1];
+        const char *stabStr = tokens[count - 1];
+        if (!stabType || !stabStr || !*stabStr) {
+            continue;
+        }
+        if (strcmp(stabType, "SO") != 0 && strcmp(stabType, "SOL") != 0) {
+            continue;
+        }
+        if (strcmp(stabStr, "./") == 0 || strcmp(stabStr, ".\\") == 0) {
+            strncpy(currentDir, stabStr, sizeof(currentDir) - 1);
+            currentDir[sizeof(currentDir) - 1] = '\0';
+            continue;
+        }
+        size_t len = strlen(stabStr);
+        if (strcmp(stabType, "SO") == 0 && len > 0 &&
+            (stabStr[len - 1] == '/' || stabStr[len - 1] == '\\')) {
+            strncpy(currentDir, stabStr, sizeof(currentDir) - 1);
+            currentDir[sizeof(currentDir) - 1] = '\0';
+            continue;
+        }
+        char fullPath[PATH_MAX];
+        if (!source_pane_isAbsolutePath(stabStr) && currentDir[0]) {
+            snprintf(fullPath, sizeof(fullPath), "%s%s", currentDir, stabStr);
+        } else {
+            strncpy(fullPath, stabStr, sizeof(fullPath) - 1);
+            fullPath[sizeof(fullPath) - 1] = '\0';
+        }
+        added += source_pane_addSourceFile(st, fullPath);
+    }
+    pclose(fp);
+    return added;
+}
+
+static void
+source_pane_syncFileSelect(e9ui_component_t *comp, source_pane_state_t *st)
+{
+    if (!comp || !st || !st->fileSelectMeta) {
+        return;
+    }
+    e9ui_component_t *select = e9ui_child_find(comp, st->fileSelectMeta);
+    if (!select) {
+        return;
+    }
+    e9ui_setHidden(select, st->viewMode == source_pane_mode_c ? 0 : 1);
+    if (st->viewMode != source_pane_mode_c) {
+        return;
+    }
+    e9ui_textbox_setOptions(select, st->sourceOptions, st->sourceFileCount);
+    select->disabled = st->sourceFileCount <= 1 ? 1 : 0;
+
+    const char *displayPath = NULL;
+    if (st->manualSrcActive && st->manualSrcPath && st->manualSrcPath[0]) {
+        displayPath = st->manualSrcPath;
+    } else if (st->curSrcPath[0]) {
+        displayPath = st->curSrcPath;
+    }
+    if (!displayPath || !*displayPath) {
+        return;
+    }
+    for (int i = 0; i < st->sourceFileCount; ++i) {
+        if (source_pane_fileMatches(st->sourceFiles[i], displayPath)) {
+            e9ui_textbox_setSelectedValue(select, st->sourceFiles[i]);
+            return;
+        }
+    }
+}
+
+static void
+source_pane_syncFunctionSelect(e9ui_component_t *comp, source_pane_state_t *st)
+{
+    if (!comp || !st || !st->functionSelectMeta) {
+        return;
+    }
+    e9ui_component_t *select = e9ui_child_find(comp, st->functionSelectMeta);
+    if (!select) {
+        return;
+    }
+    e9ui_setHidden(select, st->viewMode == source_pane_mode_c ? 0 : 1);
+    if (st->viewMode != source_pane_mode_c) {
+        return;
+    }
+    e9ui_textbox_setOptions(select, st->sourceFunctionOptions, st->sourceFunctionCount);
+    select->disabled = st->sourceFunctionCount <= 0 ? 1 : 0;
+}
+
+static void
+source_pane_clearFunctionScrollLock(source_pane_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+    st->functionScrollLock = 0;
+}
+
+static void
+source_pane_trackCurrentFunction(e9ui_component_t *comp, source_pane_state_t *st, const char *path, int line)
+{
+    if (!comp || !st || !path || !path[0] || line <= 0 || !st->functionSelectMeta) {
+        return;
+    }
+    if (st->sourceFunctionCount <= 0 || !source_pane_fileMatches(st->sourceFunctionsFile, path)) {
+        return;
+    }
+    e9ui_component_t *select = e9ui_child_find(comp, st->functionSelectMeta);
+    if (!select) {
+        return;
+    }
+
+    int best = 0;
+    for (int i = 0; i < st->sourceFunctionCount; ++i) {
+        if (st->sourceFunctionLines[i] <= line) {
+            best = i;
+        } else {
+            break;
+        }
+    }
+    e9ui_textbox_setSelectedValue(select, st->sourceFunctionValues[best]);
+}
+
+static int
+source_pane_collectFunctionSymbols(source_pane_state_t *st, const char *elf_path, const char *source_file)
+{
+    if (!st || !elf_path || !*elf_path || !source_file || !*source_file || !debugger.elfValid) {
+        return 0;
+    }
+
+    char readelf[PATH_MAX];
+    if (!debugger_toolchainBuildBinary(readelf, sizeof(readelf), "readelf")) {
+        return 0;
+    }
+    char readelf_exe[PATH_MAX];
+    if (!file_findInPath(readelf, readelf_exe, sizeof(readelf_exe))) {
+        return 0;
+    }
+
+    char cmd[PATH_MAX * 2];
+    snprintf(cmd, sizeof(cmd), "%s -Ws '%s' 2>/dev/null", readelf_exe, elf_path);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return 0;
+    }
+
+    int added = 0;
+    char line[2048];
+    char resolved_source[PATH_MAX];
+    source_pane_resolveSourcePath(source_file, resolved_source, sizeof(resolved_source));
+    if (!addr2line_start(elf_path)) {
+        pclose(fp);
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *tokens[12];
+        int count = 0;
+        char *cursor = line;
+        while (*cursor && isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        if (!*cursor || !isdigit((unsigned char)*cursor)) {
+            continue;
+        }
+        while (count < (int)(sizeof(tokens) / sizeof(tokens[0]))) {
+            while (*cursor && isspace((unsigned char)*cursor)) {
+                cursor++;
+            }
+            if (!*cursor) {
+                break;
+            }
+            tokens[count++] = cursor;
+            while (*cursor && !isspace((unsigned char)*cursor)) {
+                cursor++;
+            }
+            if (*cursor) {
+                *cursor++ = '\0';
+            }
+        }
+        if (count < 8) {
+            continue;
+        }
+        if (strcmp(tokens[3], "FUNC") != 0) {
+            continue;
+        }
+        if (strcmp(tokens[6], "UND") == 0) {
+            continue;
+        }
+        const char *symbol_name = tokens[7];
+        if (!symbol_name || !*symbol_name || strcmp(symbol_name, "<null>") == 0) {
+            continue;
+        }
+        uint64_t symbol_addr = 0;
+        if (!source_pane_parseHex64(tokens[1], &symbol_addr) || symbol_addr == 0) {
+            continue;
+        }
+
+        char resolved_file[PATH_MAX];
+        char function_name[1024];
+        int function_line = 0;
+        if (!addr2line_resolveDetailed(symbol_addr, resolved_file, sizeof(resolved_file),
+                                       &function_line, function_name, sizeof(function_name))) {
+            continue;
+        }
+        if (function_line <= 0 || !resolved_file[0]) {
+            continue;
+        }
+        char resolved_path[PATH_MAX];
+        source_pane_resolveSourcePath(resolved_file, resolved_path, sizeof(resolved_path));
+        if (!source_pane_fileMatches(resolved_path, resolved_source)) {
+            continue;
+        }
+        const char *display_name = function_name[0] ? function_name : symbol_name;
+        if (strcmp(display_name, "??") == 0) {
+            continue;
+        }
+        added += source_pane_addSourceFunction(st, display_name, function_line);
+    }
+
+    pclose(fp);
+    return added;
+}
+
+static int
+source_pane_parseStabStringName(const char *stab_str, char *out_name, size_t cap)
+{
+    if (!stab_str || !*stab_str || !out_name || cap == 0) {
+        return 0;
+    }
+    out_name[0] = '\0';
+    const char *end = strchr(stab_str, ':');
+    if (!end) {
+        end = stab_str + strlen(stab_str);
+    }
+    size_t len = (size_t)(end - stab_str);
+    if (len == 0) {
+        return 0;
+    }
+    if (len >= cap) {
+        len = cap - 1;
+    }
+    memcpy(out_name, stab_str, len);
+    out_name[len] = '\0';
+    return out_name[0] != '\0';
+}
+
+static int
+source_pane_collectStabsFunctions(source_pane_state_t *st, const char *elf_path, const char *source_file)
+{
+    if (!st || !elf_path || !*elf_path || !source_file || !*source_file || !debugger.elfValid) {
+        return 0;
+    }
+    char objdump[PATH_MAX];
+    if (!debugger_toolchainBuildBinary(objdump, sizeof(objdump), "objdump")) {
+        return 0;
+    }
+    char objdump_exe[PATH_MAX];
+    if (!file_findInPath(objdump, objdump_exe, sizeof(objdump_exe))) {
+        return 0;
+    }
+    char cmd[PATH_MAX * 2];
+    snprintf(cmd, sizeof(cmd), "%s -G '%s' 2>/dev/null", objdump_exe, elf_path);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return 0;
+    }
+
+    int added = 0;
+    char line[2048];
+    char resolved_source[PATH_MAX];
+    source_pane_resolveSourcePath(source_file, resolved_source, sizeof(resolved_source));
+    if (!addr2line_start(elf_path)) {
+        pclose(fp);
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *tokens[12];
+        int count = 0;
+        char *cursor = line;
+        while (*cursor && isspace((unsigned char)*cursor)) {
+            ++cursor;
+        }
+        if (!*cursor) {
+            continue;
+        }
+        while (count < (int)(sizeof(tokens) / sizeof(tokens[0]))) {
+            while (*cursor && isspace((unsigned char)*cursor)) {
+                ++cursor;
+            }
+            if (!*cursor) {
+                break;
+            }
+            tokens[count++] = cursor;
+            while (*cursor && !isspace((unsigned char)*cursor)) {
+                ++cursor;
+            }
+            if (*cursor) {
+                *cursor++ = '\0';
+            }
+        }
+        if (count < 7) {
+            continue;
+        }
+        const char *stab_type = tokens[1];
+        const char *stab_str = tokens[count - 1];
+        if (!stab_type || !stab_str || strcmp(stab_type, "FUN") != 0) {
+            continue;
+        }
+        char parsed_name[1024];
+        if (!source_pane_parseStabStringName(stab_str, parsed_name, sizeof(parsed_name))) {
+            continue;
+        }
+
+        uint64_t n_value = 0;
+        if (!source_pane_parseHex64(tokens[4], &n_value) || n_value == 0) {
+            continue;
+        }
+        char resolved_file[PATH_MAX];
+        char function_name[1024];
+        int function_line = 0;
+        if (!addr2line_resolveDetailed(n_value, resolved_file, sizeof(resolved_file),
+                                       &function_line, function_name, sizeof(function_name))) {
+            continue;
+        }
+        if (function_line <= 0 || !resolved_file[0]) {
+            continue;
+        }
+        char resolved_path[PATH_MAX];
+        source_pane_resolveSourcePath(resolved_file, resolved_path, sizeof(resolved_path));
+        if (!source_pane_fileMatches(resolved_path, resolved_source)) {
+            continue;
+        }
+        const char *display_name = function_name[0] ? function_name : parsed_name;
+        if (!display_name[0] || strcmp(display_name, "??") == 0) {
+            continue;
+        }
+        added += source_pane_addSourceFunction(st, display_name, function_line);
+    }
+
+    pclose(fp);
+    return added;
+}
+
+static void
+source_pane_refreshSourceFunctions(e9ui_component_t *comp, source_pane_state_t *st, const char *source_file)
+{
+    if (!comp || !st) {
+        return;
+    }
+    e9ui_component_t *select = NULL;
+    if (st->functionSelectMeta) {
+        select = e9ui_child_find(comp, st->functionSelectMeta);
+    }
+    const char *elf = debugger.libretro.exePath;
+    const char *toolchain = debugger.libretro.toolchainPrefix;
+    char resolved_source_file[PATH_MAX];
+    resolved_source_file[0] = '\0';
+    if (source_file && *source_file) {
+        source_pane_resolveSourcePath(source_file, resolved_source_file, sizeof(resolved_source_file));
+    }
+    if (!debugger.elfValid || !elf || !*elf || !source_file || !*source_file) {
+        if (select) {
+            e9ui_textbox_setOptions(select, NULL, 0);
+        }
+        source_pane_clearSourceFunctions(st);
+        source_pane_syncFunctionSelect(comp, st);
+        return;
+    }
+
+    if (st->sourceFunctionsLoaded &&
+        strcmp(st->sourceFunctionsElf, elf) == 0 &&
+        strcmp(st->sourceFunctionsToolchain, toolchain ? toolchain : "") == 0 &&
+        resolved_source_file[0] &&
+        strcmp(st->sourceFunctionsFile, resolved_source_file) == 0) {
+        source_pane_syncFunctionSelect(comp, st);
+        return;
+    }
+
+    if (select) {
+        e9ui_textbox_setOptions(select, NULL, 0);
+    }
+    source_pane_clearSourceFunctions(st);
+    int added = source_pane_collectFunctionSymbols(st, elf, source_file);
+    if (added == 0) {
+        added += source_pane_collectStabsFunctions(st, elf, source_file);
+    }
+    st->sourceFunctionsLoaded = 1;
+    strncpy(st->sourceFunctionsElf, elf, sizeof(st->sourceFunctionsElf) - 1);
+    st->sourceFunctionsElf[sizeof(st->sourceFunctionsElf) - 1] = '\0';
+    if (toolchain) {
+        strncpy(st->sourceFunctionsToolchain, toolchain, sizeof(st->sourceFunctionsToolchain) - 1);
+        st->sourceFunctionsToolchain[sizeof(st->sourceFunctionsToolchain) - 1] = '\0';
+    } else {
+        st->sourceFunctionsToolchain[0] = '\0';
+    }
+    if (resolved_source_file[0]) {
+        strncpy(st->sourceFunctionsFile, resolved_source_file, sizeof(st->sourceFunctionsFile) - 1);
+        st->sourceFunctionsFile[sizeof(st->sourceFunctionsFile) - 1] = '\0';
+    } else {
+        st->sourceFunctionsFile[0] = '\0';
+    }
+    source_pane_syncFunctionSelect(comp, st);
+}
+
+static void
+source_pane_refreshSourceFiles(e9ui_component_t *comp, source_pane_state_t *st)
+{
+    if (!comp || !st) {
+        return;
+    }
+    const char *elf = debugger.libretro.exePath;
+    const char *toolchain = debugger.libretro.toolchainPrefix;
+    e9ui_component_t *select = NULL;
+    if (st->fileSelectMeta) {
+        select = e9ui_child_find(comp, st->fileSelectMeta);
+    }
+    if (!debugger.elfValid || !elf || !*elf) {
+        if (select) {
+            e9ui_textbox_setOptions(select, NULL, 0);
+        }
+        source_pane_clearSourceFiles(st);
+        source_pane_syncFileSelect(comp, st);
+        return;
+    }
+    if (st->sourceFilesLoaded &&
+        strcmp(st->sourceFilesElf, elf) == 0 &&
+        strcmp(st->sourceFilesToolchain, toolchain ? toolchain : "") == 0) {
+        if (select) {
+            e9ui_setHidden(select, st->viewMode == source_pane_mode_c ? 0 : 1);
+            if (st->viewMode == source_pane_mode_c) {
+                const char *displayPath = NULL;
+                if (st->manualSrcActive && st->manualSrcPath && st->manualSrcPath[0]) {
+                    displayPath = st->manualSrcPath;
+                } else if (st->curSrcPath[0]) {
+                    displayPath = st->curSrcPath;
+                }
+                if (displayPath && *displayPath) {
+                    for (int i = 0; i < st->sourceFileCount; ++i) {
+                        if (source_pane_fileMatches(st->sourceFiles[i], displayPath)) {
+                            e9ui_textbox_setSelectedValue(select, st->sourceFiles[i]);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    if (select) {
+        e9ui_textbox_setOptions(select, NULL, 0);
+    }
+    source_pane_clearSourceFiles(st);
+    (void)source_pane_collectReadelfFiles(st, elf);
+    (void)source_pane_collectStabsFiles(st, elf);
+    st->sourceFilesLoaded = 1;
+    strncpy(st->sourceFilesElf, elf, sizeof(st->sourceFilesElf) - 1);
+    st->sourceFilesElf[sizeof(st->sourceFilesElf) - 1] = '\0';
+    if (toolchain) {
+        strncpy(st->sourceFilesToolchain, toolchain, sizeof(st->sourceFilesToolchain) - 1);
+        st->sourceFilesToolchain[sizeof(st->sourceFilesToolchain) - 1] = '\0';
+    } else {
+        st->sourceFilesToolchain[0] = '\0';
+    }
+    source_pane_syncFileSelect(comp, st);
 }
 
 static int
@@ -360,6 +1342,409 @@ source_pane_pointInBounds(const e9ui_component_t *comp, int x, int y)
 }
 
 static void
+source_pane_renderStatusMessage(e9ui_context_t *ctx, TTF_Font *font, SDL_Rect area, int padPx,
+                                SDL_Color color, const char *msg)
+{
+    if (!ctx || !ctx->renderer || !font || !msg || !msg[0]) {
+        return;
+    }
+    int tw = 0;
+    int th = 0;
+    SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, font, msg, color, &tw, &th);
+    if (!t) {
+        return;
+    }
+    int y = area.y + area.h - padPx - th;
+    if (y < area.y + padPx) {
+        y = area.y + padPx;
+    }
+    SDL_Rect r = {area.x + padPx, y, tw, th};
+    SDL_RenderCopy(ctx->renderer, t, NULL, &r);
+}
+
+static SDL_Color
+source_pane_syntaxColor(syntax_highlight_kind_t kind)
+{
+    switch (kind) {
+        case syntax_highlight_kind_keyword:
+            return (SDL_Color){220, 170, 90, 255};
+        case syntax_highlight_kind_type:
+            return (SDL_Color){120, 190, 255, 255};
+        case syntax_highlight_kind_string:
+            return (SDL_Color){200, 210, 120, 255};
+        case syntax_highlight_kind_comment:
+            return (SDL_Color){120, 150, 120, 255};
+        case syntax_highlight_kind_number:
+            return (SDL_Color){210, 150, 120, 255};
+        case syntax_highlight_kind_preproc:
+            return (SDL_Color){175, 145, 220, 255};
+        case syntax_highlight_kind_function:
+            return (SDL_Color){110, 215, 195, 255};
+        default:
+            return (SDL_Color){220, 220, 220, 255};
+    }
+}
+
+static int
+source_pane_copySegment(const char *line, int start, int len, char *stackBuf, int stackCap, char **outBuf)
+{
+    if (!outBuf || !line || start < 0 || len <= 0) {
+        return 0;
+    }
+    *outBuf = NULL;
+    if (len + 1 <= stackCap) {
+        memcpy(stackBuf, line + start, (size_t)len);
+        stackBuf[len] = '\0';
+        *outBuf = stackBuf;
+        return 1;
+    }
+    char *heap = (char*)alloc_alloc((size_t)len + 1);
+    if (!heap) {
+        return 0;
+    }
+    memcpy(heap, line + start, (size_t)len);
+    heap[len] = '\0';
+    *outBuf = heap;
+    return 1;
+}
+
+static int
+source_pane_measureSegment(TTF_Font *font, const char *line, int start, int len)
+{
+    if (!font || !line || start < 0 || len <= 0) {
+        return 0;
+    }
+    char stackBuf[256];
+    char *seg = NULL;
+    if (!source_pane_copySegment(line, start, len, stackBuf, (int)sizeof(stackBuf), &seg)) {
+        return 0;
+    }
+    int w = 0;
+    int h = 0;
+    TTF_SizeText(font, seg, &w, &h);
+    if (seg != stackBuf) {
+        alloc_free(seg);
+    }
+    return w;
+}
+
+static void
+source_pane_drawSegment(e9ui_context_t *ctx, e9ui_component_t *owner, TTF_Font *font, const char *line,
+                        int start, int len, SDL_Color color, int x, int y, int lineHeight)
+{
+    if (!ctx || !owner || !font || !line || len <= 0) {
+        return;
+    }
+    char stackBuf[256];
+    char *seg = NULL;
+    if (!source_pane_copySegment(line, start, len, stackBuf, (int)sizeof(stackBuf), &seg)) {
+        return;
+    }
+    e9ui_text_select_drawText(ctx, owner, font, seg, color, x, y, lineHeight, 0, owner, 0, 0);
+    if (seg != stackBuf) {
+        alloc_free(seg);
+    }
+}
+
+static void
+source_pane_renderHighlightedLine(e9ui_context_t *ctx, e9ui_component_t *owner, TTF_Font *font,
+                                  const char *path, int lineNo, const char *line, SDL_Color baseColor,
+                                  int textX, int y, int lineHeight, int hitW, void *sourceBucket)
+{
+    if (!ctx || !owner || !font || !line) {
+        return;
+    }
+    e9ui_text_select_drawText(ctx, owner, font, line, baseColor, textX, y,
+                              lineHeight, hitW, sourceBucket, 0, 1);
+    const syntax_highlight_span_t *spans = NULL;
+    int spanCount = 0;
+    if (!syntax_highlight_getLineSpans(path, lineNo, &spans, &spanCount) || !spans || spanCount <= 0) {
+        return;
+    }
+    int lineLen = (int)strlen(line);
+    int cursorIndex = 0;
+    int cursorX = textX;
+    for (int i = 0; i < spanCount; ++i) {
+        int start = spans[i].startColumn;
+        int len = spans[i].length;
+        if (start < cursorIndex) {
+            int trim = cursorIndex - start;
+            if (trim >= len) {
+                continue;
+            }
+            start += trim;
+            len -= trim;
+        }
+        if (start >= lineLen || len <= 0) {
+            continue;
+        }
+        if (start > cursorIndex) {
+            int gap = source_pane_measureSegment(font, line, cursorIndex, start - cursorIndex);
+            cursorX += gap;
+            cursorIndex = start;
+        }
+        if (start + len > lineLen) {
+            len = lineLen - start;
+        }
+        if (len <= 0) {
+            continue;
+        }
+        SDL_Color color = source_pane_syntaxColor(spans[i].kind);
+        source_pane_drawSegment(ctx, owner, font, line, start, len, color, cursorX, y, lineHeight);
+        int segw = source_pane_measureSegment(font, line, start, len);
+        cursorX += segw;
+        cursorIndex = start + len;
+    }
+}
+
+static void
+source_pane_clearHover(e9ui_component_t *self, source_pane_state_t *st)
+{
+    if (!self || !st) {
+        return;
+    }
+    st->hoverExpr[0] = '\0';
+    st->hoverTip[0] = '\0';
+    st->hoverLine = 0;
+    st->hoverCol = 0;
+    st->hoverPc = 0;
+    st->hoverTick = 0;
+    st->hoverActive = 0;
+    e9ui_setTooltip(self, NULL);
+}
+
+static int
+source_pane_columnFromX(TTF_Font *font, const char *line, int relX)
+{
+    if (!font || !line) {
+        return 0;
+    }
+    if (relX <= 0) {
+        return 0;
+    }
+    int lineLen = (int)strlen(line);
+    if (lineLen <= 0) {
+        return 0;
+    }
+    int bestCol = lineLen;
+    for (int i = 1; i <= lineLen; ++i) {
+        int w = source_pane_measureSegment(font, line, 0, i);
+        if (w >= relX) {
+            bestCol = i - 1;
+            break;
+        }
+    }
+    if (bestCol < 0) {
+        bestCol = 0;
+    }
+    if (bestCol > lineLen) {
+        bestCol = lineLen;
+    }
+    return bestCol;
+}
+
+static int
+source_pane_extractHoverExprFallback(const char *line, int column, char *outExpr, int outCap)
+{
+    if (!line || !outExpr || outCap <= 1 || column < 0) {
+        return 0;
+    }
+    outExpr[0] = '\0';
+    int lineLen = (int)strlen(line);
+    if (lineLen <= 0) {
+        return 0;
+    }
+    int pivot = column;
+    if (pivot >= lineLen) {
+        pivot = lineLen - 1;
+    }
+    if (pivot < 0) {
+        return 0;
+    }
+    if (!(isalnum((unsigned char)line[pivot]) || line[pivot] == '_')) {
+        if (pivot > 0 && (isalnum((unsigned char)line[pivot - 1]) || line[pivot - 1] == '_')) {
+            pivot -= 1;
+        } else {
+            return 0;
+        }
+    }
+    int start = pivot;
+    while (start > 0 && (isalnum((unsigned char)line[start - 1]) || line[start - 1] == '_')) {
+        start--;
+    }
+    int end = pivot + 1;
+    while (end < lineLen && (isalnum((unsigned char)line[end]) || line[end] == '_')) {
+        end++;
+    }
+    int len = end - start;
+    if (len <= 0) {
+        return 0;
+    }
+    if (len >= outCap) {
+        len = outCap - 1;
+    }
+    memcpy(outExpr, line + start, (size_t)len);
+    outExpr[len] = '\0';
+    return 1;
+}
+
+static void
+source_pane_updateHoverTooltip(e9ui_component_t *self, e9ui_context_t *ctx, source_pane_state_t *st,
+                               const e9ui_event_t *ev)
+{
+    if (!self || !ctx || !st || !ev || ev->type != SDL_MOUSEMOTION) {
+        return;
+    }
+    if (st->viewMode != source_pane_mode_c) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    if (machine_getRunning(debugger.machine) && !st->frozenActive) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    int mx = ev->motion.x;
+    int my = ev->motion.y;
+    if (!source_pane_pointInBounds(self, mx, my)) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    TTF_Font *useFont = source_pane_resolveFont(ctx);
+    if (!useFont) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    const int padPx = 10;
+    source_pane_updateSourceLocation(st, 0);
+    int manualView = st->manualSrcActive && st->manualSrcPath && st->manualSrcPath[0];
+    const char *path = manualView ? st->manualSrcPath : st->curSrcPath;
+    int curLine = manualView ? 0 : st->curSrcLine;
+    if (!path || !path[0] || (!manualView && curLine <= 0)) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+    if (metrics.innerHeight <= 0 || metrics.lineHeight <= 0) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    int maxLines = metrics.maxLines > 0 ? metrics.maxLines : 1;
+    int start = 1;
+    if (!manualView) {
+        start = curLine - (maxLines / 2);
+        if (start < 1) {
+            start = 1;
+        }
+    }
+    if (st->scrollLineValid) {
+        start = st->scrollLine;
+        if (start < 1) {
+            start = 1;
+        }
+    }
+    int end = start + maxLines - 1;
+    const char **lines = NULL;
+    int count = 0;
+    int first = 0;
+    int total = 0;
+    if (!source_getRange(path, start, end, &lines, &count, &first, &total) || count <= 0) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    if (count < maxLines && total > 0) {
+        int missing = maxLines - count;
+        int altStart = first - missing;
+        if (altStart < 1) {
+            altStart = 1;
+        }
+        int altEnd = altStart + maxLines - 1;
+        if (altEnd > total) {
+            altEnd = total;
+        }
+        source_getRange(path, altStart, altEnd, &lines, &count, &first, &total);
+    }
+    int digits = 1;
+    int tmpTotal = (total > 0) ? total : (first + count - 1);
+    for (int v = tmpTotal; v >= 10; v /= 10) {
+        digits++;
+    }
+    if (digits < 3) {
+        digits = 3;
+    }
+    char zeros[16];
+    if (digits >= (int)sizeof(zeros)) {
+        digits = (int)sizeof(zeros) - 1;
+    }
+    for (int i = 0; i < digits; ++i) {
+        zeros[i] = '8';
+    }
+    zeros[digits] = '\0';
+    int gutterW = 0;
+    int th = 0;
+    TTF_SizeText(useFont, zeros, &gutterW, &th);
+    int gutterPad = e9ui_scale_px(ctx, 16);
+    int textX = self->bounds.x + padPx + gutterW + gutterPad;
+    int relY = my - (self->bounds.y + padPx);
+    if (relY < 0) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    int row = relY / metrics.lineHeight;
+    if (row < 0 || row >= count) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    if (mx < textX) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    const char *line = lines[row] ? lines[row] : "";
+    int lineNo = first + row;
+    int column = source_pane_columnFromX(useFont, line, mx - textX);
+    char expr[256];
+    expr[0] = '\0';
+    if (!syntax_highlight_getHoverExpr(path, lineNo, column, expr, sizeof(expr))) {
+        if (!source_pane_extractHoverExprFallback(line, column, expr, (int)sizeof(expr))) {
+            source_pane_clearHover(self, st);
+            return;
+        }
+    }
+    unsigned long pcReg = 0;
+    (void)machine_findReg(&debugger.machine, "PC", &pcReg);
+    uint32_t pc = (uint32_t)pcReg;
+    uint32_t now = SDL_GetTicks();
+    if (st->hoverActive &&
+        st->hoverLine == lineNo &&
+        st->hoverCol == column &&
+        st->hoverPc == pc &&
+        strcmp(st->hoverExpr, expr) == 0 &&
+        (now - st->hoverTick) < 120u) {
+        return;
+    }
+    char tip[1024];
+    tip[0] = '\0';
+    if (!print_eval_eval(expr, tip, sizeof(tip))) {
+        source_pane_clearHover(self, st);
+        return;
+    }
+    for (char *p = tip; *p; ++p) {
+        if (*p == '\n' || *p == '\r') {
+            *p = ' ';
+        }
+    }
+    strncpy(st->hoverExpr, expr, sizeof(st->hoverExpr) - 1);
+    st->hoverExpr[sizeof(st->hoverExpr) - 1] = '\0';
+    strncpy(st->hoverTip, tip, sizeof(st->hoverTip) - 1);
+    st->hoverTip[sizeof(st->hoverTip) - 1] = '\0';
+    st->hoverLine = lineNo;
+    st->hoverCol = column;
+    st->hoverPc = pc;
+    st->hoverTick = now;
+    st->hoverActive = 1;
+    e9ui_setTooltip(self, st->hoverTip);
+}
+
+static void
 source_pane_adjustScroll(source_pane_state_t *st, source_pane_mode_t mode, int delta)
 {
     if (!st || delta == 0) {
@@ -415,7 +1800,7 @@ source_pane_scrollToEnd(source_pane_state_t *st, source_pane_mode_t mode, int ma
         maxLines = 1;
     }
     if (mode == source_pane_mode_c) {
-        source_pane_updateSourceLocation(st);
+        source_pane_updateSourceLocation(st, 0);
         int total = 0;
         if (st->curSrcPath[0]) {
             total = source_getTotalLines(st->curSrcPath);
@@ -452,10 +1837,12 @@ source_pane_followCurrent(source_pane_state_t *st)
     if (!st) {
         return;
     }
+    source_pane_clearFunctionScrollLock(st);
     st->scrollLineValid = 0;
     st->scrollIndexValid = 0;
     st->overrideActive = 0;
     st->gutterPending = 0;
+    st->manualSrcActive = 0;
 }
 
 static void
@@ -493,17 +1880,19 @@ source_pane_trackPosition(source_pane_state_t *st)
     if (curAddr != st->lastPcAddr) {
         st->scrollLineValid = 0;
         st->scrollIndexValid = 0;
+        source_pane_clearFunctionScrollLock(st);
+        st->manualSrcActive = 0;
     }
     st->lastPcAddr = curAddr;
 }
 
 static void
-source_pane_updateSourceLocation(source_pane_state_t *st)
+source_pane_updateSourceLocation(source_pane_state_t *st, int allowWhileRunning)
 {
     if (!st) {
         return;
     }
-    if (!st->overrideActive && machine_getRunning(debugger.machine)) {
+    if (!allowWhileRunning && !st->overrideActive && machine_getRunning(debugger.machine)) {
         return;
     }
     unsigned long pc = 0;
@@ -786,12 +2175,7 @@ source_pane_renderAsm(e9ui_component_t *self, e9ui_context_t *ctx)
     uint64_t curAddr = 0;
     if (!source_pane_getAsmWindow(st, maxLines, &curAddr, &lines, &addrs, &count)) {
         SDL_Color icol = (SDL_Color){200,160,160,255};
-        int tw = 0, th = 0;
-        SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, useFont, "No disassembly available", icol, &tw, &th);
-        if (t) {
-            SDL_Rect r = {area.x + padPx, area.y + padPx, tw, th};
-            SDL_RenderCopy(ctx->renderer, t, NULL, &r);
-        }
+        source_pane_renderStatusMessage(ctx, useFont, area, padPx, icol, "No disassembly available");
         return;
     }
 
@@ -885,12 +2269,7 @@ source_pane_renderHex(e9ui_component_t *self, e9ui_context_t *ctx)
     uint64_t curAddr = 0;
     if (!source_pane_getAsmWindow(st, maxLines, &curAddr, &lines, &addrs, &count)) {
         SDL_Color icol = (SDL_Color){200,160,160,255};
-        int tw = 0, th = 0;
-        SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, useFont, "No disassembly available", icol, &tw, &th);
-        if (t) {
-            SDL_Rect r = {area.x + padPx, area.y + padPx, tw, th};
-            SDL_RenderCopy(ctx->renderer, t, NULL, &r);
-        }
+        source_pane_renderStatusMessage(ctx, useFont, area, padPx, icol, "No disassembly available");
         return;
     }
 
@@ -1038,19 +2417,21 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
         source_pane_trackPosition(st);
     }
     if (st) {
-        source_pane_updateSourceLocation(st);
+        source_pane_updateSourceLocation(st, 0);
+        source_pane_refreshSourceFiles(self, st);
     }
-    const char *path = st ? st->curSrcPath : NULL;
-    int curLine = st ? st->curSrcLine : 0;
-    if (!path || !*path || curLine <= 0) {
-        SDL_Color icol = (SDL_Color){200,160,160,255};
-        const char *msg = "No source data available";
-        int tw = 0, th = 0;
-        SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, useFont, msg, icol, &tw, &th);
-        if (t) {
-            SDL_Rect r = {area.x + padPx, area.y + padPx, tw, th};
-            SDL_RenderCopy(ctx->renderer, t, NULL, &r);
+    int manualView = st && st->manualSrcActive && st->manualSrcPath && st->manualSrcPath[0];
+    const char *path = manualView ? st->manualSrcPath : (st ? st->curSrcPath : NULL);
+    int curLine = manualView ? 0 : (st ? st->curSrcLine : 0);
+    if (st) {
+        source_pane_refreshSourceFunctions(self, st, path);
+        if (!st->functionScrollLock && !manualView) {
+            source_pane_trackCurrentFunction(self, st, path, curLine);
         }
+    }
+    if (!path || !*path || (!manualView && curLine <= 0)) {
+        SDL_Color icol = (SDL_Color){200,160,160,255};
+        source_pane_renderStatusMessage(ctx, useFont, area, padPx, icol, "No source code available");
         goto done;
     }
     source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
@@ -1061,9 +2442,12 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
     if (maxLines <= 0) {
         maxLines = 1;
     }
-    int start = curLine - (maxLines / 2);
-    if (start < 1) {
-        start = 1;
+    int start = 1;
+    if (!manualView) {
+        start = curLine - (maxLines / 2);
+        if (start < 1) {
+            start = 1;
+        }
     }
     if (st && st->scrollLineValid) {
         start = st->scrollLine;
@@ -1079,13 +2463,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
     int total = 0;
     if (!source_getRange(path, start, end, &lines, &count, &first, &total)) {
         SDL_Color icol = (SDL_Color){200,160,160,255};
-        const char *msg = "Failed to load source";
-        int tw = 0, th = 0;
-        SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, useFont, msg, icol, &tw, &th);
-        if (t) {
-            SDL_Rect r = {area.x + padPx, area.y + padPx, tw, th};
-            SDL_RenderCopy(ctx->renderer, t, NULL, &r);
-        }
+        source_pane_renderStatusMessage(ctx, useFont, area, padPx, icol, "Failed to load source code");
         goto done;
     }
     // Adjust start if near end of file for better centering
@@ -1159,7 +2537,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
         const char *ln = lines[i] ? lines[i] : "";
         int lineNo = first + i;
         // Highlight current line (blue shade)
-        if (lineNo == curLine) {
+        if (curLine > 0 && lineNo == curLine) {
             SDL_SetRenderDrawColor(ctx->renderer, 40, 72, 138, 255);
             SDL_Rect hl = { area.x + 2, y - 2, area.w - 4, lineHeight + 4 };
             SDL_RenderFillRect(ctx->renderer, &hl);
@@ -1186,8 +2564,8 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
             }
         }
         void *sourceBucket = st ? (void*)&st->bucketSource : (void*)self;
-        e9ui_text_select_drawText(ctx, self, useFont, ln, txt, textX, y,
-                                  lineHeight, hitW, sourceBucket, 0, 1);
+        source_pane_renderHighlightedLine(ctx, self, useFont, path, lineNo, ln, txt,
+                                          textX, y, lineHeight, hitW, sourceBucket);
         y += lineHeight;
         if (y > area.y + area.h - padPx) {
             break;
@@ -1197,14 +2575,104 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
  done:
     {
       e9ui_component_t* overlay = e9ui_child_find(self, st->toggleBtnMeta);
+      e9ui_component_t* fileSelect = st && st->fileSelectMeta ? e9ui_child_find(self, st->fileSelectMeta) : NULL;
+      e9ui_component_t* functionSelect = st && st->functionSelectMeta ? e9ui_child_find(self, st->functionSelectMeta) : NULL;
+      source_pane_mode_t mode = source_pane_getMode(self);
+      int rightPad = e9ui_scale_px(ctx, 8);
+      int topPad = e9ui_scale_px(ctx, 8);
+      int gap = e9ui_scale_px(ctx, 6);
+      int rightEdge = self->bounds.x + self->bounds.w - rightPad;
+      int cursorRight = rightEdge;
+
       if (overlay) {
-	source_pane_mode_t mode = source_pane_getMode(self);
-	const char *label = source_pane_modeLabel(mode);
-	e9ui_button_setLabel(overlay, label);
-	e9ui_button_measure(overlay, ctx, &overlay->bounds.w,  &overlay->bounds.h);
-	overlay->bounds.x = self->bounds.w + self->bounds.x - overlay->bounds.w - e9ui_scale_px(ctx, 8);
-	overlay->bounds.y = self->bounds.y + e9ui_scale_px(ctx, 8);      
-	overlay->render(overlay, ctx);
+        const char *label = source_pane_modeLabel(mode);
+        e9ui_button_setLabel(overlay, label);
+        e9ui_button_measure(overlay, ctx, &overlay->bounds.w,  &overlay->bounds.h);
+        overlay->bounds.x = rightEdge - overlay->bounds.w;
+        cursorRight = overlay->bounds.x - gap;
+        overlay->bounds.y = self->bounds.y + topPad;
+        overlay->render(overlay, ctx);
+      }
+      if (functionSelect) {
+          e9ui_setHidden(functionSelect, mode == source_pane_mode_c ? 0 : 1);
+          if (mode == source_pane_mode_c) {
+              int h = e9ui_scale_px(ctx, 30);
+              if (functionSelect->preferredHeight) {
+                  int ph = functionSelect->preferredHeight(functionSelect, ctx, self->bounds.w);
+                  if (ph > 0) {
+                      h = ph;
+                  }
+              }
+              int w = self->bounds.w / 3;
+              if (w < e9ui_scale_px(ctx, 120)) {
+                  w = e9ui_scale_px(ctx, 120);
+              }
+              if (w > e9ui_scale_px(ctx, 360)) {
+                  w = e9ui_scale_px(ctx, 360);
+              }
+              int maxW = cursorRight - (self->bounds.x + rightPad);
+              if (maxW < 0) {
+                  maxW = 0;
+              }
+              if (w > maxW) {
+                  w = maxW;
+              }
+              if (w >= e9ui_scale_px(ctx, 80)) {
+                  e9ui_rect_t bounds = {
+                      cursorRight - w,
+                      self->bounds.y + topPad,
+                      w,
+                      h
+                  };
+                  if (functionSelect->layout) {
+                      functionSelect->layout(functionSelect, ctx, bounds);
+                  } else {
+                      functionSelect->bounds = bounds;
+                  }
+                  functionSelect->render(functionSelect, ctx);
+                  cursorRight = bounds.x - gap;
+              }
+          }
+      }
+      if (fileSelect) {
+          e9ui_setHidden(fileSelect, mode == source_pane_mode_c ? 0 : 1);
+          if (mode == source_pane_mode_c) {
+              int h = e9ui_scale_px(ctx, 30);
+              if (fileSelect->preferredHeight) {
+                  int ph = fileSelect->preferredHeight(fileSelect, ctx, self->bounds.w);
+                  if (ph > 0) {
+                      h = ph;
+                  }
+              }
+              int w = self->bounds.w / 3;
+              if (w < e9ui_scale_px(ctx, 120)) {
+                  w = e9ui_scale_px(ctx, 120);
+              }
+              if (w > e9ui_scale_px(ctx, 360)) {
+                  w = e9ui_scale_px(ctx, 360);
+              }
+              int maxW = cursorRight - (self->bounds.x + rightPad);
+              if (maxW < 0) {
+                  maxW = 0;
+              }
+              if (w > maxW) {
+                  w = maxW;
+              }
+              if (w >= e9ui_scale_px(ctx, 80)) {
+                  e9ui_rect_t bounds = {
+                      cursorRight - w,
+                      self->bounds.y + topPad,
+                      w,
+                      h
+                  };
+                  if (fileSelect->layout) {
+                      fileSelect->layout(fileSelect, ctx, bounds);
+                  } else {
+                      fileSelect->bounds = bounds;
+                  }
+                  fileSelect->render(fileSelect, ctx);
+              }
+          }
       }
     }
 }
@@ -1218,15 +2686,15 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
     source_pane_state_t *st = (source_pane_state_t*)self->state;
     source_pane_mode_t mode = st ? st->viewMode : source_pane_mode_c;
     if (ev->type == SDL_MOUSEMOTION) {
-        if (!st || !st->gutterPending) {
-            return 0;
+        if (st && st->gutterPending) {
+            int slop = ctx ? e9ui_scale_px(ctx, 4) : 4;
+            int dx = ev->motion.x - st->gutterDownX;
+            int dy = ev->motion.y - st->gutterDownY;
+            if (dx * dx + dy * dy >= slop * slop) {
+                st->gutterPending = 0;
+            }
         }
-        int slop = ctx ? e9ui_scale_px(ctx, 4) : 4;
-        int dx = ev->motion.x - st->gutterDownX;
-        int dy = ev->motion.y - st->gutterDownY;
-        if (dx * dx + dy * dy >= slop * slop) {
-            st->gutterPending = 0;
-        }
+        source_pane_updateHoverTooltip(self, ctx, st, ev);
         return 0;
     }
     if (ev->type == SDL_MOUSEBUTTONUP && ev->button.button == SDL_BUTTON_LEFT) {
@@ -1241,7 +2709,12 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
             return 0;
         }
         if (st->gutterMode == source_pane_mode_c) {
-            const char *path = st->curSrcPath;
+            const char *path = NULL;
+            if (st->manualSrcActive && st->manualSrcPath && st->manualSrcPath[0]) {
+                path = st->manualSrcPath;
+            } else {
+                path = st->curSrcPath;
+            }
             int lineNo = st->gutterLine;
             if (!path || !path[0] || lineNo <= 0) {
                 return 0;
@@ -1333,10 +2806,11 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
         }
         const int padPx = 10;
         if (mode == source_pane_mode_c) {
-            source_pane_updateSourceLocation(st);
-            const char *path = st ? st->curSrcPath : NULL;
-            int curLine = st ? st->curSrcLine : 0;
-            if (!path || !path[0] || curLine <= 0) {
+            source_pane_updateSourceLocation(st, 0);
+            int manualView = st && st->manualSrcActive && st->manualSrcPath && st->manualSrcPath[0];
+            const char *path = manualView ? st->manualSrcPath : (st ? st->curSrcPath : NULL);
+            int curLine = manualView ? 0 : (st ? st->curSrcLine : 0);
+            if (!path || !path[0] || (!manualView && curLine <= 0)) {
                 return 0;
             }
             source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
@@ -1344,9 +2818,12 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
                 return 0;
             }
             int maxLines = metrics.maxLines > 0 ? metrics.maxLines : 1;
-            int start = curLine - (maxLines / 2);
-            if (start < 1) {
-                start = 1;
+            int start = 1;
+            if (!manualView) {
+                start = curLine - (maxLines / 2);
+                if (start < 1) {
+                    start = 1;
+                }
             }
             if (st && st->scrollLineValid) {
                 start = st->scrollLine;
@@ -1566,6 +3043,94 @@ source_toggleMode(e9ui_context_t *ctx, void *user)
 	  (void)ctx;
 	} 
 
+static void
+source_pane_sourceSelectChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *value, void *user)
+{
+    (void)ctx;
+    (void)comp;
+    source_pane_state_t *st = (source_pane_state_t*)user;
+    if (!st || !value || !*value) {
+        return;
+    }
+    alloc_free(st->manualSrcPath);
+    st->manualSrcPath = alloc_strdup(value);
+    if (!st->manualSrcPath) {
+        st->manualSrcActive = 0;
+        return;
+    }
+    st->manualSrcActive = 1;
+    st->scrollLine = 1;
+    st->scrollLineValid = 1;
+    st->gutterPending = 0;
+    source_pane_clearFunctionScrollLock(st);
+    if (st->ownerPane && st->functionSelectMeta) {
+        e9ui_component_t *function_select = e9ui_child_find(st->ownerPane, st->functionSelectMeta);
+        if (function_select) {
+            e9ui_textbox_setText(function_select, "");
+        }
+    }
+    source_pane_clearSourceFunctions(st);
+    if (st->ownerPane) {
+        source_pane_refreshSourceFunctions(st->ownerPane, st, st->manualSrcPath);
+    }
+    source_pane_syncFunctionSelect(st->ownerPane, st);
+}
+
+static void
+source_pane_functionSelectChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *value, void *user)
+{
+    (void)comp;
+    source_pane_state_t *st = (source_pane_state_t*)user;
+    if (!st || !value || !*value) {
+        return;
+    }
+    int line = 0;
+    if (!source_pane_parseFunctionValueLine(value, &line)) {
+        return;
+    }
+    int max_lines = 1;
+    if (ctx && st->ownerPane) {
+        TTF_Font *use_font = source_pane_resolveFont(ctx);
+        if (use_font) {
+            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(st->ownerPane, use_font, 10);
+            if (metrics.maxLines > 0) {
+                max_lines = metrics.maxLines;
+            }
+        }
+    }
+    int start = line - (max_lines / 2);
+    if (start < 1) {
+        start = 1;
+    }
+    st->scrollLine = start;
+    st->scrollLineValid = 1;
+    st->gutterPending = 0;
+    st->functionScrollLock = 1;
+}
+
+static void
+source_pane_dtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self || !self->state) {
+        return;
+    }
+    source_pane_state_t *st = (source_pane_state_t*)self->state;
+    source_pane_freeFrozenAsm(st);
+    source_pane_clearSourceFiles(st);
+    source_pane_clearSourceFunctions(st);
+    alloc_free(st->manualSrcPath);
+    st->manualSrcPath = NULL;
+    // Child metadata keys are owned/freed by e9ui child container teardown.
+    st->toggleBtnMeta = NULL;
+    st->fileSelectMeta = NULL;
+    st->functionSelectMeta = NULL;
+    if (st->toggleCtx) {
+        free(st->toggleCtx);
+        st->toggleCtx = NULL;
+    }
+}
+
 e9ui_component_t *
 source_pane_make(void)
 {
@@ -1577,6 +3142,7 @@ source_pane_make(void)
   st->scrollLineValid = 0;
   st->scrollIndex = 0;
   st->scrollIndexValid = 0;
+  st->ownerPane = c;
   c->state = st;
   c->focusable = 0;
   c->preferredHeight = source_pane_preferredHeight;
@@ -1585,15 +3151,34 @@ source_pane_make(void)
   c->handleEvent = source_pane_handleEventComp;
   c->persistSave = source_pane_persistSave;
   c->persistLoad = source_pane_persistLoad;
+  c->dtor = source_pane_dtor;
 
 
-  view_toggle_t* btn_state = malloc(sizeof(*btn_state));  
+  view_toggle_t* btn_state = malloc(sizeof(*btn_state));
+  st->toggleCtx = btn_state;
   e9ui_component_t *btn_mode = e9ui_button_make("C", source_toggleMode, btn_state);  
   btn_state->button = btn_mode;
   btn_state->pane = c;
   e9ui_button_setLargestLabel(btn_mode, "ASM");
   st->toggleBtnMeta = alloc_strdup("toggle");
   e9ui_child_add(c, btn_mode, st->toggleBtnMeta);
+
+  e9ui_component_t *fileSelect = e9ui_textbox_make(512, NULL, NULL, NULL);
+  if (fileSelect) {
+      e9ui_textbox_setReadOnly(fileSelect, 1);
+      e9ui_textbox_setPlaceholder(fileSelect, "source file");
+      e9ui_textbox_setOnOptionSelected(fileSelect, source_pane_sourceSelectChanged, st);
+      st->fileSelectMeta = alloc_strdup("source_select");
+      e9ui_child_add(c, fileSelect, st->fileSelectMeta);
+  }
+  e9ui_component_t *functionSelect = e9ui_textbox_make(1024, NULL, NULL, NULL);
+  if (functionSelect) {
+      e9ui_textbox_setReadOnly(functionSelect, 1);
+      e9ui_textbox_setPlaceholder(functionSelect, "function");
+      e9ui_textbox_setOnOptionSelected(functionSelect, source_pane_functionSelectChanged, st);
+      st->functionSelectMeta = alloc_strdup("function_select");
+      e9ui_child_add(c, functionSelect, st->functionSelectMeta);
+  }
   
   return c;
 }
@@ -1613,6 +3198,11 @@ source_pane_setModeInternal(e9ui_component_t *comp, source_pane_mode_t mode, int
     }
     st->viewMode = mode;
     st->gutterPending = 0;
+    source_pane_clearHover(comp, st);
+    source_pane_clearFunctionScrollLock(st);
+    if (mode != source_pane_mode_c) {
+        st->manualSrcActive = 0;
+    }
 
     if (mode != source_pane_mode_a && mode != source_pane_mode_h) {
         st->frozenActive = 0;
@@ -1670,6 +3260,9 @@ void source_pane_markNeedsRefresh(e9ui_component_t *comp)
     st->scrollLine = 1;
     st->scrollIndex = 0;
     st->gutterPending = 0;
+    source_pane_clearFunctionScrollLock(st);
+    st->sourceFilesLoaded = 0;
+    st->sourceFunctionsLoaded = 0;
 }
 
 void
@@ -1685,6 +3278,7 @@ source_pane_centerOnAddress(e9ui_component_t *comp, e9ui_context_t *ctx, uint32_
     st->overrideActive = 1;
     st->overrideAddr = (uint64_t)(addr & 0x00ffffffu);
     st->lastResolvedPc = 0;
+    st->manualSrcActive = 0;
 
     TTF_Font *useFont = source_pane_resolveFont(ctx);
     int maxLines = 1;
@@ -1695,7 +3289,7 @@ source_pane_centerOnAddress(e9ui_component_t *comp, e9ui_context_t *ctx, uint32_
 
     st->curSrcLine = 0;
     st->curSrcPath[0] = '\0';
-    source_pane_updateSourceLocation(st);
+    source_pane_updateSourceLocation(st, 1);
     if (st->curSrcLine > 0) {
         int start = st->curSrcLine - (maxLines / 2);
         if (start < 1) {
@@ -1731,12 +3325,17 @@ source_pane_getCurrentFile(e9ui_component_t *comp, char *out, size_t cap)
     if (!st || st->viewMode != source_pane_mode_c) {
         return 0;
     }
+    if (st->manualSrcActive && st->manualSrcPath && st->manualSrcPath[0]) {
+        strncpy(out, st->manualSrcPath, cap - 1);
+        out[cap - 1] = '\0';
+        return 1;
+    }
     if (!st->overrideActive && machine_getRunning(debugger.machine)) {
         if (!st->curSrcPath[0]) {
             return 0;
         }
     } else {
-        source_pane_updateSourceLocation(st);
+        source_pane_updateSourceLocation(st, 0);
     }
     if (!st->curSrcPath[0]) {
         return 0;

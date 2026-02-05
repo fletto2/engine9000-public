@@ -15,6 +15,8 @@
 #include "memory.h"
 #include "custom.h"
 #include "newcpu.h"
+#include "blitter.h"
+#include "drawing.h"
 #include "debug.h"
 
 #define E9K_DEBUG_CALLSTACK_MAX 256
@@ -102,6 +104,8 @@ static void (*e9k_debug_setDebugBaseCb)(uint32_t section, uint32_t base) = NULL;
 static void (*e9k_debug_setDebugBreakpointCb)(uint32_t addr) = NULL;
 static int (*e9k_debug_sourceLocationResolver)(uint32_t pc24, uint64_t *out_location, void *user) = NULL;
 static void *e9k_debug_sourceLocationResolverUser = NULL;
+static uint32_t e9k_debug_bitplaneMask = 0xffu;
+extern int audio_channel_mask;
 
 static char e9k_debug_textBuf[E9K_DEBUG_TEXT_CAP];
 static size_t e9k_debug_textHead = 0;
@@ -124,6 +128,35 @@ e9k_debug_profiler_reset(void)
 	e9k_debug_prof_lastValid = 0;
 	e9k_debug_prof_lastPc = 0;
 	e9k_debug_prof_lastCycle = 0;
+}
+
+static void
+e9k_debug_setBitplaneEnabled(int bitplaneIndex, int enabled)
+{
+	if (bitplaneIndex < 0 || bitplaneIndex > 7) {
+		return;
+	}
+	uint32_t bit = (1u << (uint32_t)bitplaneIndex);
+	if (enabled) {
+		e9k_debug_bitplaneMask |= bit;
+	} else {
+		e9k_debug_bitplaneMask &= ~bit;
+	}
+	debug_bpl_mask = (int)(e9k_debug_bitplaneMask & 0xffu);
+}
+
+static void
+e9k_debug_setAudioChannelEnabled(int audioChannelIndex, int enabled)
+{
+	if (audioChannelIndex < 0 || audioChannelIndex > 3) {
+		return;
+	}
+	uint32_t bit = (1u << (uint32_t)audioChannelIndex);
+	if (enabled) {
+		audio_channel_mask |= (int)bit;
+	} else {
+		audio_channel_mask &= (int)~bit;
+	}
 }
 
 static void
@@ -777,6 +810,79 @@ e9k_debug_set_source_location_resolver(int (*resolver)(uint32_t pc24, uint64_t *
 {
 	e9k_debug_sourceLocationResolver = resolver;
 	e9k_debug_sourceLocationResolverUser = user;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *user)
+{
+	(void)user;
+	switch (option) {
+		case E9K_DEBUG_OPTION_AMIGA_BLITTER:
+			blitter_setDestinationWriteEnabled(argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_SPRITE0:
+			drawing_setSpriteEnabled(0, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_SPRITE1:
+			drawing_setSpriteEnabled(1, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_SPRITE2:
+			drawing_setSpriteEnabled(2, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_SPRITE3:
+			drawing_setSpriteEnabled(3, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_SPRITE4:
+			drawing_setSpriteEnabled(4, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_SPRITE5:
+			drawing_setSpriteEnabled(5, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_SPRITE6:
+			drawing_setSpriteEnabled(6, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_SPRITE7:
+			drawing_setSpriteEnabled(7, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BITPLANE0:
+			e9k_debug_setBitplaneEnabled(0, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BITPLANE1:
+			e9k_debug_setBitplaneEnabled(1, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BITPLANE2:
+			e9k_debug_setBitplaneEnabled(2, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BITPLANE3:
+			e9k_debug_setBitplaneEnabled(3, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BITPLANE4:
+			e9k_debug_setBitplaneEnabled(4, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BITPLANE5:
+			e9k_debug_setBitplaneEnabled(5, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BITPLANE6:
+			e9k_debug_setBitplaneEnabled(6, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BITPLANE7:
+			e9k_debug_setBitplaneEnabled(7, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_AUDIO0:
+			e9k_debug_setAudioChannelEnabled(0, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_AUDIO1:
+			e9k_debug_setAudioChannelEnabled(1, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_AUDIO2:
+			e9k_debug_setAudioChannelEnabled(2, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_AUDIO3:
+			e9k_debug_setAudioChannelEnabled(3, argument != 0u);
+			break;
+		default:
+			break;
+	}
 }
 
 void

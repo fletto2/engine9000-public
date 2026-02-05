@@ -326,7 +326,7 @@ breakpoints_entryMake(breakpoints_record_t *rec, breakpoints_list_state_t *list)
     int checkbox_selected = bp->enabled ? 1 : 0;
     st->checkbox = e9ui_checkbox_make(NULL, checkbox_selected, breakpoints_entryCheckboxCB, st);
     e9ui_checkbox_setLeftMargin(st->checkbox, 8);
-    e9ui_setDisableVariable(st->checkbox, machine_getRunningState(debugger.machine), 1);    
+    //    e9ui_setDisableVariable(st->checkbox, machine_getRunningState(debugger.machine), 1);    
     if (!st->checkbox) {
         alloc_free(st);
         alloc_free(c);
@@ -751,12 +751,12 @@ breakpoints_makeComponent(void)
     e9ui_flow_add(toolbar, btn_add);
 
     e9ui_component_t *btn_toggle = e9ui_button_make("Toggle", breakpoints_toggleAllCB, list_state);
-    e9ui_setDisableVariable(btn_toggle, machine_getRunningState(debugger.machine), 1);
+    //e9ui_setDisableVariable(btn_toggle, machine_getRunningState(debugger.machine), 1);
     e9ui_button_setMini(btn_toggle, 1);
     e9ui_flow_add(toolbar, btn_toggle);
 
     e9ui_component_t *btn_clear = e9ui_button_make("Clear", breakpoints_clearAllCB, list_state);
-    e9ui_setDisableVariable(btn_clear, machine_getRunningState(debugger.machine), 1);
+    //    e9ui_setDisableVariable(btn_clear, machine_getRunningState(debugger.machine), 1);
     e9ui_button_setMini(btn_clear, 1);
     e9ui_button_setIconAsset(btn_clear, "assets/icons/trash.png");
     e9ui_flow_add(toolbar, btn_clear);

@@ -21,6 +21,7 @@
 #include "sprite_debug.h"
 #include "machine.h"
 #include "source.h"
+#include "syntax_highlight.h"
 #include "dasm.h"
 #include "addr2line.h"
 #include "state_buffer.h"
@@ -32,6 +33,7 @@
 #include "smoke_test.h"
 #include "ui_test.h"
 #include "shader_ui.h"
+#include "custom_ui.h"
 #include "memory_track_ui.h"
 #include "crt.h"
 #include "settings.h"
@@ -360,6 +362,8 @@ debugger_cleanup(void)
   analyse_shutdown();
   dasm_shutdown();
   source_shutdown();
+  syntax_highlight_shutdown();
+  custom_ui_shutdown();
   shader_ui_shutdown();
   memory_track_ui_shutdown();
   e9ui_shutdown();

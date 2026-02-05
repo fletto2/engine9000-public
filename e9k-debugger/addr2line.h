@@ -20,3 +20,6 @@ addr2line_stop(void);
 int
 addr2line_resolve(uint64_t addr, char *out_file, size_t file_cap, int *out_line);
 
+int
+addr2line_resolveDetailed(uint64_t addr, char *out_file, size_t file_cap, int *out_line,
+                          char *out_function, size_t function_cap);

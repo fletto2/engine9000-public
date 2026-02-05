@@ -54,6 +54,10 @@ static print_type_t *
 print_eval_defaultU32(print_index_t *index);
 
 static print_index_t print_eval_index = {0};
+static char *print_eval_captureBuffer = NULL;
+static size_t print_eval_captureCap = 0;
+static size_t print_eval_captureLen = 0;
+static int print_eval_captureEnabled = 0;
 
 static int
 print_eval_debugEnabled(void)
@@ -1711,6 +1715,19 @@ print_eval_printLine(int indent, const char *fmt, ...)
     size_t remaining = sizeof(line) - (size_t)offset - 1;
     strncpy(line + offset, msg, remaining);
     line[offset + remaining] = '\0';
+    if (print_eval_captureEnabled && print_eval_captureBuffer && print_eval_captureCap > 0) {
+        if (print_eval_captureLen > 0 && print_eval_captureLen + 1 < print_eval_captureCap) {
+            print_eval_captureBuffer[print_eval_captureLen++] = '\n';
+            print_eval_captureBuffer[print_eval_captureLen] = '\0';
+        }
+        size_t left = (print_eval_captureCap - 1) - print_eval_captureLen;
+        if (left > 0) {
+            strncpy(print_eval_captureBuffer + print_eval_captureLen, line, left);
+            print_eval_captureBuffer[print_eval_captureLen + left] = '\0';
+            print_eval_captureLen += strlen(print_eval_captureBuffer + print_eval_captureLen);
+        }
+        return;
+    }
     debug_printf("%s", line);
 }
 
@@ -2551,4 +2568,61 @@ print_eval_print(const char *expr)
     }
     print_eval_freeTempTypes(tempTypes);
     return 1;
+}
+
+int
+print_eval_eval(const char *expr, char *out, size_t cap)
+{
+    if (!out || cap == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!expr || !*expr) {
+        return 0;
+    }
+    if (!print_eval_loadIndex(&print_eval_index)) {
+        return 0;
+    }
+    print_temp_type_t *tempTypes = NULL;
+    print_value_t value;
+    const char *cursor = expr;
+    if (!print_eval_parseExpression(&cursor, &print_eval_index, &value, &tempTypes, 0)) {
+        print_eval_freeTempTypes(tempTypes);
+        return 0;
+    }
+    print_eval_captureBuffer = out;
+    print_eval_captureCap = cap;
+    print_eval_captureLen = 0;
+    print_eval_captureEnabled = 1;
+    if (value.hasAddress) {
+        print_eval_dumpValueAt(value.type, value.address, 0, expr);
+    } else if (value.hasImmediate) {
+        print_type_t *resolved = print_eval_resolveType(value.type);
+        if (!resolved) {
+            print_eval_printLine(0, "%s: %llu (0x%llX)", expr,
+                                 (unsigned long long)value.immediate,
+                                 (unsigned long long)value.immediate);
+        } else if (resolved->kind == print_type_pointer) {
+            print_eval_printLine(0, "%s: 0x%08llX", expr, (unsigned long long)value.immediate);
+        } else if (resolved->kind == print_type_base || resolved->kind == print_type_enum) {
+            print_eval_printLine(0, "%s: %llu (0x%llX)", expr,
+                                 (unsigned long long)value.immediate,
+                                 (unsigned long long)value.immediate);
+        } else {
+            print_eval_printLine(0, "%s: 0x%llX", expr, (unsigned long long)value.immediate);
+        }
+    } else {
+        print_eval_captureEnabled = 0;
+        print_eval_captureBuffer = NULL;
+        print_eval_captureCap = 0;
+        print_eval_captureLen = 0;
+        print_eval_freeTempTypes(tempTypes);
+        return 0;
+    }
+    print_eval_captureEnabled = 0;
+    print_eval_captureBuffer = NULL;
+    print_eval_captureCap = 0;
+    print_eval_captureLen = 0;
+    print_eval_freeTempTypes(tempTypes);
+    return out[0] != '\0';
 }

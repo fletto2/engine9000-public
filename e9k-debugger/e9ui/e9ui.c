@@ -53,6 +53,7 @@
 #include "gl_composite.h"
 #include "input_record.h"
 #include "shader_ui.h"
+#include "custom_ui.h"
 #include "memory_track_ui.h"
 #include "prompt.h"
 
@@ -1528,9 +1529,18 @@ e9ui_processEvents(void)
             }
         }
 
+        uint32_t customWindowId = custom_ui_getWindowId();
         uint32_t shaderWindowId = shader_ui_getWindowId();
         uint32_t memoryTrackWindowId = memory_track_ui_getWindowId();
         uint32_t evWindowId = e9ui_eventWindowId(&ev);
+        if (customWindowId && evWindowId == customWindowId) {
+            if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE) {
+                custom_ui_handleEvent(&ev);
+                continue;
+            }
+            custom_ui_handleEvent(&ev);
+            continue;
+        }
         if (shaderWindowId && evWindowId == shaderWindowId) {
             if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE) {
                 shader_ui_handleEvent(&ev);

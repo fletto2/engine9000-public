@@ -35,7 +35,7 @@ Supported platforms:
 
 ## Overview
 
-- ASM/C Source level debugger (needs ELF with DWARF - currently Neo Geo only)
+- ASM/C Source level debugger (ELF or stabs (bebbo gcc))
 - Amiga/Neo Geo emulators with frame level rewind/fast forward and simple CRT shader
 - Source level profiler
 - Trainer/cheat mode
@@ -48,12 +48,15 @@ Supported platforms:
 ![Console](assets/console.png)
 
 - UI or Console based debug
+- Syntax highlighting 
+- File/function selection
 - Pause / continue
-- Step line / step instruction / next (step over)
+- Step line / step instruction / next (step over) / step out
 - Breakpoints by:
   - Absolute address
   - Symbol name
   - `file:line`
+  - Clicking anywhere in the UI with an address
 - Watchpoints, with filters such as:
   - Read/write/rw
   - Access size (`8|16|32`)
@@ -65,7 +68,7 @@ Supported platforms:
   - Force a value at an address (optionally sized)
 - Frame step
 - Frame reverse
-- Print - support for local vars is mixed depending on optimisations and toolchain
+- Print variables
 
 ### Neo Geo Fake Peripherals
 

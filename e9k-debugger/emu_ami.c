@@ -10,6 +10,7 @@
 
 #include "debugger.h"
 #include "e9ui.h"
+#include "custom_ui.h"
 #include "libretro.h"
 
 static int
@@ -181,6 +182,14 @@ emu_ami_cycleDebugDma(e9ui_context_t *ctx, void *user)
 }
 
 static void
+emu_ami_toggleCustom(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    (void)user;
+    custom_ui_toggle();
+}
+
+static void
 emu_ami_createOverlays(e9ui_component_t* comp, e9ui_component_t* button_stack)
 {
     e9ui_component_t *btn = e9ui_button_make("DMA Debug", emu_ami_cycleDebugDma, comp);
@@ -192,6 +201,18 @@ emu_ami_createOverlays(e9ui_component_t* comp, e9ui_component_t* button_stack)
             e9ui_child_add(button_stack, btn, dmaDebugBtnMeta);
         } else {
             e9ui_child_add(comp, btn, dmaDebugBtnMeta);
+        }
+    }
+
+    e9ui_component_t *btnCustom = e9ui_button_make("Custom", emu_ami_toggleCustom, comp);
+    if (btnCustom) {
+        e9ui_button_setMini(btnCustom, 1);
+        e9ui_setFocusTarget(btnCustom, comp);
+        void *customBtnMeta = alloc_strdup("custom");
+        if (button_stack) {
+            e9ui_child_add(button_stack, btnCustom, customBtnMeta);
+        } else {
+            e9ui_child_add(comp, btnCustom, customBtnMeta);
         }
     }
 }

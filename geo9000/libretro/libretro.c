@@ -76,6 +76,7 @@ E9K_DEBUG_EXPORT void e9k_debug_remove_breakpoint(uint32_t addr) { e9k_debugger_
 E9K_DEBUG_EXPORT void e9k_debug_add_temp_breakpoint(uint32_t addr) { e9k_debugger_add_temp_breakpoint(addr); }
 E9K_DEBUG_EXPORT void e9k_debug_remove_temp_breakpoint(uint32_t addr) { e9k_debugger_remove_temp_breakpoint(addr); }
 E9K_DEBUG_EXPORT void e9k_debug_set_source_location_resolver(int (*resolver)(uint32_t pc24, uint64_t *out_location, void *user), void *user) { e9k_debugger_set_source_location_resolver(resolver, user); }
+E9K_DEBUG_EXPORT void e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *user) { (void)option; (void)argument; (void)user; }
 E9K_DEBUG_EXPORT void e9k_debug_reset_watchpoints(void) { e9k_debugger_reset_watchpoints(); }
 E9K_DEBUG_EXPORT int e9k_debug_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand, uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand) { return e9k_debugger_add_watchpoint(addr, op_mask, diff_operand, value_operand, old_value_operand, size_operand, addr_mask_operand); }
 E9K_DEBUG_EXPORT void e9k_debug_remove_watchpoint(uint32_t index) { e9k_debugger_remove_watchpoint(index); }

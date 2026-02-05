@@ -1,0 +1,4 @@
+nr_floppies=1
+filesystem2=rw,DH0:Work:/Users/alex/A1200/,0
+puae_cart_file=
+puae_model=A1200OG

@@ -52,7 +52,24 @@ E9UI_SRCS=e9ui_textbox.c e9ui_text_cache.c e9ui_text_select.c e9ui_text.c e9ui_s
           e9ui_badge.c e9ui_overlay.c e9ui_center.c e9ui_fileselect.c e9ui_labeled_textbox.c e9ui_labeled_checkbox.c e9ui_labeled_select.c e9ui_event.c \
 	  e9ui_theme.c e9ui_link.c e9ui_modal.c e9ui_child.c 
 
-SRCS = main.c source_pane.c source.c dasm.c dasm_geo.c dasm_ami.c elfutil.c addr2line.c console_cmd.c print_eval.c print_debuginfo_readelf.c print_debuginfo_readelf_frames.c print_debuginfo_objdump_stabs.c prompt.c  console.c registers.c memory.c stack.c breakpoints.c trainer.c linebuf.c analyse.c debug_font.c debug.c machine.c profile.c profile_view.c profile_list.c profile_hotspot.c profile_checkpoints.c input_record.c hotkeys.c smoke_test.c ui_test.c snapshot.c rom_config.c romset.c settings.c settings_amiga.c target.c target_amiga.c target_neogeo.c core_options.c core_config.c amiga_uae_options.c neogeo_core_options.c cli.c runtime.c config.c ui.c debugger.c help.c debugger_platform.c emu.c emu_geo.c emu_ami.c sprite_debug.c seek_bar.c system_badge.c libretro_host.c clipboard.c clipboard_osx.m tinyfiledialogs_osx.m state_wrap.c state_buffer.c tinyfiledialogs.c signal.c transition.c transition_doom.c transition_slide.c transition_explode.c transition_flip.c transition_rbar.c crt.c shader_ui.c memory_track_ui.c shader_base.c shader_advanced.c shader_bloom.c gl_composite.c train.c protect.c status_bar.c
+SRCS = main.c source_pane.c source.c dasm.c dasm_geo.c dasm_ami.c elfutil.c addr2line.c console_cmd.c print_eval.c print_debuginfo_readelf.c print_debuginfo_readelf_frames.c print_debuginfo_objdump_stabs.c prompt.c  console.c registers.c memory.c stack.c breakpoints.c trainer.c linebuf.c analyse.c debug_font.c debug.c machine.c profile.c profile_view.c profile_list.c profile_hotspot.c profile_checkpoints.c input_record.c hotkeys.c smoke_test.c ui_test.c snapshot.c rom_config.c romset.c settings.c settings_amiga.c target.c target_amiga.c target_neogeo.c core_options.c core_config.c amiga_uae_options.c neogeo_core_options.c cli.c runtime.c config.c ui.c debugger.c help.c debugger_platform.c emu.c emu_geo.c emu_ami.c sprite_debug.c seek_bar.c system_badge.c libretro_host.c clipboard.c clipboard_osx.m tinyfiledialogs_osx.m state_wrap.c state_buffer.c tinyfiledialogs.c signal.c transition.c transition_doom.c transition_slide.c transition_explode.c transition_flip.c transition_rbar.c crt.c shader_ui.c custom_ui.c memory_track_ui.c shader_base.c shader_advanced.c shader_bloom.c gl_composite.c train.c protect.c status_bar.c
+SRCS += syntax_highlight.c
+
+TREE_SITTER_CORE_DIR = deps/tree-sitter/lib
+TREE_SITTER_C_DIR = deps/tree-sitter-c
+
+ifneq ($(wildcard $(TREE_SITTER_CORE_DIR)/src/lib.c),)
+ifneq ($(wildcard $(TREE_SITTER_C_DIR)/src/parser.c),)
+CFLAGS := -I$(TREE_SITTER_CORE_DIR)/include $(CFLAGS)
+W64_CFLAGS := -I$(TREE_SITTER_CORE_DIR)/include $(W64_CFLAGS)
+CFLAGS += -I$(TREE_SITTER_CORE_DIR)/src
+W64_CFLAGS += -I$(TREE_SITTER_CORE_DIR)/src
+CFLAGS += -DE9K_USE_TREE_SITTER
+W64_CFLAGS += -DE9K_USE_TREE_SITTER
+SRCS += $(TREE_SITTER_CORE_DIR)/src/lib.c
+SRCS += $(TREE_SITTER_C_DIR)/src/parser.c
+endif
+endif
 
 W64_SRCS = $(filter-out analyse.c profile_view.c signal.c debugger_platform.c clipboard_osx.m tinyfiledialogs_osx.m,$(SRCS)) w64_analyse.c w64_profile_view.c w64_signal.c w64_debugger_platform.c w64_clipboard.c $(addprefix e9ui/, $(E9UI_SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
 SRCS_C = $(filter %.c,$(SRCS)) $(addprefix e9ui/, $(E9UI_SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
@@ -155,6 +172,10 @@ test-amiga: $(AMIGA_TESTS)
 test-neogeo: $(NEOGEO_TESTS)
 	@echo
 	@echo "✅✅✅ NEO GEO TESTS PASSED ✅✅✅"
+
+test-remake: $(AMIGA_REMAKE) $(UI_REMAKE) $(NEOGEO_REMAKE)
+	@echo
+	@echo "✅✅✅ REMAKE COMPLETE ✅✅✅"
 
 test-remake-amiga: $(AMIGA_REMAKE)
 	@echo

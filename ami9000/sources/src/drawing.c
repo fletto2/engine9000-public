@@ -177,6 +177,8 @@ static struct spritepixelsbuf spritepixels_buffer[MAX_PIXELS_PER_LINE];
 static struct spritepixelsbuf *spritepixels;
 static int sprite_first_x, sprite_last_x;
 static bool sprite_visibility;
+static uae_u8 drawing_spriteRenderMask = 0xff;
+static uae_u16 drawing_spriteRenderPairMask = 0xffff;
 
 #ifdef AGA
 /* AGA mode color lookup tables */
@@ -222,6 +224,33 @@ static uae_u32 ham_linebuf[MAX_PIXELS_PER_LINE * 2];
 
 static uae_u8 all_ones[MAX_PIXELS_PER_LINE];
 static uae_u8 all_zeros[MAX_PIXELS_PER_LINE];
+
+static uae_u16
+drawing_buildSpritePairMask(uae_u8 spriteMask)
+{
+	uae_u16 pairMask = 0u;
+	for (int spriteIndex = 0; spriteIndex < 8; ++spriteIndex) {
+		if ((spriteMask & (1u << spriteIndex)) != 0u) {
+			pairMask |= (uae_u16)(3u << (spriteIndex * 2));
+		}
+	}
+	return pairMask;
+}
+
+void
+drawing_setSpriteEnabled(int spriteIndex, int enabled)
+{
+	if (spriteIndex < 0 || spriteIndex > 7) {
+		return;
+	}
+	uae_u8 bit = (uae_u8)(1u << spriteIndex);
+	if (enabled) {
+		drawing_spriteRenderMask = (uae_u8)(drawing_spriteRenderMask | bit);
+	} else {
+		drawing_spriteRenderMask = (uae_u8)(drawing_spriteRenderMask & (uae_u8)~bit);
+	}
+	drawing_spriteRenderPairMask = drawing_buildSpritePairMask(drawing_spriteRenderMask);
+}
 
 uae_u8 *xlinebuffer, *xlinebuffer_genlock;
 
@@ -2909,8 +2938,8 @@ STATIC_INLINE void draw_sprites_1(struct sprite_entry *e, int dualpf, int has_at
 	for (pos = epos; pos < emax; pos++, spr_pos++) {
 		if (spr_pos >= 0 && spr_pos < MAX_PIXELS_PER_LINE) {
 			struct spritepixelsbuf *sp = &spritepixels[spr_pos];
-			sp->data = buf[pos];
-			sp->stdata = stbuf[pos];
+			sp->data = (uae_u16)(buf[pos] & drawing_spriteRenderPairMask);
+			sp->stdata = (uae_u8)(stbuf[pos] & (uae_u8)(drawing_spriteRenderPairMask & 0xffu));
 			sp->stfmdata = stfmbuf[pos];
 			sp->flags = has_attach ? 1 : 0;
 			// ECS superhires sprite odd/even bit

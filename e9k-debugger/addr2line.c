@@ -36,6 +36,23 @@ addr2line_resolve(uint64_t addr, char *out_file, size_t file_cap, int *out_line)
     }
     return 0;
 }
+
+int
+addr2line_resolveDetailed(uint64_t addr, char *out_file, size_t file_cap, int *out_line,
+                          char *out_function, size_t function_cap)
+{
+    (void)addr;
+    if (out_file && file_cap > 0) {
+        out_file[0] = '\0';
+    }
+    if (out_line) {
+        *out_line = 0;
+    }
+    if (out_function && function_cap > 0) {
+        out_function[0] = '\0';
+    }
+    return 0;
+}
 #else
 
 #include <errno.h>
@@ -70,6 +87,10 @@ static addr2line_t addr2line = {
 };
 
 static char addr2line_missingTool[PATH_MAX];
+
+int
+addr2line_resolveDetailed(uint64_t addr, char *out_file, size_t file_cap, int *out_line,
+                          char *out_function, size_t function_cap);
 
 static void
 addr2line_clearPending(void)
@@ -334,11 +355,21 @@ addr2line_stop(void)
 int
 addr2line_resolve(uint64_t addr, char *out_file, size_t file_cap, int *out_line)
 {
+    return addr2line_resolveDetailed(addr, out_file, file_cap, out_line, NULL, 0);
+}
+
+int
+addr2line_resolveDetailed(uint64_t addr, char *out_file, size_t file_cap, int *out_line,
+                          char *out_function, size_t function_cap)
+{
     if (out_file && file_cap > 0) {
         out_file[0] = '\0';
     }
     if (out_line) {
         *out_line = 0;
+    }
+    if (out_function && function_cap > 0) {
+        out_function[0] = '\0';
     }
     if (!addr2line.in || addr2line.outFD < 0) {
         return 0;
@@ -381,6 +412,11 @@ addr2line_resolve(uint64_t addr, char *out_file, size_t file_cap, int *out_line)
         if (addr2line.expectFunc) {
             addr2line.expectFunc = 0;
             addr2line.expectFile = 1;
+            if (got_addr && out_function && function_cap > 0 &&
+                strcmp(line, "??") != 0) {
+                strncpy(out_function, line, function_cap - 1);
+                out_function[function_cap - 1] = '\0';
+            }
             free(line);
             line = NULL;
             continue;

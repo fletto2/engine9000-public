@@ -387,6 +387,7 @@ extern void freevidbuffer(int monid, struct vidbuffer *buf);
 extern void check_prefs_picasso(void);
 extern int get_vertical_visible_height(bool);
 extern void get_screen_blanking_limits(int*, int*, int*, int*);
+extern void drawing_setSpriteEnabled(int spriteIndex, int enabled);
 
 /* Finally, stuff that shouldn't really be shared.  */
 

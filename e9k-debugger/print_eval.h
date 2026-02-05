@@ -15,6 +15,9 @@ int
 print_eval_print(const char *expr);
 
 int
+print_eval_eval(const char *expr, char *out, size_t cap);
+
+int
 print_eval_complete(const char *prefix, char ***outList, int *outCount);
 
 void
@@ -25,5 +28,4 @@ print_eval_resolveSymbol(const char *name, uint32_t *outAddr, size_t *outSize);
 
 int
 print_eval_resolveAddress(const char *expr, uint32_t *outAddr, size_t *outSize);
-
 

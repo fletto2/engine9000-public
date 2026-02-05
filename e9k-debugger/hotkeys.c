@@ -150,7 +150,6 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
     SDL_Keycode key = kev->keysym.sym;
     if (key == SDLK_F11 && kev->repeat == 0) {
         hotkeys_enabled = hotkeys_enabled ? 0 : 1;
-        e9ui_setFocus(ctx, NULL);
         e9ui_showTransientMessage(hotkeys_enabled ? "HOTKEYS ON" : "HOTKEYS OFF");
         return 1;
     }
@@ -188,7 +187,6 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
         return 1;
     }
     if (key == SDLK_F2) {
-        e9ui_setFocus(ctx, NULL);
         ui_copyFramebufferToClipboard();
         return 1;
     }
@@ -201,13 +199,11 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
       if (0) {
         int enabled = e9ui_getFpsEnabled();
         e9ui_setFpsEnabled(!enabled);
-        e9ui_setFocus(ctx, NULL);
         e9ui_showTransientMessage(!enabled ? "FPS ON" : "FPS OFF");
         return 1;
       }
       int paused = state_buffer_isRollingPaused() ? 0 : 1;
       state_buffer_setRollingPaused(paused);
-      e9ui_setFocus(ctx, NULL);
       e9ui_showTransientMessage(paused ? "ROLLING SAVE PAUSED" : "ROLLING SAVE RESUMED");      
     }
     if (key == SDLK_F12 && kev->repeat == 0) {

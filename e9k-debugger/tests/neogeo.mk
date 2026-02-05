@@ -16,13 +16,13 @@ make-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
 # remakers
 
 remake-test-neogeobasic: all 
-	./e9k-debugger --neogeo --source-dir=./tests/neogeo/basic --elf=./tests/neogeo/basic/basic.elf --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/basic
+	./e9k-debugger --neogeo --volume=0 --source-dir=./tests/neogeo/basic --elf=./tests/neogeo/basic/basic.elf --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/basic
 
 remake-test-neogeosavestate: all 
-	./e9k-debugger --neogeo --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/savestate
+	./e9k-debugger --neogeo --volume=0 --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/savestate
 
 remake-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
-	./e9k-debugger --neogeo --source-dir=./tests/neogeo/stepping --elf=./tests/neogeo/stepping/build/rom.elf --rom=./tests/neogeo/stepping/build/stepping.neo --remake-test tests/results/neogeo/stepping
+	./e9k-debugger --neogeo --volume=0 --source-dir=./tests/neogeo/stepping --elf=./tests/neogeo/stepping/build/rom.elf --rom=./tests/neogeo/stepping/build/stepping.neo --remake-test tests/results/neogeo/stepping
 
 
 # testers
