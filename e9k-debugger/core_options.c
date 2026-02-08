@@ -1017,7 +1017,8 @@ core_options_showModal(e9ui_context_t *ctx)
 
     const e9k_system_config_t *cfg = core_options_selectConfig();
     const e9k_libretro_config_t *libcfg = core_options_selectLibretroConfig(cfg);
-    const char *corePath = libcfg ? libcfg->corePath : NULL;
+    target_iface_t *selectedTarget = (cfg && cfg->target) ? cfg->target : target;
+    const char *corePath = (selectedTarget && selectedTarget->defaultCorePath) ? selectedTarget->defaultCorePath() : NULL;
     const char *systemDir = libcfg ? libcfg->systemDir : NULL;
     const char *saveDir = libcfg ? libcfg->saveDir : NULL;
     if (!corePath || !*corePath) {

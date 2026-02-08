@@ -27,24 +27,6 @@ target_settingsClearAllOptions(void)
     }
 }
 
-int
-target_isDefaultCorePath(const char *path)
-{
-    if (!path || !*path) {
-        return 0;
-    }
-    for (size_t i = 0; i < target_targetCount; i++) {
-        const char *defaultPath = target_targets[i]->defaultCorePath ? target_targets[i]->defaultCorePath() : NULL;
-        if (defaultPath && *defaultPath && strcmp(defaultPath, path) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-
-
-
 void
 target_setTarget(target_iface_t* newTarget)
 {

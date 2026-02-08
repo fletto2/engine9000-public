@@ -359,7 +359,7 @@ info:
 	$(info -------)
 
 all: $(TARGET)
-	cp $(TARGET) ../e9k-debugger/system
+	cp $(TARGET) ../e9k-debugger/system/ami9000$(suffix $(TARGET))
 
 
 -include $(OBJECTS:.o=.d)

@@ -1047,9 +1047,14 @@ libretro_host_environment(unsigned cmd, void *data)
         if (!data) {
             return false;
         }
-        if (*(enum retro_pixel_format *)data == RETRO_PIXEL_FORMAT_XRGB8888) {
-            libretro_host.pixelFormat = RETRO_PIXEL_FORMAT_XRGB8888;
-            return true;
+        {
+            enum retro_pixel_format format = *(enum retro_pixel_format *)data;
+            if (format == RETRO_PIXEL_FORMAT_XRGB8888 ||
+                format == RETRO_PIXEL_FORMAT_RGB565 ||
+                format == RETRO_PIXEL_FORMAT_0RGB1555) {
+                libretro_host.pixelFormat = format;
+                return true;
+            }
         }
         return false;
     case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
@@ -1322,14 +1327,8 @@ libretro_host_start(const char *corePath, const char *romPath,
     libretro_host.setDebugBreakpointCallback = (e9k_debug_set_breakpoint_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_breakpoint_callback");
     libretro_host.debugSetSourceLocationResolver = (e9k_debug_set_source_location_resolver_fn_t)libretro_host_loadSymbol("e9k_debug_set_source_location_resolver");
     libretro_host.debugSetDebugOption = (e9k_debug_set_debug_option_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_option");
-    libretro_host.debugNeoGeoGetSpriteState = (e9k_debug_neogeo_get_sprite_state_fn_t)libretro_host_loadSymbol("e9k_debug_neogeo_get_sprite_state");
-    if (!libretro_host.debugNeoGeoGetSpriteState) {
-        libretro_host.debugNeoGeoGetSpriteState = (e9k_debug_neogeo_get_sprite_state_fn_t)libretro_host_loadSymbol("e9k_debug_get_sprite_state");
-    }
-    libretro_host.debugNeoGeoGetP1Rom = (e9k_debug_neogeo_get_p1_rom_fn_t)libretro_host_loadSymbol("e9k_debug_neogeo_get_p1_rom");
-    if (!libretro_host.debugNeoGeoGetP1Rom) {
-        libretro_host.debugNeoGeoGetP1Rom = (e9k_debug_neogeo_get_p1_rom_fn_t)libretro_host_loadSymbol("e9k_debug_get_p1_rom");
-    }
+    libretro_host.debugNeoGeoGetSpriteState = NULL;
+    libretro_host.debugNeoGeoGetP1Rom = NULL;
     libretro_host.debugDisassembleQuick = (e9k_debug_disassemble_quick_fn_t)libretro_host_loadSymbol("e9k_debug_disassemble_quick");
     libretro_host.debugReadCheckpoints = (e9k_debug_read_checkpoints_fn_t)libretro_host_loadSymbol("e9k_debug_read_checkpoints");
     libretro_host.debugResetCheckpoints = (e9k_debug_reset_checkpoints_fn_t)libretro_host_loadSymbol("e9k_debug_reset_checkpoints");
@@ -2333,6 +2332,22 @@ libretro_host_debugSetDebugOption(e9k_debug_option_t option, uint32_t argument, 
     }
     libretro_host.debugSetDebugOption(option, argument, user);
     return true;
+}
+
+void
+libretro_host_bindNeogeoDebugApis(void)
+{
+    libretro_host.debugNeoGeoGetSpriteState =
+        (e9k_debug_neogeo_get_sprite_state_fn_t)libretro_host_loadSymbol("e9k_debug_neogeo_get_sprite_state");
+    libretro_host.debugNeoGeoGetP1Rom =
+        (e9k_debug_neogeo_get_p1_rom_fn_t)libretro_host_loadSymbol("e9k_debug_neogeo_get_p1_rom");
+}
+
+void
+libretro_host_unbindNeogeoDebugApis(void)
+{
+    libretro_host.debugNeoGeoGetSpriteState = NULL;
+    libretro_host.debugNeoGeoGetP1Rom = NULL;
 }
 
 bool

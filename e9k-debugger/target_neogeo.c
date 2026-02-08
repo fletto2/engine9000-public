@@ -10,6 +10,10 @@
 #include "romset.h"
 #include "system_badge.h"
 #include "alloc.h"
+#include "file.h"
+
+static const char *
+target_neogeo_defaultCorePath(void);
 
 typedef struct target_neogeo_systemtype_state {
     e9ui_component_t *aesCheckbox;
@@ -109,7 +113,6 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
     if (romState) {
         romState->romPath = debugger.settingsEdit.neogeo.libretro.romPath;
         romState->romFolder = debugger.settingsEdit.neogeo.romFolder;
-        romState->corePath = debugger.settingsEdit.neogeo.libretro.corePath;
     }
 
     e9ui_component_t *fsRom = e9ui_fileSelect_make("ROM", 120, 600, "...", romExts, 1, E9UI_FILESELECT_FILE);
@@ -118,7 +121,6 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
     e9ui_component_t *fsBios = e9ui_fileSelect_make("BIOS FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsSaves = e9ui_fileSelect_make("SAVES FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsSource = e9ui_fileSelect_make("SOURCE FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
-    e9ui_component_t *fsCore = e9ui_fileSelect_make("CORE", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FILE);
 
     if (fsRom) {
         e9ui_fileSelect_setText(fsRom, debugger.settingsEdit.neogeo.libretro.romPath);
@@ -145,11 +147,6 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
         e9ui_fileSelect_setText(fsSource, debugger.settingsEdit.neogeo.libretro.sourceDir);
         e9ui_fileSelect_setOnChange(fsSource, settings_pathChanged, debugger.settingsEdit.neogeo.libretro.sourceDir);
     }
-    if (fsCore) {
-        e9ui_fileSelect_setText(fsCore, debugger.settingsEdit.neogeo.libretro.corePath);
-        e9ui_fileSelect_setOnChange(fsCore, settings_pathChanged, debugger.settingsEdit.neogeo.libretro.corePath);
-    }
-
     e9ui_component_t *ltToolchain = e9ui_labeled_textbox_make("TOOLCHAIN PREFIX",
                                                               120,
                                                               600,
@@ -182,7 +179,6 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
     if (romState) {
         romState->romSelect = fsRom;
         romState->folderSelect = fsRomFolder;
-        romState->coreSelect = fsCore;
         romState->elfSelect = fsElf;
         romState->sourceSelect = fsSource;
         romState->toolchainSelect = ltToolchain;
@@ -281,13 +277,6 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
             e9ui_stack_addFixed(body, fsSaves);
             first = 0;
         }
-        if (fsCore) {
-            if (!first) {
-                e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
-            }
-            e9ui_stack_addFixed(body, fsCore);
-            first = 0;
-        }
         if (ltAudio) {
             if (!first) {
                 e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
@@ -335,11 +324,12 @@ target_neogeo_configMissingPaths(const e9k_neogeo_config_t *cfg)
     if (!cfg) {
         return 1;
     }
-    if (!cfg->libretro.corePath[0] ||
+    const char *corePath = target_neogeo_defaultCorePath();
+    if (!corePath || !*corePath ||
         (!cfg->libretro.romPath[0] && !cfg->romFolder[0]) ||
         !cfg->libretro.systemDir[0] ||
         !cfg->libretro.saveDir[0] ||
-        !settings_pathExistsFile(cfg->libretro.corePath) ||
+        !settings_pathExistsFile(corePath) ||
         !settings_pathExistsDir(cfg->libretro.systemDir) ||
         !settings_pathExistsDir(cfg->libretro.saveDir)) {
         return 1;
@@ -380,12 +370,11 @@ target_negeo_restartNeededForNeogeo(const e9k_neogeo_config_t *before, const e9k
     int biosChanged = strcmp(before->libretro.systemDir, after->libretro.systemDir) != 0;
     int savesChanged = strcmp(before->libretro.saveDir, after->libretro.saveDir) != 0;
     int sourceChanged = strcmp(before->libretro.sourceDir, after->libretro.sourceDir) != 0;
-    int coreChanged = strcmp(before->libretro.corePath, after->libretro.corePath) != 0;
     int sysChanged = strcmp(before->systemType, after->systemType) != 0;
     int audioBefore = settings_audioBufferNormalized(before->libretro.audioBufferMs);
     int audioAfter = settings_audioBufferNormalized(after->libretro.audioBufferMs);
     int audioChanged = audioBefore != audioAfter;
-    return romChanged || elfChanged || toolchainChanged || biosChanged || savesChanged || sourceChanged || coreChanged || sysChanged || audioChanged;
+    return romChanged || elfChanged || toolchainChanged || biosChanged || savesChanged || sourceChanged || sysChanged || audioChanged;
 }
 
 
@@ -532,7 +521,11 @@ target_neoge_settingsSetConfigPaths(int hasElf, const char* elfPath, int hasSour
 static const char *
 target_neogeo_defaultCorePath(void)
 {
-  return "./system/geolith_libretro.dylib";
+  static char corePath[PATH_MAX];
+  if (file_getAssetPath("system/geo9000.dylib", corePath, sizeof(corePath))) {
+    return corePath;
+  }
+  return "./system/geo9000.dylib";
 }
 
 
@@ -564,13 +557,6 @@ target_neogeo_settingsFolderChanged(void)
 static void
 target_neogeo_settingsCoreChanged(void)
 {
-    const char *defaultCore = target_neogeo_defaultCorePath();
-    if (defaultCore &&
-        defaultCore[0] &&
-        (!debugger.settingsEdit.neogeo.libretro.corePath[0] ||
-         target_isDefaultCorePath(debugger.settingsEdit.neogeo.libretro.corePath))) {
-        settings_config_setPath(debugger.settingsEdit.neogeo.libretro.corePath, PATH_MAX, defaultCore);
-    }
     //TODO ??
     amiga_uaeClearPuaeOptions();
     char romPath[PATH_MAX];
@@ -703,7 +689,6 @@ target_neogeo_libretroSelectConfig(void)
     debugger_copyPath(debugger.libretro.sourceDir, sizeof(debugger.libretro.sourceDir), debugger.config.neogeo.libretro.sourceDir);
     debugger_copyPath(debugger.libretro.exePath, sizeof(debugger.libretro.exePath), debugger.config.neogeo.libretro.exePath);
     debugger_copyPath(debugger.libretro.toolchainPrefix, sizeof(debugger.libretro.toolchainPrefix), debugger.config.neogeo.libretro.toolchainPrefix);
-    debugger_copyPath(debugger.libretro.corePath, sizeof(debugger.libretro.corePath), debugger.config.neogeo.libretro.corePath);
     debugger_copyPath(debugger.libretro.romPath, sizeof(debugger.libretro.romPath), debugger.config.neogeo.libretro.romPath);
     debugger_copyPath(debugger.libretro.systemDir, sizeof(debugger.libretro.systemDir), debugger.config.neogeo.libretro.systemDir);
     debugger_copyPath(debugger.libretro.saveDir, sizeof(debugger.libretro.saveDir), debugger.config.neogeo.libretro.saveDir);
@@ -741,7 +726,7 @@ target_neogeo_applyCoreOptions(void)
 static void
 target_neogeo_validateAPI(void)
 {
-  
+  libretro_host_bindNeogeoDebugApis();
 }
 
 

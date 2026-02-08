@@ -524,8 +524,8 @@ In this repo, the default `./system` directory corresponds to `e9k-debugger/syst
 
 ### Emulator Platform defaults:
 
-- macOS default core paths: `./system/geolith_libretro.dylib` for Neo Geo and `./system/puae_libretro.dylib` for Amiga
-- Windows default core paths: `./system/geolith_libretro.dll` for Neo Geo and `./system/puae_libretro.dll` for Amiga
+- macOS default core paths: `./system/geo9000.dylib` for Neo Geo and `./system/ami9000.dylib` for Amiga
+- Windows default core paths: `./system/geo9000.dll` for Neo Geo and `./system/ami9000.dll` for Amiga
 
 ### Toolchain 
 
@@ -616,8 +616,8 @@ This project contains files with various licenses, unless otherwise specified as
 
 This should create
 - `e9k-debugger/e9k-debugger` - macOS executable
-- `e9k-debugger/system/puae_libretro.dll` - Amiga emulator core
-- `e9k-debugger/system/geolith_libretro.dylib` - Neo Geo emulator core
+- `e9k-debugger/system/ami9000.dll` - Amiga emulator core
+- `e9k-debugger/system/geo9000.dylib` - Neo Geo emulator core
 
 - `e9k-debugger` links against at least: SDL2, SDL2_ttf, SDL2_image, readline, and OpenGL/Cocoa frameworks.
 - The macOS build currently links sanitizers (`-fsanitize=address,undefined`) by default; adjust the Makefile if you want a non-sanitized release build.
@@ -632,8 +632,8 @@ Windows builds use a `x86_64-w64-mingw32` toolchain and have so far only been te
 This should create
 
 - `e9k-debugger/dist/e9kd/e9k-debugger` - I create it here so can place all my .dll's for wine to find
-- `e9k-debugger/system/geolith_libretro.dll` - I link `e9k-debugger/system` to `e9k-debugger/dist/e9kd/system`
-- `e9k-debugger/system/puae_libretro.dll` - I link `e9k-debugger/system` to `e9k-debugger/dist/e9kd/system`
+- `e9k-debugger/system/geo9000.dll` - I link `e9k-debugger/system` to `e9k-debugger/dist/e9kd/system`
+- `e9k-debugger/system/ami9000.dll` - I link `e9k-debugger/system` to `e9k-debugger/dist/e9kd/system`
 
 - You are likely to need to recreate my dist directory structure for the w64 build 
 - I currently have dist/e9kd/ which contains the exe and any dll (SDL etc) used to link

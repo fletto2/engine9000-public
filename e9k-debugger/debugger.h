@@ -39,7 +39,6 @@ typedef enum {
 } debugger_run_mode_t;
 
 typedef struct e9k_libretro_config {
-  char corePath[PATH_MAX];
   char romPath[PATH_MAX];
   char systemDir[PATH_MAX];
   char saveDir[PATH_MAX];

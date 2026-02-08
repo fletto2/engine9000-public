@@ -319,7 +319,8 @@ debugger_libretroSelectConfig(void)
   
   target->libretroSelectConfig();
 
-  debugger.libretro.enabled = (debugger.libretro.corePath[0] && debugger.libretro.romPath[0]) ? 1 : 0;  
+  const char *corePath = target && target->defaultCorePath ? target->defaultCorePath() : NULL;
+  debugger.libretro.enabled = (corePath && corePath[0] && debugger.libretro.romPath[0]) ? 1 : 0;
 }
 
 int
@@ -612,24 +613,30 @@ debugger_main(int argc, char **argv)
   }
 
   if (debugger.libretro.enabled) {
-    debugger_applyCoreOptions();
-    debugger.amigaDebug.debugDma = NULL;
-    if (!libretro_host_start(debugger.libretro.corePath, debugger.libretro.romPath,
-                             debugger.libretro.systemDir, debugger.libretro.saveDir)) {
-      debug_error("libretro: failed to start core");
+    const char *corePath = target && target->defaultCorePath ? target->defaultCorePath() : NULL;
+    if (!corePath || !*corePath) {
+      debug_error("libretro: missing core path for target");
       debugger.libretro.enabled = 0;
     } else {
-      if (!libretro_host_setDebugSourceLocationCallback(debugger_onResolveSourceLocationFromCore, NULL)) {
-	debug_error("source_location: core does not expose e9k_debug_set_source_location_resolver");
+      debugger_applyCoreOptions();
+      debugger.amigaDebug.debugDma = NULL;
+      if (!libretro_host_start(corePath, debugger.libretro.romPath,
+                               debugger.libretro.systemDir, debugger.libretro.saveDir)) {
+        debug_error("libretro: failed to start core");
+        debugger.libretro.enabled = 0;
+      } else {
+        if (!libretro_host_setDebugSourceLocationCallback(debugger_onResolveSourceLocationFromCore, NULL)) {
+	  debug_error("source_location: core does not expose e9k_debug_set_source_location_resolver");
+        }
+        target->validateAPI();
+        if (ui_test_getMode() == UI_TEST_MODE_NONE) {
+	  snapshot_loadOnBoot();
+        }
+        rom_config_loadRuntimeStateOnBoot();
       }
-      target->validateAPI();
-      if (ui_test_getMode() == UI_TEST_MODE_NONE) {
-	snapshot_loadOnBoot();
-      }
-      rom_config_loadRuntimeStateOnBoot();
     }
   }
-  if (debugger.config.neogeo.libretro.romPath[0] || debugger.config.neogeo.romFolder[0]) {
+  if (debugger.libretro.enabled) {
     if (!dasm_preloadText()) {
       debug_error("dasm: preload failed");
     }

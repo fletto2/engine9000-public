@@ -245,6 +245,12 @@ bool
 libretro_host_debugSetDebugOption(e9k_debug_option_t option, uint32_t argument, void *user);
 
 void
+libretro_host_bindNeogeoDebugApis(void);
+
+void
+libretro_host_unbindNeogeoDebugApis(void);
+
+void
 libretro_host_setCoreOption(const char *key, const char *value);
 
 const char *

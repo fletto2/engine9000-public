@@ -15,10 +15,8 @@ struct e9k_amiga_config;
 typedef struct settings_romselect_state {
     char *romPath;
     char *romFolder;
-    char *corePath;
     e9ui_component_t *romSelect;
     e9ui_component_t *folderSelect;
-    e9ui_component_t *coreSelect;
     e9ui_component_t *elfSelect;
     e9ui_component_t *sourceSelect;
     e9ui_component_t *toolchainSelect;

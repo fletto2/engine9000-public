@@ -140,11 +140,6 @@ E9K_DEBUG_EXPORT size_t e9k_debug_neogeo_get_p1_rom(e9k_debug_rom_region_t *out,
     return sizeof(*out);
 }
 
-// Backward-compatible alias for older hosts.
-E9K_DEBUG_EXPORT size_t e9k_debug_get_p1_rom(e9k_debug_rom_region_t *out, size_t cap) {
-    return e9k_debug_neogeo_get_p1_rom(out, cap);
-}
-
 E9K_DEBUG_EXPORT size_t e9k_debug_disassemble_quick(uint32_t pc, char *out, size_t cap) {
     if (!out || cap == 0) {
         return 0;
@@ -244,10 +239,6 @@ E9K_DEBUG_EXPORT size_t e9k_debug_neogeo_get_sprite_state(e9k_debug_sprite_state
     return sizeof(*out);
 }
 
-// Backward-compatible alias for older hosts.
-E9K_DEBUG_EXPORT size_t e9k_debug_get_sprite_state(e9k_debug_sprite_state_t *out, size_t cap) {
-    return e9k_debug_neogeo_get_sprite_state(out, cap);
-}
 static float video_aspect = 0.0;
 static unsigned coins34 = 0x00;
 

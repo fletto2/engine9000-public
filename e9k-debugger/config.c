@@ -68,9 +68,6 @@ config_persistConfig(FILE *f)
     if (!f) {
         return;
     }
-    if (debugger.config.amiga.libretro.corePath[0]) {
-        fprintf(f, "comp.config.amiga.core=%s\n", debugger.config.amiga.libretro.corePath);
-    }
     if (debugger.config.amiga.libretro.romPath[0]) {
         fprintf(f, "comp.config.amiga.rom=%s\n", debugger.config.amiga.libretro.romPath);
     }
@@ -91,9 +88,6 @@ config_persistConfig(FILE *f)
         fprintf(f, "comp.config.amiga.audio_ms=%d\n", debugger.config.amiga.libretro.audioBufferMs);
     }
     fprintf(f, "comp.config.amiga.audio_enabled=%d\n", debugger.config.amiga.libretro.audioEnabled);
-    if (debugger.config.neogeo.libretro.corePath[0]) {
-        fprintf(f, "comp.config.neogeo.core=%s\n", debugger.config.neogeo.libretro.corePath);
-    }
     if (debugger.config.neogeo.libretro.romPath[0]) {
         fprintf(f, "comp.config.neogeo.rom=%s\n", debugger.config.neogeo.libretro.romPath);
     }
@@ -122,9 +116,6 @@ config_persistConfig(FILE *f)
     fprintf(f, "comp.config.neogeo.audio_enabled=%d\n", debugger.config.neogeo.libretro.audioEnabled );
     if (debugger.config.neogeo.skipBiosLogo) {
         fprintf(f, "comp.config.neogeo.skip_bios=1\n");
-    }
-    if (debugger.config.megadrive.libretro.corePath[0]) {
-        fprintf(f, "comp.config.megadrive.core=%s\n", debugger.config.megadrive.libretro.corePath);
     }
     if (debugger.config.megadrive.libretro.romPath[0]) {
         fprintf(f, "comp.config.megadrive.rom=%s\n", debugger.config.megadrive.libretro.romPath);
@@ -187,12 +178,11 @@ config_loadConfig(void)
     if (!path) {
         return;
     }
+    debugger_platform_setDefaults(&debugger.config.neogeo);
+    debugger_platform_setDefaultsAmiga(&debugger.config.amiga);
+    debugger_platform_setDefaultsMegaDrive(&debugger.config.megadrive);
     FILE *f = fopen(path, "r");
     if (!f) {
-      // TODO
-        debugger_platform_setDefaults(&debugger.config.neogeo);
-        debugger_platform_setDefaultsAmiga(&debugger.config.amiga);
-        debugger_platform_setDefaultsMegaDrive(&debugger.config.megadrive);
         return;
     }
 
@@ -212,9 +202,7 @@ config_loadConfig(void)
 
         if (strncmp(key, "comp.config.", 12) == 0) {
             const char *prop = key + 12;
-            if (strcmp(prop, "amiga.core") == 0) {
-                config_setConfigValue(debugger.config.amiga.libretro.corePath, sizeof(debugger.config.amiga.libretro.corePath), value);
-            } else if (strcmp(prop, "amiga.rom") == 0) {
+            if (strcmp(prop, "amiga.rom") == 0) {
                 config_setConfigValue(debugger.config.amiga.libretro.romPath, sizeof(debugger.config.amiga.libretro.romPath), value);
             } else if (strcmp(prop, "amiga.elf") == 0) {
                 config_setConfigValue(debugger.config.amiga.libretro.exePath, sizeof(debugger.config.amiga.libretro.exePath), value);
@@ -234,8 +222,6 @@ config_loadConfig(void)
                 }
             } else if (strcmp(prop, "amiga.audio_enabled") == 0) {
                 debugger.config.amiga.libretro.audioEnabled = atoi(value) ? 1 : 0;
-            } else if (strcmp(prop, "neogeo.core") == 0) {
-                config_setConfigValue(debugger.config.neogeo.libretro.corePath, sizeof(debugger.config.neogeo.libretro.corePath), value);
             } else if (strcmp(prop, "neogeo.rom") == 0) {
                 config_setConfigValue(debugger.config.neogeo.libretro.romPath, sizeof(debugger.config.neogeo.libretro.romPath), value);
             } else if (strcmp(prop, "neogeo.rom_folder") == 0) {
@@ -262,8 +248,6 @@ config_loadConfig(void)
                 debugger.config.neogeo.libretro.audioEnabled = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "neogeo.skip_bios") == 0) {
                 debugger.config.neogeo.skipBiosLogo = atoi(value) ? 1 : 0;
-            } else if (strcmp(prop, "megadrive.core") == 0) {
-                config_setConfigValue(debugger.config.megadrive.libretro.corePath, sizeof(debugger.config.megadrive.libretro.corePath), value);
             } else if (strcmp(prop, "megadrive.rom") == 0) {
                 config_setConfigValue(debugger.config.megadrive.libretro.romPath, sizeof(debugger.config.megadrive.libretro.romPath), value);
             } else if (strcmp(prop, "megadrive.rom_folder") == 0) {

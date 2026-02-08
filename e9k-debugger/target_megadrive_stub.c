@@ -189,7 +189,6 @@ target_megadrive_stubLibretroSelectConfig(void)
     debugger_copyPath(debugger.libretro.sourceDir, sizeof(debugger.libretro.sourceDir), debugger.config.megadrive.libretro.sourceDir);
     debugger_copyPath(debugger.libretro.exePath, sizeof(debugger.libretro.exePath), debugger.config.megadrive.libretro.exePath);
     debugger_copyPath(debugger.libretro.toolchainPrefix, sizeof(debugger.libretro.toolchainPrefix), debugger.config.megadrive.libretro.toolchainPrefix);
-    debugger_copyPath(debugger.libretro.corePath, sizeof(debugger.libretro.corePath), debugger.config.megadrive.libretro.corePath);
     debugger_copyPath(debugger.libretro.romPath, sizeof(debugger.libretro.romPath), debugger.config.megadrive.libretro.romPath);
     debugger_copyPath(debugger.libretro.systemDir, sizeof(debugger.libretro.systemDir), debugger.config.megadrive.libretro.systemDir);
     debugger_copyPath(debugger.libretro.saveDir, sizeof(debugger.libretro.saveDir), debugger.config.megadrive.libretro.saveDir);

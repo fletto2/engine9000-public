@@ -731,7 +731,7 @@ ${LIBRARY_NAME}_FILES = $(SOURCES_C)
 include $(THEOS_MAKE_PATH)/library.mk
 else
 all: $(TARGET)
-	cp $(TARGET) ../../e9k-debugger/system
+	cp $(TARGET) ../../e9k-debugger/system/geo9000$(suffix $(TARGET))
 $(TARGET): $(OBJECTS)
 	@mkdir -p $(dir $@)
 ifeq ($(STATIC_LINKING), 1)

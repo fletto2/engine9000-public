@@ -9,6 +9,10 @@
 #include "libretro_host.h"
 #include "system_badge.h"
 #include "alloc.h"
+#include "file.h"
+
+static const char *
+target_amiga_defaultCorePath(void);
 
 
 typedef struct target_amiga_romselect_extra {
@@ -44,11 +48,12 @@ target_amiga_configMissingPaths(const e9k_amiga_config_t *cfg)
     if (!cfg) {
         return 1;
     }
-    if (!cfg->libretro.corePath[0] ||
+    const char *corePath = target_amiga_defaultCorePath();
+    if (!corePath || !*corePath ||
         !cfg->libretro.romPath[0] ||
         !cfg->libretro.systemDir[0] ||
         !cfg->libretro.saveDir[0] ||
-        !settings_pathExistsFile(cfg->libretro.corePath) ||
+        !settings_pathExistsFile(corePath) ||
         !settings_pathHasUaeExtension(cfg->libretro.romPath) ||
         !settings_pathExistsFile(cfg->libretro.romPath) ||
         !settings_pathExistsDir(cfg->libretro.systemDir) ||
@@ -88,11 +93,10 @@ target_amiga_restartNeededForAmiga(const e9k_amiga_config_t *before, const e9k_a
     int biosChanged = strcmp(before->libretro.systemDir, after->libretro.systemDir) != 0;
     int savesChanged = strcmp(before->libretro.saveDir, after->libretro.saveDir) != 0;
     int sourceChanged = strcmp(before->libretro.sourceDir, after->libretro.sourceDir) != 0;
-    int coreChanged = strcmp(before->libretro.corePath, after->libretro.corePath) != 0;
     int audioBefore = settings_audioBufferNormalized(before->libretro.audioBufferMs);
     int audioAfter = settings_audioBufferNormalized(after->libretro.audioBufferMs);
     int audioChanged = audioBefore != audioAfter;
-    return romChanged || elfChanged || toolchainChanged || biosChanged || savesChanged || sourceChanged || coreChanged || audioChanged;
+    return romChanged || elfChanged || toolchainChanged || biosChanged || savesChanged || sourceChanged || audioChanged;
 }
 
 static int
@@ -186,7 +190,11 @@ static void
 static const char *
 target_amiga_defaultCorePath(void)
 {
-  return "./system/puae_libretro.dylib";
+  static char corePath[PATH_MAX];
+  if (file_getAssetPath("system/ami9000.dylib", corePath, sizeof(corePath))) {
+    return corePath;
+  }
+  return "./system/ami9000.dylib";
   
 }
 
@@ -219,14 +227,6 @@ target_amiga_settingsFolderChanged(void)
 static void
 target_amiga_settingsCoreChanged(void)
 {
-    const char *defaultCore = target_amiga_defaultCorePath();
-    if (defaultCore &&
-        defaultCore[0] &&
-        (!debugger.settingsEdit.amiga.libretro.corePath[0] ||
-         target_isDefaultCorePath(debugger.settingsEdit.amiga.libretro.corePath))) {
-        settings_config_setPath(debugger.settingsEdit.amiga.libretro.corePath, PATH_MAX, defaultCore);
-    }
-
     amiga_uaeLoadUaeOptions(debugger.settingsEdit.amiga.libretro.romPath);
     neogeo_coreOptionsClear();
 }
@@ -343,7 +343,6 @@ target_amiga_libretroSelectConfig(void)
     debugger_copyPath(debugger.libretro.sourceDir, sizeof(debugger.libretro.sourceDir), debugger.config.amiga.libretro.sourceDir);
     debugger_copyPath(debugger.libretro.exePath, sizeof(debugger.libretro.exePath), debugger.config.amiga.libretro.exePath);
     debugger_copyPath(debugger.libretro.toolchainPrefix, sizeof(debugger.libretro.toolchainPrefix), debugger.config.amiga.libretro.toolchainPrefix);
-    debugger_copyPath(debugger.libretro.corePath, sizeof(debugger.libretro.corePath), debugger.config.amiga.libretro.corePath);
     debugger_copyPath(debugger.libretro.romPath, sizeof(debugger.libretro.romPath), debugger.config.amiga.libretro.romPath);
     debugger_copyPath(debugger.libretro.systemDir, sizeof(debugger.libretro.systemDir), debugger.config.amiga.libretro.systemDir);
     debugger_copyPath(debugger.libretro.saveDir, sizeof(debugger.libretro.saveDir), debugger.config.amiga.libretro.saveDir);
@@ -369,6 +368,7 @@ target_amiga_applyCoreOptions(void)
 static void
 target_amiga_validateAPI(void)
 {
+  libretro_host_unbindNeogeoDebugApis();
   if (!libretro_host_setDebugBaseCallback(debugger_onSetDebugBaseFromCore)) {
     debug_error("debug_base: core does not expose e9k_debug_set_debug_base_callback");
   }
@@ -480,7 +480,6 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
     if (romState) {
         romState->romPath = debugger.settingsEdit.amiga.libretro.romPath;
         romState->romFolder = NULL;
-        romState->corePath = debugger.settingsEdit.amiga.libretro.corePath;
     }
 
     e9ui_component_t *fsRom = e9ui_fileSelect_make("UAE CONFIG", 120, 600, "...", romExts, 1, E9UI_FILESELECT_FILE);
@@ -533,7 +532,6 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
     e9ui_component_t *fsBios = e9ui_fileSelect_make("KICKSTART FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsSaves = e9ui_fileSelect_make("SAVES FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsSource = e9ui_fileSelect_make("SOURCE FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
-    e9ui_component_t *fsCore = e9ui_fileSelect_make("CORE", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FILE);
 
     if (fsBios) {
         e9ui_fileSelect_setText(fsBios, debugger.settingsEdit.amiga.libretro.systemDir);
@@ -547,11 +545,6 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
         e9ui_fileSelect_setText(fsSource, debugger.settingsEdit.amiga.libretro.sourceDir);
         e9ui_fileSelect_setOnChange(fsSource, settings_pathChanged, debugger.settingsEdit.amiga.libretro.sourceDir);
     }
-    if (fsCore) {
-        e9ui_fileSelect_setText(fsCore, debugger.settingsEdit.amiga.libretro.corePath);
-        e9ui_fileSelect_setOnChange(fsCore, settings_pathChanged, debugger.settingsEdit.amiga.libretro.corePath);
-    }
-
     e9ui_component_t *ltAudio = e9ui_labeled_textbox_make("AUDIO BUFFER MS",
                                                           120,
                                                           600,
@@ -584,7 +577,6 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
 
     if (romState) {
         romState->romSelect = fsRom;
-        romState->coreSelect = fsCore;
         romState->elfSelect = fsElf;
         romState->sourceSelect = fsSource;
         romState->toolchainSelect = ltToolchain;
@@ -652,13 +644,6 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
                 e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
             }
             e9ui_stack_addFixed(body, fsSaves);
-            first = 0;
-        }
-        if (fsCore) {
-            if (!first) {
-                e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
-            }
-            e9ui_stack_addFixed(body, fsCore);
             first = 0;
         }
         if (ltAudio) {

@@ -86,9 +86,6 @@ target_setTargetIndex(int index);
 void
 target_settingsClearAllOptions(void);
 
-int
-target_isDefaultCorePath(const char *path);
-
 target_iface_t *target_amiga(void);
 
 target_iface_t *target_neogeo(void);

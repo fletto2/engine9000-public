@@ -495,12 +495,6 @@ settings_toolchainPrefixChanged(e9ui_context_t *ctx, e9ui_component_t *comp, con
     settings_updateSaveLabel();
 }
 
-static int
-settings_isDefaultCorePath(const char *path)
-{
-    return target_isDefaultCorePath(path);
-}
-
 void
 settings_romPathChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *text, void *user)
 {
@@ -515,14 +509,6 @@ settings_romPathChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char 
     }
     settings_config_setPath(st->romPath, PATH_MAX, text);
     if (text && *text) {
-        target_iface_t *selectedTarget = debugger.settingsEdit.target ? debugger.settingsEdit.target : target;
-        const char *defaultCore = selectedTarget ? selectedTarget->defaultCorePath() : NULL;
-        if (defaultCore && st->corePath && (!st->corePath[0] || settings_isDefaultCorePath(st->corePath))) {
-            settings_config_setPath(st->corePath, PATH_MAX, defaultCore);
-            if (st->coreSelect) {
-                e9ui_fileSelect_setText(st->coreSelect, defaultCore);
-            }
-        }
         st->suppress = 1;
         if (st->romFolder) {
             settings_config_setPath(st->romFolder, PATH_MAX, "");

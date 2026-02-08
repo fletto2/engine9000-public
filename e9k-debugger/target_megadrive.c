@@ -1,17 +1,22 @@
 #include "debugger.h"
 #include "target.h"
-#include "emu_geo.h"
+#include "emu_mega.h"
 #include "rom_config.h"
+#include "megadrive_core_options.h"
 #include "debugger_platform.h"
 #include "core_options.h"
 #include "libretro_host.h"
 #include "system_badge.h"
 #include "alloc.h"
+#include "file.h"
+
+static const char *
+target_megadrive_defaultCorePath(void);
 
 static void
 target_megadrive_settingsClearOptions(void)
 {
-
+    megadrive_coreOptionsClear();
 }
 
 static void
@@ -29,7 +34,6 @@ target_megadrive_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t
     settings_romselect_state_t *romState = (settings_romselect_state_t *)alloc_calloc(1, sizeof(*romState));
     if (romState) {
         romState->romPath = debugger.settingsEdit.megadrive.libretro.romPath;
-        romState->corePath = debugger.settingsEdit.megadrive.libretro.corePath;
     }
 
     e9ui_component_t *fsRom = e9ui_fileSelect_make("ROM", 120, 600, "...", romExts, (int)countof(romExts), E9UI_FILESELECT_FILE);
@@ -37,7 +41,6 @@ target_megadrive_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t
     e9ui_component_t *fsBios = e9ui_fileSelect_make("BIOS FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsSaves = e9ui_fileSelect_make("SAVES FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsSource = e9ui_fileSelect_make("SOURCE FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
-    e9ui_component_t *fsCore = e9ui_fileSelect_make("CORE", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FILE);
 
     if (fsRom) {
         e9ui_fileSelect_setText(fsRom, debugger.settingsEdit.megadrive.libretro.romPath);
@@ -60,11 +63,6 @@ target_megadrive_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t
         e9ui_fileSelect_setText(fsSource, debugger.settingsEdit.megadrive.libretro.sourceDir);
         e9ui_fileSelect_setOnChange(fsSource, settings_pathChanged, debugger.settingsEdit.megadrive.libretro.sourceDir);
     }
-    if (fsCore) {
-        e9ui_fileSelect_setText(fsCore, debugger.settingsEdit.megadrive.libretro.corePath);
-        e9ui_fileSelect_setOnChange(fsCore, settings_pathChanged, debugger.settingsEdit.megadrive.libretro.corePath);
-    }
-
     e9ui_component_t *ltToolchain = e9ui_labeled_textbox_make("TOOLCHAIN PREFIX",
                                                                120,
                                                                600,
@@ -96,7 +94,6 @@ target_megadrive_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t
 
     if (romState) {
         romState->romSelect = fsRom;
-        romState->coreSelect = fsCore;
         romState->elfSelect = fsElf;
         romState->sourceSelect = fsSource;
         romState->toolchainSelect = ltToolchain;
@@ -145,13 +142,6 @@ target_megadrive_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t
             e9ui_stack_addFixed(body, fsSaves);
             first = 0;
         }
-        if (fsCore) {
-            if (!first) {
-                e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
-            }
-            e9ui_stack_addFixed(body, fsCore);
-            first = 0;
-        }
         if (ltAudio) {
             if (!first) {
                 e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
@@ -188,11 +178,12 @@ target_megadrive_configMissingPaths(const e9k_megadrive_config_t *cfg)
     if (!cfg) {
         return 1;
     }
-    if (!cfg->libretro.corePath[0] ||
+    const char *corePath = target_megadrive_defaultCorePath();
+    if (!corePath || !*corePath ||
         !cfg->libretro.romPath[0] ||
         !cfg->libretro.systemDir[0] ||
         !cfg->libretro.saveDir[0] ||
-        !settings_pathExistsFile(cfg->libretro.corePath) ||
+        !settings_pathExistsFile(corePath) ||
         !settings_pathExistsFile(cfg->libretro.romPath) ||
         !settings_pathExistsDir(cfg->libretro.systemDir) ||
         !settings_pathExistsDir(cfg->libretro.saveDir)) {
@@ -231,17 +222,19 @@ target_megadrive_restartNeededForMegaDrive(const e9k_megadrive_config_t *before,
     int biosChanged = strcmp(before->libretro.systemDir, after->libretro.systemDir) != 0;
     int savesChanged = strcmp(before->libretro.saveDir, after->libretro.saveDir) != 0;
     int sourceChanged = strcmp(before->libretro.sourceDir, after->libretro.sourceDir) != 0;
-    int coreChanged = strcmp(before->libretro.corePath, after->libretro.corePath) != 0;
     int audioBefore = settings_audioBufferNormalized(before->libretro.audioBufferMs);
     int audioAfter = settings_audioBufferNormalized(after->libretro.audioBufferMs);
     int audioChanged = audioBefore != audioAfter;
-    return romChanged || elfChanged || toolchainChanged || biosChanged || savesChanged || sourceChanged || coreChanged || audioChanged;
+    return romChanged || elfChanged || toolchainChanged || biosChanged || savesChanged || sourceChanged || audioChanged;
 }
 
 static int
 target_megadrive_needsRestart(void)
 {
     int configChanged = target_megadrive_restartNeededForMegaDrive(&debugger.config.megadrive, &debugger.settingsEdit.megadrive);
+    if (settings_coreOptionsDirty) {
+        configChanged = 1;
+    }
     int okBefore = target_megadrive_configIsOkFor(&debugger.config.megadrive);
     int okAfter = target_megadrive_configIsOkFor(&debugger.settingsEdit.megadrive);
     return configChanged || (!okBefore && okAfter);
@@ -262,6 +255,13 @@ target_megadrive_validateSettings(void)
     const char *saveDir = debugger.settingsEdit.megadrive.libretro.saveDir[0] ?
         debugger.settingsEdit.megadrive.libretro.saveDir : debugger.settingsEdit.megadrive.libretro.systemDir;
     const char *romPath = debugger.settingsEdit.megadrive.libretro.romPath;
+    if (romPath && *romPath) {
+        if (!megadrive_coreOptionsWriteToFile(saveDir, romPath)) {
+            e9ui_showTransientMessage("CORE OPTIONS SAVE FAILED");
+            return;
+        }
+    }
+    megadrive_coreOptionsClear();
     rom_config_saveSettingsForRom(saveDir, romPath,
                                   debugger.settingsEdit.megadrive.libretro.exePath,
                                   debugger.settingsEdit.megadrive.libretro.sourceDir,
@@ -302,13 +302,23 @@ target_megadrive_settingsSetConfigPaths(int hasElf, const char *elfPath, int has
 static const char *
 target_megadrive_defaultCorePath(void)
 {
-    return "./system/blastem_libretro.dylib";
+    static char corePath[PATH_MAX];
+    if (file_getAssetPath("system/mega9000.dylib", corePath, sizeof(corePath))) {
+        return corePath;
+    }
+    return "./system/mega9000.dylib";
 }
 
 static void
 target_megadrive_settingsRomPathChanged(settings_romselect_state_t *st)
 {
-    (void)st;
+    const char *saveDir = debugger.settingsEdit.megadrive.libretro.saveDir[0] ?
+        debugger.settingsEdit.megadrive.libretro.saveDir : debugger.settingsEdit.megadrive.libretro.systemDir;
+    if (!st || !st->romPath || !st->romPath[0]) {
+        megadrive_coreOptionsClear();
+        return;
+    }
+    megadrive_coreOptionsLoadFromFile(saveDir, st->romPath);
 }
 
 static void
@@ -320,12 +330,12 @@ target_megadrive_settingsFolderChanged(void)
 static void
 target_megadrive_settingsCoreChanged(void)
 {
-    const char *defaultCore = target_megadrive_defaultCorePath();
-    if (defaultCore &&
-        defaultCore[0] &&
-        (!debugger.settingsEdit.megadrive.libretro.corePath[0] ||
-         target_isDefaultCorePath(debugger.settingsEdit.megadrive.libretro.corePath))) {
-        settings_config_setPath(debugger.settingsEdit.megadrive.libretro.corePath, PATH_MAX, defaultCore);
+    const char *saveDir = debugger.settingsEdit.megadrive.libretro.saveDir[0] ?
+        debugger.settingsEdit.megadrive.libretro.saveDir : debugger.settingsEdit.megadrive.libretro.systemDir;
+    if (debugger.settingsEdit.megadrive.libretro.romPath[0]) {
+        megadrive_coreOptionsLoadFromFile(saveDir, debugger.settingsEdit.megadrive.libretro.romPath);
+    } else {
+        megadrive_coreOptionsClear();
     }
 }
 
@@ -333,6 +343,11 @@ static void
 target_megadrive_settingsLoadOptions(e9k_system_config_t *st)
 {
     (void)st;
+    const char *saveDir = debugger.settingsEdit.megadrive.libretro.saveDir[0] ?
+        debugger.settingsEdit.megadrive.libretro.saveDir : debugger.settingsEdit.megadrive.libretro.systemDir;
+    if (debugger.settingsEdit.megadrive.libretro.romPath[0]) {
+        megadrive_coreOptionsLoadFromFile(saveDir, debugger.settingsEdit.megadrive.libretro.romPath);
+    }
 }
 
 const e9k_libretro_config_t *
@@ -345,24 +360,56 @@ static int
 target_megadrive_coreOptionsHasGeneral(const core_options_modal_state_t *st)
 {
     (void)st;
-    return 1;
+    return 0;
 }
 
 static void
 target_megadrive_coreOptionsSaveClicked(e9ui_context_t *ctx, core_options_modal_state_t *st)
 {
     (void)ctx;
-    (void)st;
+    int anyChange = 0;
+
+    for (size_t i = 0; i < st->entryCount; ++i) {
+        const char *key = st->entries[i].key;
+        const char *value = st->entries[i].value;
+        if (!key || !*key) {
+            continue;
+        }
+        const char *defValue = core_options_findDefaultValue(st, key);
+        const char *desired = NULL;
+        if (!defValue || !value || strcmp(defValue, value) != 0) {
+            desired = value ? value : "";
+        }
+        const char *existing = megadrive_coreOptionsGetValue(key);
+        if (!desired) {
+            if (!existing) {
+                continue;
+            }
+            megadrive_coreOptionsSetValue(key, NULL);
+            anyChange = 1;
+        } else {
+            if (existing && core_options_stringsEqual(existing, desired)) {
+                continue;
+            }
+            megadrive_coreOptionsSetValue(key, desired);
+            anyChange = 1;
+        }
+    }
+    if (anyChange) {
+        settings_markCoreOptionsDirty();
+    }
+    if (anyChange && e9ui->settingsSaveButton) {
+        e9ui_button_setGlowPulse(e9ui->settingsSaveButton, 1);
+    }
     settings_refreshSaveLabel();
-    e9ui_showTransientMessage("CORE OPTIONS: NO CHANGES");
+    e9ui_showTransientMessage(anyChange ? "CORE OPTIONS STAGED" : "CORE OPTIONS: NO CHANGES");
     core_options_closeModal();
 }
 
 const char *
 target_megadrive_coreOptionGetValue(const char *key)
 {
-    (void)key;
-    return NULL;
+    return megadrive_coreOptionsGetValue(key);
 }
 
 static e9k_libretro_config_t *
@@ -385,7 +432,6 @@ target_megadrive_libretroSelectConfig(void)
     debugger_copyPath(debugger.libretro.sourceDir, sizeof(debugger.libretro.sourceDir), debugger.config.megadrive.libretro.sourceDir);
     debugger_copyPath(debugger.libretro.exePath, sizeof(debugger.libretro.exePath), debugger.config.megadrive.libretro.exePath);
     debugger_copyPath(debugger.libretro.toolchainPrefix, sizeof(debugger.libretro.toolchainPrefix), debugger.config.megadrive.libretro.toolchainPrefix);
-    debugger_copyPath(debugger.libretro.corePath, sizeof(debugger.libretro.corePath), debugger.config.megadrive.libretro.corePath);
     debugger_copyPath(debugger.libretro.romPath, sizeof(debugger.libretro.romPath), debugger.config.megadrive.libretro.romPath);
     debugger_copyPath(debugger.libretro.systemDir, sizeof(debugger.libretro.systemDir), debugger.config.megadrive.libretro.systemDir);
     debugger_copyPath(debugger.libretro.saveDir, sizeof(debugger.libretro.saveDir), debugger.config.megadrive.libretro.saveDir);
@@ -401,13 +447,17 @@ target_megadrive_pickElfToolchainPaths(const char **rawElf, const char **toolcha
 static void
 target_megadrive_applyCoreOptions(void)
 {
-
+    const char *romPath = debugger.libretro.romPath[0] ? debugger.libretro.romPath : debugger.config.megadrive.libretro.romPath;
+    const char *saveDir = debugger.libretro.saveDir[0] ? debugger.libretro.saveDir : debugger.config.megadrive.libretro.saveDir;
+    if (romPath && *romPath && saveDir && *saveDir) {
+        megadrive_coreOptionsApplyFileToHost(saveDir, romPath);
+    }
 }
 
 static void
 target_megadrive_validateAPI(void)
 {
-
+    libretro_host_unbindNeogeoDebugApis();
 }
 
 static int
@@ -431,7 +481,7 @@ target_megadrive_getBadgeTexture(SDL_Renderer *renderer, target_iface_t *t, int 
     }
     t->badgeRenderer = renderer;
     if (!t->badge) {
-        t->badge = system_badge_loadTexture(renderer, "assets/neogeo.png", &t->badgeW, &t->badgeH);
+        t->badge = system_badge_loadTexture(renderer, "assets/mega.png", &t->badgeW, &t->badgeH);
     }
 
     if (t->badge) {
@@ -490,8 +540,8 @@ target_megadrive_controllerMapButton(SDL_GameControllerButton button, unsigned *
 
 static target_iface_t _target_megadrive = {
     .name = "MEGA DRIVE",
-    .dasm = &dasm_geo_iface,
-    .emu = &emu_geo_iface,
+    .dasm = &dasm_ami_iface,
+    .emu = &emu_mega_iface,
     .setActiveDefaultsFromCurrentSystem = target_megadrive_setActiveDefaultsFromCurrentSystem,
     .applyActiveSettingsToCurrentSystem = target_megadrive_applyActiveSettingsToCurrentSystem,
     .configIsOk = target_megadrive_configIsOk,

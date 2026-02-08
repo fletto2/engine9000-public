@@ -193,14 +193,6 @@ cli_parseArgs(int argc, char **argv)
             cli_copyPath(debugger.cliConfig.amiga.libretro.exePath, sizeof(debugger.cliConfig.amiga.libretro.exePath), argv[i] + sizeof("--hunk=") - 1);
             continue;
         }
-        if (strcmp(argv[i], "--core") == 0 && i + 1 < argc) {
-            cli_copyPath(targetLibretro->corePath, sizeof(targetLibretro->corePath), argv[++i]);
-            continue;
-        }
-        if (strncmp(argv[i], "--core=", sizeof("--core=") - 1) == 0) {
-            cli_copyPath(targetLibretro->corePath, sizeof(targetLibretro->corePath), argv[i] + sizeof("--core=") - 1);
-            continue;
-        }
         if (strcmp(argv[i], "--rom") == 0) {
             if (targetSystem == target_amiga()) {
                 cli_setError("rom: only supported for Neo Geo (use --neogeo)");
@@ -584,7 +576,6 @@ cli_printUsage(const char *argv0)
     printf("Global options:\n");
     printf("  --help, -h                   Show this help and exit\n");
     printf("  --reset-cfg                  Delete saved config file and restart\n");
-    printf("  --core PATH                  Core path (applies to current system)\n");
     printf("  --system-dir PATH            System/BIOS directory (applies to current system)\n");
     printf("  --save-dir PATH              Saves directory (applies to current system)\n");
     printf("  --source-dir PATH            Source directory (applies to current system)\n");
@@ -621,9 +612,6 @@ cli_printUsage(const char *argv0)
 void
 cli_applyOverrides(void)
 {
-    if (debugger.cliConfig.amiga.libretro.corePath[0]) {
-        cli_copyPath(debugger.config.amiga.libretro.corePath, sizeof(debugger.config.amiga.libretro.corePath), debugger.cliConfig.amiga.libretro.corePath);
-    }
     if (debugger.cliConfig.amiga.libretro.romPath[0]) {
         cli_copyPath(debugger.config.amiga.libretro.romPath, sizeof(debugger.config.amiga.libretro.romPath), debugger.cliConfig.amiga.libretro.romPath);
     }
@@ -640,9 +628,6 @@ cli_applyOverrides(void)
         cli_copyPath(debugger.config.amiga.libretro.sourceDir, sizeof(debugger.config.amiga.libretro.sourceDir), debugger.cliConfig.amiga.libretro.sourceDir);
     }
 
-    if (debugger.cliConfig.neogeo.libretro.corePath[0]) {
-        cli_copyPath(debugger.config.neogeo.libretro.corePath, sizeof(debugger.config.neogeo.libretro.corePath), debugger.cliConfig.neogeo.libretro.corePath);
-    }
     if (debugger.cliConfig.neogeo.libretro.romPath[0]) {
         cli_copyPath(debugger.config.neogeo.libretro.romPath, sizeof(debugger.config.neogeo.libretro.romPath), debugger.cliConfig.neogeo.libretro.romPath);
     }
