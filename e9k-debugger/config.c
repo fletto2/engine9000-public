@@ -123,6 +123,32 @@ config_persistConfig(FILE *f)
     if (debugger.config.neogeo.skipBiosLogo) {
         fprintf(f, "comp.config.neogeo.skip_bios=1\n");
     }
+    if (debugger.config.megadrive.libretro.corePath[0]) {
+        fprintf(f, "comp.config.megadrive.core=%s\n", debugger.config.megadrive.libretro.corePath);
+    }
+    if (debugger.config.megadrive.libretro.romPath[0]) {
+        fprintf(f, "comp.config.megadrive.rom=%s\n", debugger.config.megadrive.libretro.romPath);
+    }
+    if (debugger.config.megadrive.romFolder[0]) {
+        fprintf(f, "comp.config.megadrive.rom_folder=%s\n", debugger.config.megadrive.romFolder);
+    }
+    if (debugger.config.megadrive.libretro.exePath[0]) {
+        fprintf(f, "comp.config.megadrive.elf=%s\n", debugger.config.megadrive.libretro.exePath);
+    }
+    fprintf(f, "comp.config.megadrive.toolchain_prefix=%s\n", debugger.config.megadrive.libretro.toolchainPrefix);
+    if (debugger.config.megadrive.libretro.systemDir[0]) {
+        fprintf(f, "comp.config.megadrive.bios=%s\n", debugger.config.megadrive.libretro.systemDir);
+    }
+    if (debugger.config.megadrive.libretro.saveDir[0]) {
+        fprintf(f, "comp.config.megadrive.saves=%s\n", debugger.config.megadrive.libretro.saveDir);
+    }
+    if (debugger.config.megadrive.libretro.sourceDir[0]) {
+        fprintf(f, "comp.config.megadrive.source=%s\n", debugger.config.megadrive.libretro.sourceDir);
+    }
+    if (debugger.config.megadrive.libretro.audioBufferMs > 0) {
+        fprintf(f, "comp.config.megadrive.audio_ms=%d\n", debugger.config.megadrive.libretro.audioBufferMs);
+    }
+    fprintf(f, "comp.config.megadrive.audio_enabled=%d\n", debugger.config.megadrive.libretro.audioEnabled);
     if (!debugger.config.crtEnabled) {
         fprintf(f, "comp.config.crt_enabled=0\n");
     }
@@ -166,6 +192,7 @@ config_loadConfig(void)
       // TODO
         debugger_platform_setDefaults(&debugger.config.neogeo);
         debugger_platform_setDefaultsAmiga(&debugger.config.amiga);
+        debugger_platform_setDefaultsMegaDrive(&debugger.config.megadrive);
         return;
     }
 
@@ -235,12 +262,42 @@ config_loadConfig(void)
                 debugger.config.neogeo.libretro.audioEnabled = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "neogeo.skip_bios") == 0) {
                 debugger.config.neogeo.skipBiosLogo = atoi(value) ? 1 : 0;
+            } else if (strcmp(prop, "megadrive.core") == 0) {
+                config_setConfigValue(debugger.config.megadrive.libretro.corePath, sizeof(debugger.config.megadrive.libretro.corePath), value);
+            } else if (strcmp(prop, "megadrive.rom") == 0) {
+                config_setConfigValue(debugger.config.megadrive.libretro.romPath, sizeof(debugger.config.megadrive.libretro.romPath), value);
+            } else if (strcmp(prop, "megadrive.rom_folder") == 0) {
+                config_setConfigValue(debugger.config.megadrive.romFolder, sizeof(debugger.config.megadrive.romFolder), value);
+            } else if (strcmp(prop, "megadrive.elf") == 0) {
+                config_setConfigValue(debugger.config.megadrive.libretro.exePath, sizeof(debugger.config.megadrive.libretro.exePath), value);
+            } else if (strcmp(prop, "megadrive.toolchain_prefix") == 0) {
+                config_setConfigValue(debugger.config.megadrive.libretro.toolchainPrefix, sizeof(debugger.config.megadrive.libretro.toolchainPrefix), value);
+            } else if (strcmp(prop, "megadrive.bios") == 0) {
+                config_setConfigValue(debugger.config.megadrive.libretro.systemDir, sizeof(debugger.config.megadrive.libretro.systemDir), value);
+            } else if (strcmp(prop, "megadrive.saves") == 0) {
+                config_setConfigValue(debugger.config.megadrive.libretro.saveDir, sizeof(debugger.config.megadrive.libretro.saveDir), value);
+            } else if (strcmp(prop, "megadrive.source") == 0) {
+                config_setConfigValue(debugger.config.megadrive.libretro.sourceDir, sizeof(debugger.config.megadrive.libretro.sourceDir), value);
+            } else if (strcmp(prop, "megadrive.audio_ms") == 0) {
+                char *end = NULL;
+                long ms = strtol(value, &end, 10);
+                if (end && end != value && ms > 0 && ms <= INT_MAX) {
+                    debugger.config.megadrive.libretro.audioBufferMs = (int)ms;
+                }
+            } else if (strcmp(prop, "megadrive.audio_enabled") == 0) {
+                debugger.config.megadrive.libretro.audioEnabled = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "crt_enabled") == 0) {
                 debugger.config.crtEnabled = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "core_options_show_help") == 0) {
                 debugger.coreOptionsShowHelp = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "core_system") == 0) {
-                target_setTargetIndex(atoi(value));
+                int coreSystem = atoi(value);
+#if !E9K_ENABLE_MEGADRIVE
+                if (coreSystem == TARGET_MEGADRIVE) {
+                    coreSystem = TARGET_NEOGEO;
+                }
+#endif
+                target_setTargetIndex(coreSystem);
             } else if (strcmp(prop, "transition") == 0) {
                 e9k_transition_mode_t mode = e9k_transition_none;
                 if (transition_parseMode(value, &mode)) {

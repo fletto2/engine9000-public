@@ -6,11 +6,6 @@
  * See COPYING for license details
  */
 
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
 #include <errno.h>
 #include <limits.h>
 #include "libretro.h"
@@ -21,9 +16,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "debug.h"
-#ifdef _WIN32
-#include <direct.h>
-#endif
 #include <stdbool.h>
 
 #include "libretro_host.h"
@@ -644,21 +636,13 @@ libretro_host_mkdir_p(const char *path)
         if (buffer[i] == '/') {
             char prev = buffer[i];
             buffer[i] = '\0';
-            #ifdef _WIN32
-            if (_mkdir(buffer) != 0 && errno != EEXIST) {
-            #else
-            if (mkdir(buffer, 0755) != 0 && errno != EEXIST) {
-            #endif
+            if (!debugger_platform_makeDir(buffer)) {
                 return false;
             }
             buffer[i] = prev;
         }
     }
-    #ifdef _WIN32
-    if (_mkdir(buffer) != 0 && errno != EEXIST) {
-    #else
-    if (mkdir(buffer, 0755) != 0 && errno != EEXIST) {
-    #endif
+    if (!debugger_platform_makeDir(buffer)) {
         return false;
     }
     return true;
@@ -981,25 +965,14 @@ libretro_host_inputState(unsigned port, unsigned device, unsigned index, unsigne
 static void *
 libretro_host_loadSymbol(const char *name)
 {
-    if (!libretro_host.lib) {
+    if (!libretro_host.lib || !name || !*name) {
         return NULL;
     }
-#ifdef _WIN32
-    FARPROC symbol = GetProcAddress((HMODULE)libretro_host.lib, name);
+    void *symbol = debugger_platform_loadSharedSymbol(libretro_host.lib, name);
     if (!symbol) {
-        DWORD err = GetLastError();
-        fprintf(stderr, "libretro: missing symbol %s: winerr=%lu\n", name, (unsigned long)err);
-    }
-    return (void*)symbol;
-#else
-    dlerror();
-    void *symbol = dlsym(libretro_host.lib, name);
-    if (!symbol) {
-        const char *error = dlerror();
-        fprintf(stderr, "libretro: missing symbol %s: %s\n", name, error ? error : "unknown");
+        fprintf(stderr, "libretro: missing symbol %s\n", name);
     }
     return symbol;
-#endif
 }
 
 static bool
@@ -1288,20 +1261,11 @@ libretro_host_start(const char *corePath, const char *romPath,
         fprintf(stderr, "libretro: failed to create directories\n");
         return false;
     }
-    #ifdef _WIN32
-    libretro_host.lib = (void*)LoadLibraryA(libretro_host.corePath);
+    libretro_host.lib = debugger_platform_loadSharedLibrary(libretro_host.corePath);
     if (!libretro_host.lib) {
-        DWORD err = GetLastError();
-        fprintf(stderr, "libretro: LoadLibrary failed: winerr=%lu\n", (unsigned long)err);
+        fprintf(stderr, "libretro: failed to load %s\n", libretro_host.corePath);
         return false;
     }
-    #else
-    libretro_host.lib = dlopen(libretro_host.corePath, RTLD_NOW | RTLD_LOCAL);
-    if (!libretro_host.lib) {
-        fprintf(stderr, "libretro: dlopen failed: %s\n", dlerror());
-        return false;
-    }
-    #endif
     libretro_host.setEnvironment = (retro_set_environment_fn_t)libretro_host_loadSymbol("retro_set_environment");
     libretro_host.setVideoRefresh = (retro_set_video_refresh_fn_t)libretro_host_loadSymbol("retro_set_video_refresh");
     libretro_host.setAudioSample = (retro_set_audio_sample_fn_t)libretro_host_loadSymbol("retro_set_audio_sample");
@@ -1434,11 +1398,7 @@ libretro_host_shutdown(void)
         libretro_host.deinit();
     }
     if (libretro_host.lib) {
-        #ifdef _WIN32
-        FreeLibrary((HMODULE)libretro_host.lib);
-        #else
-        dlclose(libretro_host.lib);
-        #endif
+        debugger_platform_closeSharedLibrary(libretro_host.lib);
         libretro_host.lib = NULL;
     }
     libretro_host_destroyTexture();

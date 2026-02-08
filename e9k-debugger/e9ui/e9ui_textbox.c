@@ -12,12 +12,6 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dirent.h>
-#endif
-
 typedef struct textbox_state {
     char               *text;
     int                len;
@@ -427,11 +421,7 @@ textbox_pathJoin(char *out, size_t cap, const char *dir, const char *name)
     memcpy(out, dir, dlen);
     size_t pos = dlen;
     if (needSep) {
-#ifdef _WIN32
-        out[pos++] = '\\';
-#else
-        out[pos++] = '/';
-#endif
+        out[pos++] = debugger_platform_preferredPathSeparator();
     }
     memcpy(out + pos, name, nlen);
     out[pos + nlen] = '\0';
@@ -449,15 +439,8 @@ textbox_expandTilde(const char *in, char *out, size_t cap)
         out[cap - 1] = '\0';
         return 1;
     }
-#ifdef _WIN32
-    const char *home = getenv("USERPROFILE");
-    if (!home || !*home) {
-        home = getenv("APPDATA");
-    }
-#else
-    const char *home = getenv("HOME");
-#endif
-    if (!home || !*home) {
+    char home[PATH_MAX];
+    if (!debugger_platform_getHomeDir(home, sizeof(home))) {
         strncpy(out, in, cap - 1);
         out[cap - 1] = '\0';
         return 1;
@@ -475,11 +458,7 @@ textbox_expandTilde(const char *in, char *out, size_t cap)
     memcpy(out, home, hlen);
     size_t pos = hlen;
     if (needSep) {
-#ifdef _WIN32
-        out[pos++] = '\\';
-#else
-        out[pos++] = '/';
-#endif
+        out[pos++] = debugger_platform_preferredPathSeparator();
     }
     memcpy(out + pos, rest, rlen);
     out[pos + rlen] = '\0';
@@ -518,19 +497,11 @@ textbox_isDirPath(const char *path)
     if (!path || !*path) {
         return 0;
     }
-#ifdef _WIN32
-    DWORD attrs = GetFileAttributesA(path);
-    if (attrs == INVALID_FILE_ATTRIBUTES) {
-        return 0;
-    }
-    return (attrs & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
-#else
     struct stat sb;
     if (stat(path, &sb) != 0) {
         return 0;
     }
     return S_ISDIR(sb.st_mode) ? 1 : 0;
-#endif
 }
 
 static size_t
@@ -578,7 +549,7 @@ textbox_completionCompare(const void *a, const void *b)
     if (!sb) {
         sb = "";
     }
-#ifdef _WIN32
+    if (debugger_platform_caseInsensitivePaths()) {
     while (*sa && *sb) {
         unsigned char ca = (unsigned char)tolower((unsigned char)*sa);
         unsigned char cb = (unsigned char)tolower((unsigned char)*sb);
@@ -592,9 +563,81 @@ textbox_completionCompare(const void *a, const void *b)
         return 0;
     }
     return *sa ? 1 : -1;
-#else
+    } else {
     return strcmp(sa, sb);
-#endif
+    }
+}
+
+typedef struct textbox_completion_scan_ctx {
+    textbox_state_t *state;
+    const char *fragment;
+    int foldersOnly;
+    int caseInsensitive;
+} textbox_completion_scan_ctx_t;
+
+static const char *
+textbox_basenameFromPath(const char *path)
+{
+    if (!path || !*path) {
+        return "";
+    }
+    const char *slash = strrchr(path, '/');
+    const char *back = strrchr(path, '\\');
+    const char *base = slash > back ? slash : back;
+    return base ? base + 1 : path;
+}
+
+static int
+textbox_completionAppend(textbox_state_t *st, const char *text)
+{
+    if (!st || !text) {
+        return 0;
+    }
+    if (st->completionCount >= st->completionCap) {
+        int next = st->completionCap ? st->completionCap * 2 : 64;
+        char **tmp = (char**)alloc_realloc(st->completionList, (size_t)next * sizeof(char*));
+        if (!tmp) {
+            return 0;
+        }
+        st->completionList = tmp;
+        st->completionCap = next;
+    }
+    st->completionList[st->completionCount++] = alloc_strdup(text);
+    return 1;
+}
+
+static int
+textbox_completionScanEntry(const char *path, void *user)
+{
+    textbox_completion_scan_ctx_t *ctx = (textbox_completion_scan_ctx_t *)user;
+    if (!ctx || !ctx->state || !path || !*path) {
+        return 1;
+    }
+    const char *name = textbox_basenameFromPath(path);
+    if (!name || !*name) {
+        return 1;
+    }
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        return 1;
+    }
+    int isDir = textbox_isDirPath(path);
+    if (ctx->foldersOnly && !isDir) {
+        return 1;
+    }
+    if (ctx->fragment && *ctx->fragment &&
+        !textbox_startsWith(name, ctx->fragment, ctx->caseInsensitive)) {
+        return 1;
+    }
+    if (isDir) {
+        char entry[PATH_MAX];
+        int written = snprintf(entry, sizeof(entry), "%s%c", name, debugger_platform_preferredPathSeparator());
+        if (written > 0 && (size_t)written < sizeof(entry)) {
+            textbox_completionAppend(ctx->state, entry);
+        }
+    } else {
+        textbox_completionAppend(ctx->state, name);
+    }
+    return 1;
 }
 
 static int
@@ -609,113 +652,14 @@ textbox_buildFilenameCompletions(textbox_state_t *st, const char *dirPath, const
     if (!*dir) {
         dir = ".";
     }
-    int caseInsensitive = 0;
-#ifdef _WIN32
-    caseInsensitive = 1;
-#endif
-
-#ifdef _WIN32
-    char pattern[PATH_MAX];
-    if (!textbox_pathJoin(pattern, sizeof(pattern), dir, "*")) {
+    textbox_completion_scan_ctx_t scanCtx;
+    scanCtx.state = st;
+    scanCtx.fragment = fragment;
+    scanCtx.foldersOnly = foldersOnly ? 1 : 0;
+    scanCtx.caseInsensitive = debugger_platform_caseInsensitivePaths();
+    if (!debugger_platform_scanFolder(dir, textbox_completionScanEntry, &scanCtx)) {
         return 0;
     }
-    WIN32_FIND_DATAA data;
-    HANDLE h = FindFirstFileA(pattern, &data);
-    if (h == INVALID_HANDLE_VALUE) {
-        return 0;
-    }
-    do {
-        const char *name = data.cFileName;
-        if (!name || !*name) {
-            continue;
-        }
-        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
-            continue;
-        }
-        int isDir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
-        if (foldersOnly && !isDir) {
-            continue;
-        }
-        if (fragment && *fragment && !textbox_startsWith(name, fragment, caseInsensitive)) {
-            continue;
-        }
-        if (st->completionCount >= st->completionCap) {
-            int next = st->completionCap ? st->completionCap * 2 : 64;
-            char **tmp = (char**)alloc_realloc(st->completionList, (size_t)next * sizeof(char*));
-            if (!tmp) {
-                break;
-            }
-            st->completionList = tmp;
-            st->completionCap = next;
-        }
-        if (isDir) {
-            size_t nlen = strlen(name);
-            char *cand = (char*)alloc_alloc(nlen + 2);
-            if (!cand) {
-                continue;
-            }
-            memcpy(cand, name, nlen);
-            cand[nlen] = '\\';
-            cand[nlen + 1] = '\0';
-            st->completionList[st->completionCount++] = cand;
-        } else {
-            st->completionList[st->completionCount++] = alloc_strdup(name);
-        }
-    } while (FindNextFileA(h, &data));
-    FindClose(h);
-#else
-    DIR *dp = opendir(dir);
-    if (!dp) {
-        return 0;
-    }
-    struct dirent *ent;
-    while ((ent = readdir(dp)) != NULL) {
-        const char *name = ent->d_name;
-        if (!name || !*name) {
-            continue;
-        }
-        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
-            continue;
-        }
-        if (fragment && *fragment && !textbox_startsWith(name, fragment, caseInsensitive)) {
-            continue;
-        }
-        int isDir = 0;
-        {
-            char full[PATH_MAX];
-            if (!textbox_pathJoin(full, sizeof(full), dir, name)) {
-                continue;
-            }
-            isDir = textbox_isDirPath(full) ? 1 : 0;
-        }
-        if (foldersOnly && !isDir) {
-            continue;
-        }
-        if (st->completionCount >= st->completionCap) {
-            int next = st->completionCap ? st->completionCap * 2 : 64;
-            char **tmp = (char**)alloc_realloc(st->completionList, (size_t)next * sizeof(char*));
-            if (!tmp) {
-                break;
-            }
-            st->completionList = tmp;
-            st->completionCap = next;
-        }
-        if (isDir) {
-            size_t nlen = strlen(name);
-            char *cand = (char*)alloc_alloc(nlen + 2);
-            if (!cand) {
-                continue;
-            }
-            memcpy(cand, name, nlen);
-            cand[nlen] = '/';
-            cand[nlen + 1] = '\0';
-            st->completionList[st->completionCount++] = cand;
-        } else {
-            st->completionList[st->completionCount++] = alloc_strdup(name);
-        }
-    }
-    closedir(dp);
-#endif
 
     if (st->completionCount <= 0) {
         textbox_completionClear(st);
@@ -765,11 +709,7 @@ textbox_applyFilenameCompletionChoice(textbox_state_t *st, e9ui_context_t *ctx, 
         if (textbox_pathJoin(full, sizeof(full), dirForCheck, choiceText) && textbox_isDirPath(full)) {
             char last = (nl > 0) ? st->scratch[nl - 1] : '\0';
             if (last != '/' && last != '\\') {
-#ifdef _WIN32
-                st->scratch[nl++] = '\\';
-#else
-                st->scratch[nl++] = '/';
-#endif
+                st->scratch[nl++] = debugger_platform_preferredPathSeparator();
                 st->scratch[nl] = '\0';
                 addSep = 1;
             }
@@ -896,10 +836,7 @@ textbox_filenameCompletion(textbox_state_t *st, e9ui_context_t *ctx, TTF_Font *f
     }
 
     int count = st->completionCount;
-    int caseInsensitive = 0;
-#ifdef _WIN32
-    caseInsensitive = 1;
-#endif
+    int caseInsensitive = debugger_platform_caseInsensitivePaths();
     if (count == 1) {
         const char *cand = st->completionList[0] ? st->completionList[0] : "";
         textbox_applyFilenameCompletionChoice(st, ctx, font, viewW, cand);

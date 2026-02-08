@@ -599,7 +599,9 @@ source_pane_collectReadelfFiles(source_pane_state_t *st, const char *elfPath)
         return 0;
     }
     char cmd[PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "%s --debug-dump=info '%s' 2>/dev/null", readelfExe, elfPath);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), readelfExe, "--debug-dump=info", elfPath, 1)) {
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return 0;
@@ -696,7 +698,9 @@ source_pane_collectStabsFiles(source_pane_state_t *st, const char *elfPath)
         return 0;
     }
     char cmd[PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "%s -G '%s' 2>/dev/null", objdumpExe, elfPath);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdumpExe, "-G", elfPath, 1)) {
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return 0;
@@ -870,7 +874,9 @@ source_pane_collectFunctionSymbols(source_pane_state_t *st, const char *elf_path
     }
 
     char cmd[PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "%s -Ws '%s' 2>/dev/null", readelf_exe, elf_path);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), readelf_exe, "-Ws", elf_path, 1)) {
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return 0;
@@ -992,7 +998,9 @@ source_pane_collectStabsFunctions(source_pane_state_t *st, const char *elf_path,
         return 0;
     }
     char cmd[PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "%s -G '%s' 2>/dev/null", objdump_exe, elf_path);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump_exe, "-G", elf_path, 1)) {
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return 0;
@@ -1216,7 +1224,9 @@ source_pane_resolveFileLine(const char *elf, const char *file, int line_no, uint
         debug_error("break: objdump not found in PATH: %s", objdump);
         return 0;
     }
-    snprintf(cmd, sizeof(cmd), "%s -l -d '%s'", objdumpExe, elf);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdumpExe, "-l -d", elf, 0)) {
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         debug_error("break: failed to run objdump");

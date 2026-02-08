@@ -162,11 +162,9 @@ print_debuginfo_readelf_loadFrames(const char *elfPath, print_index_t *index)
         return 0;
     }
     char cmd[PATH_MAX * 2];
-#ifdef _WIN32
-    snprintf(cmd, sizeof(cmd), "%s --debug-dump=frames-interp \"%s\"", readelf, elfPath);
-#else
-    snprintf(cmd, sizeof(cmd), "%s --debug-dump=frames-interp '%s' 2>/dev/null", readelf, elfPath);
-#endif
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), readelf, "--debug-dump=frames-interp", elfPath, 1)) {
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return 0;

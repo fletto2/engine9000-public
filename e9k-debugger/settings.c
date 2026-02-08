@@ -30,6 +30,9 @@ debugger_platform_setDefaults(e9k_neogeo_config_t *config);
 void
 debugger_platform_setDefaultsAmiga(e9k_amiga_config_t *config);
 
+void
+debugger_platform_setDefaultsMegaDrive(e9k_megadrive_config_t *config);
+
 //static
 //TODO    
 
@@ -652,7 +655,10 @@ settings_coreSystemSync(settings_coresystem_state_t *st, target_iface_t* system,
     system->settingsCoreChanged();
 
     int amigaSelected = (system == target_amiga());
-    int neogeoSelected = !amigaSelected;
+    int neogeoSelected = (system == target_neogeo());
+#if E9K_ENABLE_MEGADRIVE
+    int megadriveSelected = (system == target_megadrive());
+#endif
     if (st->allowRebuild && systemChanged) {
         st->updating = 0;
         settings_pendingRebuild = 1;
@@ -663,6 +669,13 @@ settings_coreSystemSync(settings_coresystem_state_t *st, target_iface_t* system,
     }
     if (st->amigaCheckbox) {
         e9ui_checkbox_setSelected(st->amigaCheckbox, amigaSelected, ctx);
+    }
+    if (st->megadriveCheckbox) {
+#if E9K_ENABLE_MEGADRIVE
+        e9ui_checkbox_setSelected(st->megadriveCheckbox, megadriveSelected, ctx);
+#else
+        e9ui_checkbox_setSelected(st->megadriveCheckbox, 0, ctx);
+#endif
     }
     st->updating = 0;
     settings_updateSaveLabel();
@@ -676,7 +689,11 @@ settings_coreSystemNeoGeoChanged(e9ui_component_t *self, e9ui_context_t *ctx, in
     if (!st || st->updating) {
         return;
     }
-    settings_coreSystemSync(st, selected ? target_neogeo(): target_amiga(), ctx);
+    if (selected) {
+        settings_coreSystemSync(st, target_neogeo(), ctx);
+    } else if (st->target == target_neogeo()) {
+        settings_coreSystemSync(st, target_amiga(), ctx);
+    }
 }
 
 static void
@@ -687,8 +704,29 @@ settings_coreSystemAmigaChanged(e9ui_component_t *self, e9ui_context_t *ctx, int
     if (!st || st->updating) {
         return;
     }
-    settings_coreSystemSync(st, selected ? target_amiga() : target_neogeo(), ctx);
+    if (selected) {
+        settings_coreSystemSync(st, target_amiga(), ctx);
+    } else if (st->target == target_amiga()) {
+        settings_coreSystemSync(st, target_neogeo(), ctx);
+    }
 }
+
+#if E9K_ENABLE_MEGADRIVE
+static void
+settings_coreSystemMegaDriveChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    settings_coresystem_state_t *st = (settings_coresystem_state_t *)user;
+    if (!st || st->updating) {
+        return;
+    }
+    if (selected) {
+        settings_coreSystemSync(st, target_megadrive(), ctx);
+    } else if (st->target == target_megadrive()) {
+        settings_coreSystemSync(st, target_amiga(), ctx);
+    }
+}
+#endif
 
 static e9ui_component_t *
 settings_makeSystemBadge(e9ui_context_t *ctx, target_iface_t* system)
@@ -722,13 +760,28 @@ settings_buildModalBody(e9ui_context_t *ctx)
         return NULL;
     }
     target_iface_t *selectedTarget = debugger.settingsEdit.target ? debugger.settingsEdit.target : target;
-    int isAmiga = (selectedTarget == target_amiga());
+#if !E9K_ENABLE_MEGADRIVE
+    if (selectedTarget == target_megadrive()) {
+        selectedTarget = target_amiga();
+    }
+#endif
+    int amigaSelected = (selectedTarget == target_amiga()) ? 1 : 0;
+    int neogeoSelected = (selectedTarget == target_neogeo()) ? 1 : 0;
+    int megadriveSelected = 0;
+#if E9K_ENABLE_MEGADRIVE
+    megadriveSelected = (selectedTarget == target_megadrive()) ? 1 : 0;
+#endif
+    if (!amigaSelected && !neogeoSelected && !megadriveSelected) {
+        amigaSelected = 1;
+    }
 
     settings_coresystem_state_t *coreState = (settings_coresystem_state_t *)alloc_calloc(1, sizeof(*coreState));
-    int amigaSelected = isAmiga ? 1 : 0;
-    int neogeoSelected = !amigaSelected;
     e9ui_component_t *cbNeogeo = e9ui_checkbox_make("NEO GEO", neogeoSelected, settings_coreSystemNeoGeoChanged, coreState);
     e9ui_component_t *cbAmiga = e9ui_checkbox_make("AMIGA", amigaSelected, settings_coreSystemAmigaChanged, coreState);
+    e9ui_component_t *cbMegaDrive = NULL;
+#if E9K_ENABLE_MEGADRIVE
+    cbMegaDrive = e9ui_checkbox_make("MEGA DRIVE", megadriveSelected, settings_coreSystemMegaDriveChanged, coreState);
+#endif
     e9ui_component_t *rowCore = e9ui_hstack_make();
     e9ui_component_t *rowCoreCenter = rowCore ? e9ui_center_make(rowCore) : NULL;
     e9ui_component_t *btnCoreOptionsTop = e9ui_button_make("Core Options", core_options_uiOpen, NULL);
@@ -762,6 +815,7 @@ settings_buildModalBody(e9ui_context_t *ctx)
     if (coreState) {
         coreState->neogeoCheckbox = cbNeogeo;
         coreState->amigaCheckbox = cbAmiga;
+        coreState->megadriveCheckbox = cbMegaDrive;
         coreState->target = selectedTarget;
         coreState->allowRebuild = 0;
         settings_coreSystemSync(coreState, selectedTarget ? selectedTarget : target, ctx);
@@ -772,6 +826,7 @@ settings_buildModalBody(e9ui_context_t *ctx)
         int gap = e9ui_scale_px(ctx, 12);
         int wNeogeo = cbNeogeo ? settings_checkboxMeasureWidth("NEO GEO", ctx) : 0;
         int wAmiga = cbAmiga ? settings_checkboxMeasureWidth("AMIGA", ctx) : 0;
+        int wMegaDrive = cbMegaDrive ? settings_checkboxMeasureWidth("MEGA DRIVE", ctx) : 0;
         int wCoreOptions = 0;
         int hCoreOptions = 0;
         if (btnCoreOptionsTop) {
@@ -790,6 +845,14 @@ settings_buildModalBody(e9ui_context_t *ctx)
             }
             e9ui_hstack_addFixed(rowCore, cbAmiga, wAmiga);
             totalW += wAmiga;
+        }
+    if (cbMegaDrive) {
+            if (totalW > 0) {
+                e9ui_hstack_addFixed(rowCore, e9ui_spacer_make(gap), gap);
+                totalW += gap;
+            }
+            e9ui_hstack_addFixed(rowCore, cbMegaDrive, wMegaDrive);
+            totalW += wMegaDrive;
         }
         if (btnCoreOptionsTop && wCoreOptions > 0) {
             if (totalW > 0) {

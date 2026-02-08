@@ -8,13 +8,7 @@
 
 #include "e9ui.h"
 #include <sys/stat.h>
-#include <unistd.h>
-#include "tinyfiledialogs.h"
-
-#ifdef _WIN32
-#include <direct.h>
-#define getcwd _getcwd
-#endif
+#include "debugger.h"
 
 typedef struct e9ui_fileselect_state {
     char *label;
@@ -163,21 +157,23 @@ e9ui_fileselect_openDialog(e9ui_context_t *ctx, void *user)
         return;
     }
     const char *title = st->label ? st->label : "Select File";
-    char *result = NULL;
+    const char *result = NULL;
     char initial[PATH_MAX];
     const char *start = NULL;
     if (e9ui_fileselect_getInitialDir(st, initial, sizeof(initial))) {
         start = initial;
-    } else if (getcwd(initial, sizeof(initial))) {
+    } else if (debugger_platform_getCurrentDir(initial, sizeof(initial))) {
         start = initial;
     }
     if (st->mode == E9UI_FILESELECT_FOLDER) {
-        result = tinyfd_selectFolderDialog(title, start);
+        result = debugger_platform_selectFolderDialog(title, start);
     } else {
-        result = tinyfd_openFileDialog(title, start,
-                                       st->extensionCount,
-                                       (const char * const *)st->extensions,
-                                       NULL, 0);
+        result = debugger_platform_openFileDialog(title,
+                                                  start,
+                                                  st->extensionCount,
+                                                  (const char * const *)st->extensions,
+                                                  NULL,
+                                                  0);
     }
     if (result && *result) {
         e9ui_textbox_setText(st->textbox, result);
@@ -197,14 +193,14 @@ e9ui_fileselect_newFileDialog(e9ui_context_t *ctx, void *user)
         return;
     }
     const char *title = st->label ? st->label : "New File";
-    char *result = NULL;
+    const char *result = NULL;
     char initial[PATH_MAX];
     char dirWithSlash[PATH_MAX + 2];
     const char *start = NULL;
 
     if (e9ui_fileselect_getInitialDir(st, initial, sizeof(initial))) {
         start = initial;
-    } else if (getcwd(initial, sizeof(initial))) {
+    } else if (debugger_platform_getCurrentDir(initial, sizeof(initial))) {
         start = initial;
     }
 
@@ -218,11 +214,11 @@ e9ui_fileselect_newFileDialog(e9ui_context_t *ctx, void *user)
         }
     }
 
-    result = tinyfd_saveFileDialog(title,
-                                   start,
-                                   st->extensionCount,
-                                   (const char * const *)st->extensions,
-                                   NULL);
+    result = debugger_platform_saveFileDialog(title,
+                                              start,
+                                              st->extensionCount,
+                                              (const char * const *)st->extensions,
+                                              NULL);
     if (result && *result) {
         e9ui_textbox_setText(st->textbox, result);
         e9ui_fileselect_notifyChange(ctx, st);

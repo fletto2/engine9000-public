@@ -30,6 +30,7 @@ typedef struct settings_romselect_state {
 typedef struct settings_coresystem_state {
     e9ui_component_t       *neogeoCheckbox;
     e9ui_component_t       *amigaCheckbox;
+    e9ui_component_t       *megadriveCheckbox;
     struct target_iface    *target;
     int                    updating;
     int                    allowRebuild;

@@ -25,10 +25,6 @@
 #include "target.h"
 #define countof(x) (sizeof(x) / sizeof(x[0]))
 
-#ifdef _WIN32
-#include "w64_debugger_platform.h"
-#endif
-
 typedef struct e9k_debug_options {
     int redirectStdout;
     int redirectStderr; 
@@ -66,6 +62,11 @@ typedef struct e9k_amiga_config {
     e9k_libretro_config_t libretro;  
 } e9k_amiga_config_t;
 
+typedef struct e9k_megadrive_config {
+    e9k_libretro_config_t libretro;
+    char romFolder[PATH_MAX];
+} e9k_megadrive_config_t;
+
 typedef struct amiga_debug {
     int *debugDma;
 } amiga_debug_t;
@@ -75,6 +76,7 @@ typedef struct e9k_system_config {
     struct target_iface* target;
     e9k_neogeo_config_t neogeo;
     e9k_amiga_config_t amiga;
+    e9k_megadrive_config_t megadrive;
     int crtEnabled;
 } e9k_system_config_t;
 
@@ -177,6 +179,89 @@ debugger_main(int argc, char **argv);
 
 int
 debugger_platform_pathJoin(char *out, size_t cap, const char *dir, const char *name);
+
+int
+debugger_platform_scanFolder(const char *folder, int (*cb)(const char *path, void *user), void *user);
+
+int
+debugger_platform_caseInsensitivePaths(void);
+
+char
+debugger_platform_preferredPathSeparator(void);
+
+int
+debugger_platform_getExeDir(char *out, size_t cap);
+
+int
+debugger_platform_isExecutableFile(const char *path);
+
+int
+debugger_platform_getHomeDir(char *out, size_t cap);
+
+int
+debugger_platform_getCurrentDir(char *out, size_t cap);
+
+char
+debugger_platform_pathListSeparator(void);
+
+int
+debugger_platform_makeDir(const char *path);
+
+int
+debugger_platform_removeDir(const char *path);
+
+int
+debugger_platform_makeTempFilePath(char *out, size_t cap, const char *prefix, const char *suffix);
+
+int
+debugger_platform_replaceFile(const char *srcPath, const char *dstPath);
+
+int
+debugger_platform_normalizeMouseWheelY(int value);
+
+int
+debugger_platform_glCompositeNeedsOpenGLHint(void);
+
+const char *
+debugger_platform_windowIconAssetPath(void);
+
+const char *
+debugger_platform_selectFolderDialog(const char *title, const char *defaultPath);
+
+const char *
+debugger_platform_openFileDialog(const char *title,
+                                 const char *defaultPathAndFile,
+                                 int numOfFilterPatterns,
+                                 const char * const *filterPatterns,
+                                 const char *singleFilterDescription,
+                                 int allowMultipleSelects);
+
+const char *
+debugger_platform_saveFileDialog(const char *title,
+                                 const char *defaultPathAndFile,
+                                 int numOfFilterPatterns,
+                                 const char * const *filterPatterns,
+                                 const char *singleFilterDescription);
+
+void *
+debugger_platform_loadSharedLibrary(const char *path);
+
+void
+debugger_platform_closeSharedLibrary(void *handle);
+
+void *
+debugger_platform_loadSharedSymbol(void *handle, const char *name);
+
+ssize_t
+debugger_platform_getline(char **lineptr, size_t *n, FILE *stream);
+
+int
+debugger_platform_formatToolCommand(char *out,
+                                    size_t cap,
+                                    const char *toolPath,
+                                    const char *toolArgs,
+                                    const char *targetPath,
+                                    int suppressStderr);
 
 void
 debugger_suppressBreakpointAtPC(void);

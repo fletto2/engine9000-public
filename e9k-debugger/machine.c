@@ -12,9 +12,6 @@
 #include <strings.h>
 #include <stdio.h>
 #include <limits.h>
-#ifdef _WIN32
-#define getline w64_getline
-#endif
 #include "resource.h"
 #include "machine.h"
 #include "debugger.h"
@@ -378,7 +375,7 @@ machine_fillFrame(machine_frame_t *frame, int level, uint32_t addr, const char *
                 char *linebuf = NULL;
                 size_t cap = 0;
                 int idx = 0;
-                while (getline(&linebuf, &cap, f) != -1) {
+                while (debugger_platform_getline(&linebuf, &cap, f) != -1) {
                     idx++;
                     if (idx == line) {
                         size_t len = strlen(linebuf);

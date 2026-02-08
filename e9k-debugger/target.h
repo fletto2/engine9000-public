@@ -8,6 +8,7 @@
 
 #define TARGET_AMIGA  0
 #define TARGET_NEOGEO 1
+#define TARGET_MEGADRIVE 2
 
 struct core_options_modal_state;
 struct e9k_system_config;
@@ -91,6 +92,8 @@ target_isDefaultCorePath(const char *path);
 target_iface_t *target_amiga(void);
 
 target_iface_t *target_neogeo(void);
+
+target_iface_t *target_megadrive(void);
 
 void target_ctor(void);
 

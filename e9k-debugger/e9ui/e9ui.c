@@ -15,19 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <termios.h>
-#include <unistd.h>
-#endif
 #include <time.h>
 #include <limits.h>
 #include <math.h>
-#if !defined(_WIN32) || defined(__MINGW32__)
-#include <readline/readline.h>
-#include <readline/history.h>
-#endif
 
 #include "e9ui.h"
 #include "debugger.h"
@@ -122,11 +112,7 @@ e9ui_applyWindowIcon(SDL_Window *win)
   if (!win) {
     return;
   }
-#ifdef _WIN32
-  const char *icon_asset = "assets/icons/w64/engine9000.ico";
-#else
-  const char *icon_asset = "assets/icons/osx/engine9000.png";
-#endif
+  const char *icon_asset = debugger_platform_windowIconAssetPath();
   char path[PATH_MAX];
   if (!file_getAssetPath(icon_asset, path, sizeof(path))) {
     return;
@@ -1423,12 +1409,13 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     }
     int wantW = (e9ui->layout.winW > 0 ? e9ui->layout.winW : 1000);
     int wantH = (e9ui->layout.winH > 0 ? e9ui->layout.winH : 700);
-    #if defined(__APPLE__) || defined(_WIN32)
-    if (e9ui->glCompositeEnabled) {
+    if (e9ui->glCompositeEnabled && debugger_platform_glCompositeNeedsOpenGLHint()) {
       SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
     }
-    #endif
-    Uint32 winFlags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_OPENGL;
+    Uint32 winFlags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+    if (e9ui->glCompositeEnabled) {
+      winFlags |= SDL_WINDOW_OPENGL;
+    }
     if (startHidden) {
       winFlags |= SDL_WINDOW_HIDDEN;
     }
@@ -1440,7 +1427,13 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     }
     e9ui_applyWindowIcon(win);
     e9ui_updateRefreshRate(win);
-    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED |SDL_RENDERER_PRESENTVSYNC);
+    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!ren) {
+        ren = SDL_CreateRenderer(win, -1, 0);
+    }
+    if (!ren) {
+        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
+    }
     if (!ren) {
         debug_error("SDL_CreateRenderer failed: %s", SDL_GetError());
         SDL_DestroyWindow(win);
@@ -1604,9 +1597,7 @@ e9ui_processEvents(void)
             if (sprite_debug_is_window_id(ev.wheel.windowID)) {
                 continue;
             }
-#ifdef _WIN32
-            ev.wheel.y = -ev.wheel.y;
-#endif
+            ev.wheel.y = debugger_platform_normalizeMouseWheelY(ev.wheel.y);
             int mx = 0;
             int my = 0;
             SDL_GetMouseState(&mx, &my);

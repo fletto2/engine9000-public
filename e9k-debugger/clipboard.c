@@ -9,47 +9,18 @@
 #include <SDL.h>
 #include <SDL_image.h>
 #include <limits.h>
-
-#ifdef _WIN32
-#include <io.h>
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "clipboard.h"
 #include "debug.h"
+#include "debugger.h"
 
 
 static int
 clipboard_makeTempPath(char *out, size_t cap)
 {
-    if (!out || cap == 0) {
-        return 0;
-    }
-#ifdef _WIN32
-    char dir[MAX_PATH];
-    DWORD dir_len = GetTempPathA(sizeof(dir), dir);
-    if (dir_len == 0 || dir_len >= sizeof(dir)) {
-        return 0;
-    }
-    char tmp[MAX_PATH];
-    if (GetTempFileNameA(dir, "e9k", 0, tmp) == 0) {
-        return 0;
-    }
-    int written = snprintf(out, cap, "%s", tmp);
-    return (written > 0 && (size_t)written < cap) ? 1 : 0;
-#else
-    char tmpl[] = "/tmp/e9k-clipboard-XXXXXX.png";
-    int fd = mkstemps(tmpl, 4);
-    if (fd < 0) {
-        return 0;
-    }
-    close(fd);
-    strncpy(out, tmpl, cap - 1);
-    out[cap - 1] = '\0';
-    return 1;
-#endif
+    return debugger_platform_makeTempFilePath(out, cap, "e9k", ".png");
 }
 
 static int
@@ -111,11 +82,7 @@ clipboard_setImageXRGB8888(const uint8_t *data, int width, int height, size_t pi
     if (IMG_SavePNG(surface, path) != 0) {
         debug_error("clipboard: IMG_SavePNG failed: %s", IMG_GetError());
         SDL_FreeSurface(surface);
-#ifdef _WIN32
-        _unlink(path);
-#else
-        unlink(path);
-#endif
+        remove(path);
         return 0;
     }
     SDL_FreeSurface(surface);
@@ -123,18 +90,10 @@ clipboard_setImageXRGB8888(const uint8_t *data, int width, int height, size_t pi
     uint8_t *png_data = NULL;
     size_t png_size = 0;
     if (!clipboard_readFile(path, &png_data, &png_size)) {
-#ifdef _WIN32
-        _unlink(path);
-#else
-        unlink(path);
-#endif
+        remove(path);
         return 0;
     }
-#ifdef _WIN32
-    _unlink(path);
-#else
-    unlink(path);
-#endif
+    remove(path);
 
     int ok = clipboard_setPng(png_data, png_size);
     free(png_data);

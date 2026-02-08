@@ -14,11 +14,8 @@
 #include <string.h>
 
 #include "alloc.h"
+#include "debugger.h"
 #include "libretro_host.h"
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 typedef struct amiga_uae_kv {
     char *key;
@@ -311,14 +308,7 @@ amiga_uaeCompareEntriesByKey(const void *a, const void *b)
 static int
 amiga_uaeWriteAtomically(const char *dstPath, const char *tmpPath)
 {
-#ifdef _WIN32
-    if (!MoveFileExA(tmpPath, dstPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
-        return 0;
-    }
-    return 1;
-#else
-    return rename(tmpPath, dstPath) == 0 ? 1 : 0;
-#endif
+    return debugger_platform_replaceFile(tmpPath, dstPath);
 }
 
 void

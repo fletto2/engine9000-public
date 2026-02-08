@@ -969,7 +969,9 @@ print_debuginfo_objdump_stabs_getSectionSizes(const char *elfPath, uint32_t *out
         return 0;
     }
     char cmd[PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "%s -h '%s'", objdump, elfPath);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump, "-h", elfPath, 0)) {
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return 0;
@@ -1116,7 +1118,10 @@ print_debuginfo_objdump_stabs_loadSymbols(const char *elfPath, print_index_t *in
         return 0;
     }
     char cmd[PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "%s -G '%s'", objdump, elfPath);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump, "-G", elfPath, 0)) {
+        alloc_free(typeDefs);
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         alloc_free(typeDefs);
@@ -1360,8 +1365,13 @@ print_debuginfo_objdump_stabs_loadSymbols(const char *elfPath, print_index_t *in
         }
         if (wantSyms) {
             char symsCmd[PATH_MAX * 2];
-            snprintf(symsCmd, sizeof(symsCmd), "%s --syms '%s'", objdump, elfPath);
-            FILE *sf = popen(symsCmd, "r");
+            if (!debugger_platform_formatToolCommand(symsCmd, sizeof(symsCmd), objdump, "--syms", elfPath, 0)) {
+                symsCmd[0] = '\0';
+            }
+            if (!symsCmd[0]) {
+                wantSyms = 0;
+            }
+            FILE *sf = symsCmd[0] ? popen(symsCmd, "r") : NULL;
             if (sf) {
                 char sline[1024];
                 while (fgets(sline, sizeof(sline), sf)) {
@@ -1549,7 +1559,9 @@ print_debuginfo_objdump_stabs_loadLocals(const char *elfPath, print_index_t *ind
         return 0;
     }
     char cmd[PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "%s -G '%s'", objdump, elfPath);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump, "-G", elfPath, 0)) {
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         alloc_free(typeDefs);

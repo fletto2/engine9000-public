@@ -12,10 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <errno.h>
-#ifdef _WIN32
-#include <direct.h>
-#endif
 
 #include "rom_config.h"
 #include "alloc.h"
@@ -274,19 +270,7 @@ rom_config_uiTestBaseSaveDir(void)
 static int
 rom_config_makeDir(const char *path)
 {
-    if (!path || !*path) {
-        return 0;
-    }
-#ifdef _WIN32
-    if (_mkdir(path) == 0) {
-        return 1;
-    }
-#else
-    if (mkdir(path, 0755) == 0) {
-        return 1;
-    }
-#endif
-    return errno == EEXIST ? 1 : 0;
+    return debugger_platform_makeDir(path);
 }
 
 static const char *

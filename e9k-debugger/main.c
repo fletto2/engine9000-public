@@ -10,11 +10,7 @@
 #include "cli.h"
 
 int
-#ifdef _WIN32
-SDL_main(int argc, char **argv)
-#else
-main(int argc, char **argv)
-#endif
+main_impl(int argc, char **argv)
 {
   int rc = 0;
   int loadTestTempConfig = 0;
@@ -32,4 +28,10 @@ main(int argc, char **argv)
     }
   } while (rc == 2);
   return rc;
+}
+
+int
+main(int argc, char **argv)
+{
+  return main_impl(argc, argv);
 }

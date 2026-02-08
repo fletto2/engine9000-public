@@ -20,10 +20,6 @@
 #include "file.h"
 #include "libretro_host.h"
 
-#ifdef _WIN32
-#define getline w64_getline
-#endif
-
 typedef struct dasm_cache {
   char **lines;
   uint64_t *addrs;
@@ -213,7 +209,7 @@ dasm_geo_preloadText(void)
   char *line = NULL;
   size_t cap = 0;
   ssize_t read = 0;
-  while ((read = getline(&line, &cap, pipe)) != -1) {
+  while ((read = debugger_platform_getline(&line, &cap, pipe)) != -1) {
     while (read > 0 && (line[read - 1] == '\n' || line[read - 1] == '\r')) {
       line[--read] = '\0';
     }

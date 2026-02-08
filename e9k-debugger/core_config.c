@@ -14,12 +14,7 @@
 #include <string.h>
 
 #include "alloc.h"
-
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
+#include "debugger.h"
 
 typedef void (RETRO_CALLCONV *core_config_retro_set_environment_fn_t)(retro_environment_t);
 typedef void (RETRO_CALLCONV *core_config_retro_init_fn_t)(void);
@@ -282,17 +277,7 @@ core_config_environment(unsigned cmd, void *data)
 static void *
 core_config_loadLibSymbol(void *lib, const char *name)
 {
-    if (!lib || !name) {
-        return NULL;
-    }
-#ifdef _WIN32
-    FARPROC symbol = GetProcAddress((HMODULE)lib, name);
-    return (void *)symbol;
-#else
-    dlerror();
-    void *symbol = dlsym(lib, name);
-    return symbol;
-#endif
+    return debugger_platform_loadSharedSymbol(lib, name);
 }
 
 static void
@@ -348,12 +333,7 @@ core_config_probeCoreOptionsV2(const char *corePath,
     }
     memset(out, 0, sizeof(*out));
 
-    void *lib = NULL;
-#ifdef _WIN32
-    lib = (void *)LoadLibraryA(corePath);
-#else
-    lib = dlopen(corePath, RTLD_NOW | RTLD_LOCAL);
-#endif
+    void *lib = debugger_platform_loadSharedLibrary(corePath);
     if (!lib) {
         return false;
     }
@@ -365,11 +345,7 @@ core_config_probeCoreOptionsV2(const char *corePath,
     (void)core_config_loadLibSymbol(lib, "retro_deinit");
 
     if (!setEnvironment) {
-#ifdef _WIN32
-        FreeLibrary((HMODULE)lib);
-#else
-        dlclose(lib);
-#endif
+        debugger_platform_closeSharedLibrary(lib);
         return false;
     }
 
@@ -391,11 +367,7 @@ core_config_probeCoreOptionsV2(const char *corePath,
     }
     core_config_activeProbe = NULL;
 
-#ifdef _WIN32
-    FreeLibrary((HMODULE)lib);
-#else
-    dlclose(lib);
-#endif
+    debugger_platform_closeSharedLibrary(lib);
 
     if (!probe.opts.defs || probe.opts.defCount == 0) {
         core_config_freeV2Options(&probe.opts);

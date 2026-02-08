@@ -44,6 +44,7 @@
 #include "ui.h"
 #include "emu_geo.h"
 #include "emu_ami.h"
+#include "debugger_platform.h"
 #include "amiga_uae_options.h"
 #include "neogeo_core_options.h"
 #include "breakpoints.h"
@@ -306,6 +307,9 @@ debugger_captureBootSaveDirs(void)
     target_iface_t* neogeo = target_neogeo();      
     debugger_copyPath(neogeo->bootSaveDir, sizeof(neogeo->bootSaveDir), debugger.config.neogeo.libretro.saveDir);
     debugger_copyPath(neogeo->bootSystemDir, sizeof(neogeo->bootSystemDir), debugger.config.neogeo.libretro.systemDir);
+    target_iface_t* megadrive = target_megadrive();
+    debugger_copyPath(megadrive->bootSaveDir, sizeof(megadrive->bootSaveDir), debugger.config.megadrive.libretro.saveDir);
+    debugger_copyPath(megadrive->bootSystemDir, sizeof(megadrive->bootSystemDir), debugger.config.megadrive.libretro.systemDir);
 }
 
 void
@@ -367,7 +371,7 @@ debugger_refreshElfValid(void)
 void
 debugger_applyCoreOptions(void)
 {
-    if (debugger.config.neogeo.systemType[0]) {
+    if (target == target_neogeo() && debugger.config.neogeo.systemType[0]) {
         libretro_host_setCoreOption("geolith_system_type", debugger.config.neogeo.systemType);
     } else {
         libretro_host_setCoreOption("geolith_system_type", NULL);
@@ -446,6 +450,8 @@ debugger_ctor(void)
   debugger.config.neogeo.libretro.audioEnabled = 1;
   debugger.config.neogeo.libretro.audioBufferMs = 50;
   debugger.config.neogeo.skipBiosLogo = 0;
+  debugger.config.megadrive.libretro.audioEnabled = 1;
+  debugger.config.megadrive.libretro.audioBufferMs = 50;
   debugger.frameStepPending = 0;
   debugger.vblankCaptureActive = 0;  
   debugger.uiFrameCounter = 0;
@@ -453,6 +459,8 @@ debugger_ctor(void)
   debugger.config.crtEnabled = 1;
   snprintf(debugger.config.neogeo.libretro.toolchainPrefix, sizeof(debugger.config.neogeo.libretro.toolchainPrefix), "m68k-neogeo-elf");
   snprintf(debugger.config.amiga.libretro.toolchainPrefix, sizeof(debugger.config.amiga.libretro.toolchainPrefix), "m68k-amigaos-");
+  snprintf(debugger.config.megadrive.libretro.toolchainPrefix, sizeof(debugger.config.megadrive.libretro.toolchainPrefix), "m68k-elf");
+  debugger_platform_setDefaultsMegaDrive(&debugger.config.megadrive);
   debugger.recordPath[0] = '\0';
   debugger.playbackPath[0] = '\0';
   smoke_test_reset(&debugger);
@@ -467,7 +475,11 @@ debugger_ctor(void)
   debugger.cliResetCfg = 0;
   debugger.cliCoreSystemOverride = 0;
   debugger.cliTargetIndex = TARGET_AMIGA;
+#if E9K_ENABLE_GL_COMPOSITE
   e9ui->glCompositeEnabled = 1;
+#else
+  e9ui->glCompositeEnabled = 0;
+#endif
   e9ui->transition.mode = e9k_transition_random;
   e9ui->transition.fullscreenMode = e9k_transition_none;
   e9ui->transition.fullscreenModeSet = 0;

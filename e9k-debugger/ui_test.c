@@ -8,20 +8,13 @@
 
 #include <SDL.h>
 #include <SDL_image.h>
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-
-#ifdef _WIN32
-#include <windows.h>
-#include <direct.h>
-#else
-#include <dirent.h>
-#include <unistd.h>
-#endif
 
 #include "ui_test.h"
 #include "debugger.h"
@@ -152,26 +145,58 @@ ui_test_getExitCode(void)
 static int
 ui_test_makeDir(const char *path)
 {
+    return debugger_platform_makeDir(path);
+}
+
+static void
+ui_test_basename(const char *path, const char **nameOut)
+{
+    if (!nameOut) {
+        return;
+    }
     if (!path || !*path) {
+        *nameOut = "";
+        return;
+    }
+    const char *slash = strrchr(path, '/');
+    const char *back = strrchr(path, '\\');
+    const char *base = slash > back ? slash : back;
+    *nameOut = base ? base + 1 : path;
+}
+
+static int
+ui_test_hasSuffixCaseInsensitive(const char *name, const char *suffix)
+{
+    if (!name || !suffix) {
         return 0;
     }
-#ifdef _WIN32
-    if (_mkdir(path) == 0) {
-        return 1;
+    size_t nameLen = strlen(name);
+    size_t suffixLen = strlen(suffix);
+    if (suffixLen == 0 || nameLen < suffixLen) {
+        return 0;
     }
-    if (errno == EEXIST) {
-        return 1;
+    const char *tail = name + (nameLen - suffixLen);
+    for (size_t i = 0; i < suffixLen; ++i) {
+        if (tolower((unsigned char)tail[i]) != tolower((unsigned char)suffix[i])) {
+            return 0;
+        }
     }
-    return 0;
-#else
-    if (mkdir(path, 0755) == 0) {
-        return 1;
+    return 1;
+}
+
+static int
+ui_test_clearFolderEntry(const char *path, void *user)
+{
+    (void)user;
+    const char *name = NULL;
+    ui_test_basename(path, &name);
+    if (ui_test_hasSuffixCaseInsensitive(name, ".png") ||
+        ui_test_hasSuffixCaseInsensitive(name, ".inp") ||
+        ui_test_hasSuffixCaseInsensitive(name, ".evt") ||
+        ui_test_hasSuffixCaseInsensitive(name, ".json")) {
+        remove(path);
     }
-    if (errno == EEXIST) {
-        return 1;
-    }
-    return 0;
-#endif
+    return 1;
 }
 
 static void
@@ -180,59 +205,19 @@ ui_test_clearFolder(const char *path)
     if (!path || !*path) {
         return;
     }
-#ifdef _WIN32
-    char pattern[PATH_MAX];
-    snprintf(pattern, sizeof(pattern), "%s\\*.*", path);
-    WIN32_FIND_DATAA data;
-    HANDLE h = FindFirstFileA(pattern, &data);
-    if (h == INVALID_HANDLE_VALUE) {
-        return;
+    debugger_platform_scanFolder(path, ui_test_clearFolderEntry, NULL);
+}
+
+static int
+ui_test_clearPngOnlyEntry(const char *path, void *user)
+{
+    (void)user;
+    const char *name = NULL;
+    ui_test_basename(path, &name);
+    if (ui_test_hasSuffixCaseInsensitive(name, ".png")) {
+        remove(path);
     }
-    do {
-        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
-            continue;
-        }
-        const char *ext = strrchr(data.cFileName, '.');
-        if (!ext) {
-            continue;
-        }
-        if (_stricmp(ext, ".png") != 0 && _stricmp(ext, ".inp") != 0 &&
-            _stricmp(ext, ".evt") != 0 && _stricmp(ext, ".json") != 0) {
-            continue;
-        }
-        char full[PATH_MAX];
-        if (!debugger_platform_pathJoin(full, sizeof(full), path, data.cFileName)) {
-            continue;
-        }
-        DeleteFileA(full);
-    } while (FindNextFileA(h, &data));
-    FindClose(h);
-#else
-    DIR *dir = opendir(path);
-    if (!dir) {
-        return;
-    }
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
-            continue;
-        }
-        const char *ext = strrchr(ent->d_name, '.');
-        if (!ext) {
-            continue;
-        }
-        if (strcmp(ext, ".png") != 0 && strcmp(ext, ".inp") != 0 &&
-            strcmp(ext, ".evt") != 0 && strcmp(ext, ".json") != 0) {
-            continue;
-        }
-        char full[PATH_MAX];
-        if (!debugger_platform_pathJoin(full, sizeof(full), path, ent->d_name)) {
-            continue;
-        }
-        unlink(full);
-    }
-    closedir(dir);
-#endif
+    return 1;
 }
 
 static void
@@ -241,51 +226,19 @@ ui_test_clearPngOnly(const char *path)
     if (!path || !*path) {
         return;
     }
-#ifdef _WIN32
-    char pattern[PATH_MAX];
-    snprintf(pattern, sizeof(pattern), "%s\\*.*", path);
-    WIN32_FIND_DATAA data;
-    HANDLE h = FindFirstFileA(pattern, &data);
-    if (h == INVALID_HANDLE_VALUE) {
-        return;
+    debugger_platform_scanFolder(path, ui_test_clearPngOnlyEntry, NULL);
+}
+
+static int
+ui_test_clearMismatchEntry(const char *path, void *user)
+{
+    (void)user;
+    const char *name = NULL;
+    ui_test_basename(path, &name);
+    if (strstr(name, "mismatch-")) {
+        remove(path);
     }
-    do {
-        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
-            continue;
-        }
-        const char *ext = strrchr(data.cFileName, '.');
-        if (!ext || _stricmp(ext, ".png") != 0) {
-            continue;
-        }
-        char full[PATH_MAX];
-        if (!debugger_platform_pathJoin(full, sizeof(full), path, data.cFileName)) {
-            continue;
-        }
-        DeleteFileA(full);
-    } while (FindNextFileA(h, &data));
-    FindClose(h);
-#else
-    DIR *dir = opendir(path);
-    if (!dir) {
-        return;
-    }
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
-            continue;
-        }
-        const char *ext = strrchr(ent->d_name, '.');
-        if (!ext || strcmp(ext, ".png") != 0) {
-            continue;
-        }
-        char full[PATH_MAX];
-        if (!debugger_platform_pathJoin(full, sizeof(full), path, ent->d_name)) {
-            continue;
-        }
-        unlink(full);
-    }
-    closedir(dir);
-#endif
+    return 1;
 }
 
 static void
@@ -294,49 +247,7 @@ ui_test_clearMismatchArtifacts(const char *path)
     if (!path || !*path) {
         return;
     }
-#ifdef _WIN32
-    char pattern[PATH_MAX];
-    snprintf(pattern, sizeof(pattern), "%s\\*.*", path);
-    WIN32_FIND_DATAA data;
-    HANDLE h = FindFirstFileA(pattern, &data);
-    if (h == INVALID_HANDLE_VALUE) {
-        return;
-    }
-    do {
-        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
-            continue;
-        }
-        if (!strstr(data.cFileName, "mismatch-")) {
-            continue;
-        }
-        char full[PATH_MAX];
-        if (!debugger_platform_pathJoin(full, sizeof(full), path, data.cFileName)) {
-            continue;
-        }
-        DeleteFileA(full);
-    } while (FindNextFileA(h, &data));
-    FindClose(h);
-#else
-    DIR *dir = opendir(path);
-    if (!dir) {
-        return;
-    }
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
-            continue;
-        }
-        if (!strstr(ent->d_name, "mismatch-")) {
-            continue;
-        }
-        char full[PATH_MAX];
-        if (!debugger_platform_pathJoin(full, sizeof(full), path, ent->d_name)) {
-            continue;
-        }
-        unlink(full);
-    }
-    closedir(dir);
-#endif
+    debugger_platform_scanFolder(path, ui_test_clearMismatchEntry, NULL);
 }
 
 int
@@ -514,50 +425,8 @@ ui_test_clearTempConfigOnFirstRun(void)
         if (written > 0 && (size_t)written < sizeof(tempSaveDir)) {
             struct stat st;
             if (stat(tempSaveDir, &st) == 0 && S_ISDIR(st.st_mode)) {
-#ifdef _WIN32
-                char pattern[PATH_MAX];
-                snprintf(pattern, sizeof(pattern), "%s\\*.*", tempSaveDir);
-                WIN32_FIND_DATAA data;
-                HANDLE h = FindFirstFileA(pattern, &data);
-                if (h != INVALID_HANDLE_VALUE) {
-                    do {
-                        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
-                            continue;
-                        }
-                        char full[PATH_MAX];
-                        if (!debugger_platform_pathJoin(full, sizeof(full), tempSaveDir, data.cFileName)) {
-                            continue;
-                        }
-                        DeleteFileA(full);
-                    } while (FindNextFileA(h, &data));
-                    FindClose(h);
-                }
-                RemoveDirectoryA(tempSaveDir);
-#else
-                DIR *dir = opendir(tempSaveDir);
-                if (dir) {
-                    struct dirent *ent;
-                    while ((ent = readdir(dir)) != NULL) {
-                        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
-                            continue;
-                        }
-                        char full[PATH_MAX];
-                        if (!debugger_platform_pathJoin(full, sizeof(full), tempSaveDir, ent->d_name)) {
-                            continue;
-                        }
-                        struct stat entSt;
-                        if (stat(full, &entSt) != 0) {
-                            continue;
-                        }
-                        if (S_ISDIR(entSt.st_mode)) {
-                            continue;
-                        }
-                        unlink(full);
-                    }
-                    closedir(dir);
-                }
-                rmdir(tempSaveDir);
-#endif
+                debugger_platform_scanFolder(tempSaveDir, ui_test_clearFolderEntry, NULL);
+                debugger_platform_removeDir(tempSaveDir);
             }
         }
     }
@@ -764,13 +633,8 @@ ui_test_writeDiffScript(uint64_t frame, const char *refPath, const char *testPat
         return 0;
     }
 
-#ifdef _WIN32
     char scriptName[128];
     ui_test_formatMismatchName(scriptName, sizeof(scriptName), frame, ".cmd");
-#else
-    char scriptName[128];
-    ui_test_formatMismatchName(scriptName, sizeof(scriptName), frame, ".sh");
-#endif
     char scriptPath[PATH_MAX];
     if (!debugger_platform_pathJoin(scriptPath, sizeof(scriptPath), ui_test_folder, scriptName)) {
         return 0;
@@ -780,16 +644,12 @@ ui_test_writeDiffScript(uint64_t frame, const char *refPath, const char *testPat
     if (!fp) {
         return 0;
     }
-#ifndef _WIN32
-    fprintf(fp, "#!/bin/sh\n");
-#endif
     fprintf(fp, "magick compare -metric AE \"%s\" \"%s\" \"%s\"\n",
             refPath, testPath, comparePath);
     fprintf(fp, "magick montage \"%s\" \"%s\" \"%s\" -tile 3x1 -geometry +0+0 \"%s\"\n",
             refPath, testPath, comparePath, montagePath);
     fclose(fp);
 
-#ifdef _WIN32
     char cmdCompare[PATH_MAX * 3];
     char cmdMontage[PATH_MAX * 4];
     snprintf(cmdCompare, sizeof(cmdCompare),
@@ -798,16 +658,6 @@ ui_test_writeDiffScript(uint64_t frame, const char *refPath, const char *testPat
     snprintf(cmdMontage, sizeof(cmdMontage),
              "magick montage \"%s\" \"%s\" \"%s\" -tile 3x1 -geometry +0+0 \"%s\"",
              refPath, testPath, comparePath, montagePath);
-#else
-    char cmdCompare[PATH_MAX * 3];
-    char cmdMontage[PATH_MAX * 4];
-    snprintf(cmdCompare, sizeof(cmdCompare),
-             "magick compare -metric AE \"%s\" \"%s\" \"%s\" >/dev/null 2>&1",
-             refPath, testPath, comparePath);
-    snprintf(cmdMontage, sizeof(cmdMontage),
-             "magick montage \"%s\" \"%s\" \"%s\" -tile 3x1 -geometry +0+0 \"%s\" >/dev/null 2>&1",
-             refPath, testPath, comparePath, montagePath);
-#endif
     system(cmdCompare);
     system(cmdMontage);
     remove(scriptPath);

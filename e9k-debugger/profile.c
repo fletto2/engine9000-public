@@ -12,11 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#ifndef _WIN32
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
 
 #include "e9ui.h"
 #include "profile.h"
@@ -101,24 +96,7 @@ profile_defaultJsonPath(char *out, size_t cap)
     if (!out || cap == 0) {
         return 0;
     }
-#ifdef _WIN32
-    char tmp[L_tmpnam];
-    if (!tmpnam(tmp)) {
-        return 0;
-    }
-    int written = snprintf(out, cap, "%s.json", tmp);
-    return (written > 0 && (size_t)written < cap) ? 1 : 0;
-#else
-    char tmpl[] = "/tmp/e9k-profile-XXXXXX.json";
-    int fd = mkstemps(tmpl, 5);
-    if (fd < 0) {
-        return 0;
-    }
-    close(fd);
-    strncpy(out, tmpl, cap - 1);
-    out[cap - 1] = '\0';
-    return 1;
-#endif
+    return debugger_platform_makeTempFilePath(out, cap, "e9k-profile", ".json");
 }
 
 

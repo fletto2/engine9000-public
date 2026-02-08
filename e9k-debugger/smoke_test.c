@@ -9,19 +9,12 @@
 
 #include <SDL.h>
 #include <SDL_image.h>
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-
-#ifdef _WIN32
-#include <windows.h>
-#include <direct.h>
-#else
-#include <dirent.h>
-#include <unistd.h>
-#endif
 
 #include "smoke_test.h"
 #include "debugger.h"
@@ -81,26 +74,47 @@ smoke_test_setOpenOnFail(int enable)
 static int
 smoke_test_makeDir(const char *path)
 {
-    if (!path || !*path) {
+    return debugger_platform_makeDir(path);
+}
+
+static int
+smoke_test_hasSuffix(const char *name, const char *suffix)
+{
+    if (!name || !suffix) {
         return 0;
     }
-#ifdef _WIN32
-    if (_mkdir(path) == 0) {
+    size_t nameLen = strlen(name);
+    size_t suffixLen = strlen(suffix);
+    if (suffixLen == 0 || nameLen < suffixLen) {
+        return 0;
+    }
+    const char *tail = name + (nameLen - suffixLen);
+    if (!debugger_platform_caseInsensitivePaths()) {
+        return strcmp(tail, suffix) == 0 ? 1 : 0;
+    }
+    for (size_t i = 0; i < suffixLen; ++i) {
+        if (tolower((unsigned char)tail[i]) != tolower((unsigned char)suffix[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+smoke_test_clearFolderEntry(const char *path, void *user)
+{
+    (void)user;
+    if (!path || !*path) {
         return 1;
     }
-    if (errno == EEXIST) {
-        return 1;
+    const char *slash = strrchr(path, '/');
+    const char *back = strrchr(path, '\\');
+    const char *base = slash > back ? slash : back;
+    const char *name = base ? base + 1 : path;
+    if (smoke_test_hasSuffix(name, ".png") || smoke_test_hasSuffix(name, ".inp")) {
+        remove(path);
     }
-    return 0;
-#else
-    if (mkdir(path, 0755) == 0) {
-        return 1;
-    }
-    if (errno == EEXIST) {
-        return 1;
-    }
-    return 0;
-#endif
+    return 1;
 }
 
 static void
@@ -109,57 +123,7 @@ smoke_test_clearFolder(const char *path)
     if (!path || !*path) {
         return;
     }
-#ifdef _WIN32
-    char pattern[PATH_MAX];
-    snprintf(pattern, sizeof(pattern), "%s\\*.*", path);
-    WIN32_FIND_DATAA data;
-    HANDLE h = FindFirstFileA(pattern, &data);
-    if (h == INVALID_HANDLE_VALUE) {
-        return;
-    }
-    do {
-        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
-            continue;
-        }
-        const char *ext = strrchr(data.cFileName, '.');
-        if (!ext) {
-            continue;
-        }
-        if (_stricmp(ext, ".png") != 0 && _stricmp(ext, ".inp") != 0) {
-            continue;
-        }
-        char full[PATH_MAX];
-        if (!debugger_platform_pathJoin(full, sizeof(full), path, data.cFileName)) {
-            continue;
-        }
-        DeleteFileA(full);
-    } while (FindNextFileA(h, &data));
-    FindClose(h);
-#else
-    DIR *dir = opendir(path);
-    if (!dir) {
-        return;
-    }
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
-            continue;
-        }
-        const char *ext = strrchr(ent->d_name, '.');
-        if (!ext) {
-            continue;
-        }
-        if (strcmp(ext, ".png") != 0 && strcmp(ext, ".inp") != 0) {
-            continue;
-        }
-        char full[PATH_MAX];
-        if (!debugger_platform_pathJoin(full, sizeof(full), path, ent->d_name)) {
-            continue;
-        }
-        unlink(full);
-    }
-    closedir(dir);
-#endif
+    debugger_platform_scanFolder(path, smoke_test_clearFolderEntry, NULL);
 }
 
 int
@@ -328,13 +292,8 @@ smoke_test_writeDiffScript(uint64_t frame, const char *refPath, char *outMontage
     if (!debugger_platform_pathJoin(montagePath, sizeof(montagePath), smoke_test_folder, montageName)) {
         return 0;
     }
-#ifdef _WIN32
     char scriptName[64];
     snprintf(scriptName, sizeof(scriptName), "diff-%llu.cmd", (unsigned long long)frame);
-#else
-    char scriptName[64];
-    snprintf(scriptName, sizeof(scriptName), "diff-%llu.sh", (unsigned long long)frame);
-#endif
     char scriptPath[PATH_MAX];
     if (!debugger_platform_pathJoin(scriptPath, sizeof(scriptPath), smoke_test_folder, scriptName)) {
         return 0;
@@ -343,15 +302,11 @@ smoke_test_writeDiffScript(uint64_t frame, const char *refPath, char *outMontage
     if (!fp) {
         return 0;
     }
-#ifndef _WIN32
-    fprintf(fp, "#!/bin/sh\n");
-#endif
     fprintf(fp, "magick compare -metric AE \"%s\" \"%s\" \"%s\"\n",
             refPath, testPath, comparePath);
     fprintf(fp, "magick montage \"%s\" \"%s\" \"%s\" -tile 3x1 -geometry +0+0 \"%s\"\n",
             refPath, testPath, comparePath, montagePath);
     fclose(fp);
-#ifdef _WIN32
     char cmdCompare[PATH_MAX * 3];
     char cmdMontage[PATH_MAX * 4];
     snprintf(cmdCompare, sizeof(cmdCompare),
@@ -360,16 +315,6 @@ smoke_test_writeDiffScript(uint64_t frame, const char *refPath, char *outMontage
     snprintf(cmdMontage, sizeof(cmdMontage),
              "magick montage \"%s\" \"%s\" \"%s\" -tile 3x1 -geometry +0+0 \"%s\"",
              refPath, testPath, comparePath, montagePath);
-#else
-    char cmdCompare[PATH_MAX * 3];
-    char cmdMontage[PATH_MAX * 4];
-    snprintf(cmdCompare, sizeof(cmdCompare),
-             "magick compare -metric AE \"%s\" \"%s\" \"%s\" >/dev/null 2>&1",
-             refPath, testPath, comparePath);
-    snprintf(cmdMontage, sizeof(cmdMontage),
-             "magick montage \"%s\" \"%s\" \"%s\" -tile 3x1 -geometry +0+0 \"%s\" >/dev/null 2>&1",
-             refPath, testPath, comparePath, montagePath);
-#endif
     system(cmdCompare);
     system(cmdMontage);
     if (outMontage && cap > 0) {
@@ -385,17 +330,11 @@ smoke_test_openImage(const char *path)
     if (!path || !*path) {
         return;
     }
-#ifdef _WIN32
-    char cmd[PATH_MAX + 32];
-    snprintf(cmd, sizeof(cmd), "start \"\" \"%s\"", path);
-#elif defined(__APPLE__)
-    char cmd[PATH_MAX + 16];
-    snprintf(cmd, sizeof(cmd), "open \"%s\" >/dev/null 2>&1", path);
-#else
-    char cmd[PATH_MAX + 32];
-    snprintf(cmd, sizeof(cmd), "xdg-open \"%s\" >/dev/null 2>&1", path);
-#endif
-    system(cmd);
+    char url[PATH_MAX + 16];
+    snprintf(url, sizeof(url), "file://%s", path);
+    if (SDL_OpenURL(url) != 0) {
+        SDL_OpenURL(path);
+    }
 }
 
 static int

@@ -13,50 +13,14 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/stat.h>
-
-#ifdef _WIN32
-#include <io.h>
-#include <direct.h>
-#endif
 #include "debugger.h"
-
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
 
 #include "file.h"
 
 int
 file_getExeDir(char *out, size_t cap)
 {
-    if (!out || cap == 0) return 0;
-#ifdef _WIN32
-    return w64_getExeDir(out, cap);
-#elif defined(__APPLE__)
-    char path[PATH_MAX]; uint32_t sz = (uint32_t)sizeof(path);
-    if (_NSGetExecutablePath(path, &sz) == 0) {
-        char rpath[PATH_MAX];
-        const char *pp = realpath(path, rpath) ? rpath : path;
-        size_t len = strlen(pp);
-        while (len > 0 && pp[len-1] != '/') len--;
-        if (len == 0) return 0;
-        if (len >= cap) len = cap - 1;
-        memcpy(out, pp, len); out[len] = '\0';
-        return 1;
-    }
-#else
-    char path[PATH_MAX]; ssize_t r = readlink("/proc/self/exe", path, sizeof(path)-1);
-    if (r > 0) {
-        path[r] = '\0';
-        size_t len = (size_t)r;
-        while (len > 0 && path[len-1] != '/') len--;
-        if (len == 0) return 0;
-        if (len >= cap) len = cap - 1;
-        memcpy(out, path, len); out[len] = '\0';
-        return 1;
-    }
-#endif
-    return 0;
+    return debugger_platform_getExeDir(out, cap);
 }
 
 int
@@ -79,27 +43,14 @@ file_getAssetPath(const char *rel, char *out, size_t cap)
 static int
 file_isExecutableFile(const char *p)
 {
-    if (!p || !*p) return 0;
-    struct stat st;
-    if (stat(p, &st) != 0) return 0;
-    if (!S_ISREG(st.st_mode)) return 0;
-#ifdef _WIN32
-    if (_access(p, 0) != 0) return 0;
-#else
-    if (access(p, X_OK) != 0) return 0;
-#endif
-    return 1;
+    return debugger_platform_isExecutableFile(p);
 }
 
 int
 file_findInPath(const char *prog, char *out, size_t cap)
 {
     if (!prog || !*prog || !out || cap == 0) return 0;
-#ifdef _WIN32
-    const char path_sep = ';';
-#else
-    const char path_sep = ':';
-#endif
+    const char path_sep = debugger_platform_pathListSeparator();
     // If prog contains a path separator, check directly
     if (strchr(prog, '/') || strchr(prog, '\\')) {
         if (file_isExecutableFile(prog)) {
@@ -113,11 +64,7 @@ file_findInPath(const char *prog, char *out, size_t cap)
     const char *p = path; const char *seg = p;
     char buf[PATH_MAX];
     while (*p) {
-#ifdef _WIN32
         if (*p == path_sep) {
-#else
-        if (*p == path_sep) {
-#endif
             size_t sl = (size_t)(p - seg);
             if (sl == 0) {
                 // Empty segment means current directory

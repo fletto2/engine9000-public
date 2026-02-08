@@ -399,7 +399,9 @@ console_cmd_resolveSymbolStabsFun(const char *elf, const char *symbol, uint32_t 
         return 0;
     }
     char cmd[PATH_MAX * 2];
-    snprintf(cmd, sizeof(cmd), "%s -G '%s'", objdump, elf);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump, "-G", elf, 0)) {
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return 0;
@@ -474,7 +476,10 @@ console_cmd_resolveSymbol(const char *elf, const char *symbol, uint32_t *out_add
         debug_error("break: failed to resolve objdump");
         return 0;
     }
-    snprintf(cmd, sizeof(cmd), "%s --syms '%s'", objdump, elf);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump, "--syms", elf, 0)) {
+        debug_error("break: failed to build objdump command");
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         debug_error("break: failed to run objdump");
@@ -531,7 +536,10 @@ console_cmd_resolveFileLine(const char *elf, const char *file, int line_no, uint
         debug_error("break: failed to resolve objdump");
         return 0;
     }
-    snprintf(cmd, sizeof(cmd), "%s -l -d '%s'", objdump, elf);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump, "-l -d", elf, 0)) {
+        debug_error("break: failed to build objdump command");
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         debug_error("break: failed to run objdump");
@@ -1492,7 +1500,9 @@ console_cmd_completeBreak(const char *prefix, char ***out_list, int *out_count)
     if (!debugger_toolchainBuildBinary(objdump, sizeof(objdump), "objdump")) {
         return 0;
     }
-    snprintf(cmd, sizeof(cmd), "%s --syms '%s'", objdump, elf);
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump, "--syms", elf, 0)) {
+        return 0;
+    }
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return 0;
