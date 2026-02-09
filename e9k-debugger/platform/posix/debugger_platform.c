@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #ifdef __APPLE__
@@ -28,6 +29,54 @@
 static const char debugger_testConfigName[] = ".e9k-debugger.cfg";
 static const char debugger_testTempConfigPrefix[] = "e9k-debugger-test-";
 static const char debugger_testTempConfigSuffix[] = ".cfg";
+static int debugger_platform_tinyfdInitialized = 0;
+
+#ifdef __linux__
+static int
+debugger_platform_zenityRun(const char *command, char *outPath, size_t outCap)
+{
+    FILE *pipe;
+    int status;
+
+    if (!command || !*command || !outPath || outCap == 0) {
+        return 0;
+    }
+    outPath[0] = '\0';
+    pipe = popen(command, "r");
+    if (!pipe) {
+        return 0;
+    }
+    if (fgets(outPath, (int)outCap, pipe)) {
+        size_t len = strlen(outPath);
+        while (len > 0 && (outPath[len - 1] == '\n' || outPath[len - 1] == '\r')) {
+            outPath[--len] = '\0';
+        }
+    }
+    status = pclose(pipe);
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+        outPath[0] = '\0';
+        return 0;
+    }
+    return 1;
+}
+#endif
+
+static void
+debugger_platform_tinyfdInit(void)
+{
+    if (debugger_platform_tinyfdInitialized) {
+        return;
+    }
+    debugger_platform_tinyfdInitialized = 1;
+    tinyfd_allowCursesDialogs = 0;
+    tinyfd_forceConsole = 0;
+
+    const char *verboseEnv = getenv("E9K_TINYFD_VERBOSE");
+    if (verboseEnv && *verboseEnv && strcmp(verboseEnv, "0") != 0) {
+        tinyfd_verbose = 1;
+        tinyfd_silent = 0;
+    }
+}
 
 static int
 debugger_platform_configExists(const char *path)
@@ -365,6 +414,13 @@ debugger_platform_windowIconAssetPath(void)
 const char *
 debugger_platform_selectFolderDialog(const char *title, const char *defaultPath)
 {
+#ifdef __linux__
+    static char zenityPath[PATH_MAX];
+    if (debugger_platform_zenityRun("zenity --file-selection --directory 2>/dev/null", zenityPath, sizeof(zenityPath))) {
+        return zenityPath[0] ? zenityPath : NULL;
+    }
+#endif
+    debugger_platform_tinyfdInit();
     return tinyfd_selectFolderDialog(title, defaultPath);
 }
 
@@ -376,6 +432,17 @@ debugger_platform_openFileDialog(const char *title,
                                  const char *singleFilterDescription,
                                  int allowMultipleSelects)
 {
+#ifdef __linux__
+    static char zenityPath[PATH_MAX];
+    (void)numOfFilterPatterns;
+    (void)filterPatterns;
+    (void)singleFilterDescription;
+    (void)allowMultipleSelects;
+    if (debugger_platform_zenityRun("zenity --file-selection 2>/dev/null", zenityPath, sizeof(zenityPath))) {
+        return zenityPath[0] ? zenityPath : NULL;
+    }
+#endif
+    debugger_platform_tinyfdInit();
     return tinyfd_openFileDialog(title,
                                  defaultPathAndFile,
                                  numOfFilterPatterns,
@@ -391,6 +458,16 @@ debugger_platform_saveFileDialog(const char *title,
                                  const char * const *filterPatterns,
                                  const char *singleFilterDescription)
 {
+#ifdef __linux__
+    static char zenityPath[PATH_MAX];
+    (void)numOfFilterPatterns;
+    (void)filterPatterns;
+    (void)singleFilterDescription;
+    if (debugger_platform_zenityRun("zenity --file-selection --save --confirm-overwrite 2>/dev/null", zenityPath, sizeof(zenityPath))) {
+        return zenityPath[0] ? zenityPath : NULL;
+    }
+#endif
+    debugger_platform_tinyfdInit();
     return tinyfd_saveFileDialog(title,
                                  defaultPathAndFile,
                                  numOfFilterPatterns,
