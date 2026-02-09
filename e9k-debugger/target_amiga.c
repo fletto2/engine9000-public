@@ -205,10 +205,21 @@ static const char *
 target_amiga_defaultCorePath(void)
 {
   static char corePath[PATH_MAX];
-  if (file_getAssetPath("system/ami9000.dylib", corePath, sizeof(corePath))) {
+  static char fallbackPath[PATH_MAX];
+  char relPath[PATH_MAX];
+#if defined(_WIN32)
+  const char *ext = "dll";
+#elif defined(__APPLE__)
+  const char *ext = "dylib";
+#else
+  const char *ext = "so";
+#endif
+  snprintf(relPath, sizeof(relPath), "system/ami9000.%s", ext);
+  if (file_getAssetPath(relPath, corePath, sizeof(corePath))) {
     return corePath;
   }
-  return "./system/ami9000.dylib";
+  snprintf(fallbackPath, sizeof(fallbackPath), "./system/ami9000.%s", ext);
+  return fallbackPath;
   
 }
 

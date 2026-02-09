@@ -1,15 +1,9 @@
 # ENGINE9000 68k Retro Debugger/Profiler
 
-make, gcc, libsdl2-dev, libsdl2-ttf-dev, libsdl2-image-dev, libreadline-dev
-
-
-Amiga/Neo Geo debugger/profiler - under heavy development so likely to be unstable for the time being. 
+Amiga/Neo Geo/Mega Drive debugger/profiler - under heavy development so likely to be unstable for the time being. 
 
 Expect file format changes, regressions and other incompatibilities with new versions. 
 
-NOTE: You might see automated tests in this repo - these are currently not useable (for anyone but me) as they require data that's not yet in this repo - stay tuned
-
-The UI is custom SDL2, so expect some weird UI experiences.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=Q24F6S8J57U">
@@ -29,21 +23,24 @@ Project layout
 - `geo9000` - Neo Geo emulator - (forked from `geolith-libretro` https://github.com/libretro/geolith-libretro)
 - `ami9000` - Amiga emulator - (fored from `libretro-uae` https://github.com/libretro/libretro-uae)
 
-Supported platforms:
+Platform support:
 
 - macOS
 - Windows via MinGW (`x86_64-w64-mingw32`); so far only tested by cross-compiling from macOS
+- Linux
+
+NOTE: Testing on Linux/Windows builds has been minimal at this stage.
 
 ---
 
 ## Overview
 
 - ASM/C Source level debugger (ELF or stabs (bebbo gcc))
-- Amiga/Neo Geo emulators with frame level rewind/fast forward and simple CRT shader
+- Amiga/Neo Geo/Mega Drive emulators with frame level rewind/fast forward and simple CRT shader
 - Source level profiler
 - Trainer/cheat mode
 - Smoke tester (record scenarios, replay, check all video frames identical)
-- Fake Neo Geo peripherals for debug console and profile checkpoints
+- Debug peripherals for debug console and profile checkpoints
 - Neo Geo Sprite debug visualiser
 
 ### Debugging Features
@@ -73,13 +70,13 @@ Supported platforms:
 - Frame reverse
 - Print variables
 
-### Neo Geo Fake Peripherals
+### Neo Geo Debug Peripherals
 
 - `0xFFFF0` - characters written to this address will be output in the console and terminal
 - `0xFFFEC` - writing a checkpoint slot from 0-64 for checkpoint profiling stats
 - These overlay with ROM addresses - other emulators or real neo geo might crash if you use these
 
-### Amiga Fake Peripherals
+### Amiga Debug Peripherals
 
 - `0xFC0000` - characters written to this address will be output in the console and terminal
 - `0xFC0004` - writing a long word to this address sets this as the base address of the .text section
@@ -607,6 +604,10 @@ This project contains files with various licenses, unless otherwise specified as
 ---
 
 ## Building
+
+To enable Mega Drive core first run the following command to pull mega9000 git submodule.
+
+- `make mega9000-support`
 
 ### macOS
 
