@@ -315,8 +315,9 @@ smoke_test_writeDiffScript(uint64_t frame, const char *refPath, char *outMontage
     snprintf(cmdMontage, sizeof(cmdMontage),
              "magick montage \"%s\" \"%s\" \"%s\" -tile 3x1 -geometry +0+0 \"%s\"",
              refPath, testPath, comparePath, montagePath);
-    system(cmdCompare);
-    system(cmdMontage);
+    int ignored = system(cmdCompare);
+    ignored = system(cmdMontage);
+    (void)ignored;
     if (outMontage && cap > 0) {
         strncpy(outMontage, montagePath, cap - 1);
         outMontage[cap - 1] = '\0';

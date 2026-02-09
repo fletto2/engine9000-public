@@ -658,8 +658,9 @@ ui_test_writeDiffScript(uint64_t frame, const char *refPath, const char *testPat
     snprintf(cmdMontage, sizeof(cmdMontage),
              "magick montage \"%s\" \"%s\" \"%s\" -tile 3x1 -geometry +0+0 \"%s\"",
              refPath, testPath, comparePath, montagePath);
-    system(cmdCompare);
-    system(cmdMontage);
+    int ignored = system(cmdCompare);
+    ignored = system(cmdMontage);
+    (void)ignored;
     remove(scriptPath);
 
     if (outMontage && cap > 0) {

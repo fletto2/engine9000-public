@@ -1,5 +1,8 @@
 # ENGINE9000 68k Retro Debugger/Profiler
 
+make, gcc, libsdl2-dev, libsdl2-ttf-dev, libsdl2-image-dev, libreadline-dev
+
+
 Amiga/Neo Geo debugger/profiler - under heavy development so likely to be unstable for the time being. 
 
 Expect file format changes, regressions and other incompatibilities with new versions. 
@@ -463,7 +466,7 @@ SYNOPSIS
 DESCRIPTION  
 Shows or sets the current runtime base address for each section (`text`, `data`, `bss`). These bases are used to translate between:
 	
- - **Runtime addresses** (what the core uses / what you read/write in memory), and
+
  - **Debug/symbol addresses** (what external resolvers like `addr2line`/`readelf`/`objdump` expect)
    
 In general:
@@ -521,11 +524,6 @@ In this repo, the default `./system` directory corresponds to `e9k-debugger/syst
 - Kickstart ROMS are not included.
 - A complete set of WHDLoad kickstart roms in your system folder is the best option.
 - Otherwise manually settting kickstart roms in the .uae file is required.
-
-### Emulator Platform defaults:
-
-- macOS default core paths: `./system/geo9000.dylib` for Neo Geo and `./system/ami9000.dylib` for Amiga
-- Windows default core paths: `./system/geo9000.dll` for Neo Geo and `./system/ami9000.dll` for Amiga
 
 ### Toolchain 
 

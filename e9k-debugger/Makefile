@@ -14,6 +14,9 @@ INCLUDES += -I.
 DEBUG_FLAGS=-g -fno-omit-frame-pointer -fsanitize=address,undefined 
 CFLAGS += $(DEBUG_FLAGS) -Wall -Wextra -std=c99 -MMD -MP -Werror -pthread
 CFLAGS += -O2 -flto
+ifeq ($(UNAME_S),Linux)
+CFLAGS += -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
+endif
 CFLAGS += -DE9K_ENABLE_MEGADRIVE=$(E9K_ENABLE_MEGADRIVE)
 CFLAGS += -DE9K_ENABLE_GL_COMPOSITE=$(E9K_ENABLE_GL_COMPOSITE)
 CFLAGS += $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_image SDL2_ttf libpng)
@@ -24,6 +27,7 @@ LIBS   += -ldl
 LIBS   += -fsanitize=address,undefined
 LIBS   += -lreadline
 LIBS   += -pthread
+LIBS   += -lm
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 LIBS   += -framework Cocoa
@@ -65,6 +69,7 @@ E9UI_SRCS=e9ui_textbox.c e9ui_text_cache.c e9ui_text_select.c e9ui_text.c e9ui_s
 	  e9ui_theme.c e9ui_link.c e9ui_modal.c e9ui_child.c 
 
 PLATFORM_POSIX_SRCS = platform/posix/addr2line.c platform/posix/analyse.c platform/posix/profile_view.c platform/posix/signal.c platform/posix/debugger_platform.c
+PLATFORM_LINUX_SRCS = platform/posix/clipboard.c
 PLATFORM_W64_SRCS = platform/w64/addr2line.c platform/w64/analyse.c platform/w64/profile_view.c platform/w64/signal.c platform/w64/debugger_platform.c platform/w64/clipboard.c
 PLATFORM_MACOS_SRCS = platform/macos/clipboard.m platform/macos/tinyfiledialogs.m
 
@@ -82,7 +87,7 @@ endif
 ifeq ($(UNAME_S),Darwin)
 SRCS += $(PLATFORM_POSIX_SRCS) $(PLATFORM_MACOS_SRCS)
 else
-SRCS += $(PLATFORM_POSIX_SRCS)
+SRCS += $(PLATFORM_POSIX_SRCS) $(PLATFORM_LINUX_SRCS)
 endif
 SRCS += syntax_highlight.c
 
@@ -102,7 +107,7 @@ SRCS += $(TREE_SITTER_C_DIR)/src/parser.c
 endif
 endif
 
-W64_SRCS = $(filter-out $(PLATFORM_POSIX_SRCS) $(PLATFORM_MACOS_SRCS),$(SRCS)) $(PLATFORM_W64_SRCS) $(addprefix e9ui/, $(E9UI_SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
+W64_SRCS = $(filter-out $(PLATFORM_POSIX_SRCS) $(PLATFORM_LINUX_SRCS) $(PLATFORM_MACOS_SRCS),$(SRCS)) $(PLATFORM_W64_SRCS) $(addprefix e9ui/, $(E9UI_SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
 SRCS_C = $(filter %.c,$(SRCS)) $(addprefix e9ui/, $(E9UI_SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
 SRCS_M = $(filter %.m,$(SRCS))
 OBJS = $(SRCS_C:%.c=$(BUILD_DIR)/%.o) $(SRCS_M:%.m=$(BUILD_DIR)/%.o)
