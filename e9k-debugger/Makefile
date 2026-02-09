@@ -11,6 +11,8 @@ INCLUDES += -I./e9ui
 INCLUDES += -I./lib9000
 INCLUDES += -I.
 
+UNAME_S := $(shell uname -s)
+
 DEBUG_FLAGS=-g -fno-omit-frame-pointer -fsanitize=address,undefined 
 CFLAGS += $(DEBUG_FLAGS) -Wall -Wextra -std=c99 -MMD -MP -Werror -pthread
 CFLAGS += -O2 -flto
@@ -28,7 +30,7 @@ LIBS   += -fsanitize=address,undefined
 LIBS   += -lreadline
 LIBS   += -pthread
 LIBS   += -lm
-UNAME_S := $(shell uname -s)
+
 ifeq ($(UNAME_S),Darwin)
 LIBS   += -framework Cocoa
 ifeq ($(E9K_ENABLE_GL_COMPOSITE),1)
