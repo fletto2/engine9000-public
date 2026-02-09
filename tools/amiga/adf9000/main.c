@@ -40,31 +40,49 @@ typedef struct
 } adf_tool_amiga_time;
 
 static time_t
+adf_tool_daysFromCivil(int year, unsigned month, unsigned day)
+{
+    int64_t era;
+    unsigned yoe;
+    unsigned doy;
+    unsigned doe;
+    int adjustedYear;
+    int adjustedMonth;
+    int monthPrime;
+
+    adjustedYear = year;
+    adjustedMonth = (int)month;
+    adjustedYear -= adjustedMonth <= 2;
+    era = (adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400;
+    yoe = (unsigned)(adjustedYear - (int)(era * 400));
+    monthPrime = adjustedMonth + (adjustedMonth > 2 ? -3 : 9);
+    doy = (unsigned)(((153 * monthPrime) + 2) / 5 + (int)day - 1);
+    doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    return (time_t)(era * 146097 + (int64_t)doe - 719468);
+}
+
+static time_t
 adf_tool_timegm(struct tm *timeValue)
 {
-#if defined(_WIN32)
-    return _mkgmtime(timeValue);
-#elif defined(__APPLE__) || defined(__linux__) || defined(__unix__)
-    return timegm(timeValue);
-#else
-    time_t result;
-    char *oldTz;
+    time_t daysSinceEpoch;
+    int64_t seconds;
+    int year;
+    unsigned month;
+    unsigned day;
 
-    oldTz = getenv("TZ");
-    setenv("TZ", "UTC", 1);
-    tzset();
-    result = mktime(timeValue);
-    if (oldTz != NULL)
+    if (timeValue == NULL)
     {
-        setenv("TZ", oldTz, 1);
+        return (time_t)-1;
     }
-    else
-    {
-        unsetenv("TZ");
-    }
-    tzset();
-    return result;
-#endif
+    year = timeValue->tm_year + 1900;
+    month = (unsigned)(timeValue->tm_mon + 1);
+    day = (unsigned)timeValue->tm_mday;
+    daysSinceEpoch = adf_tool_daysFromCivil(year, month, day);
+    seconds = (int64_t)daysSinceEpoch * 86400;
+    seconds += (int64_t)timeValue->tm_hour * 3600;
+    seconds += (int64_t)timeValue->tm_min * 60;
+    seconds += (int64_t)timeValue->tm_sec;
+    return (time_t)seconds;
 }
 
 static time_t adf_tool_fixedUnixTime = 0;

@@ -303,14 +303,7 @@ endif
 ifeq ($(DEBUG), 1)
    CFLAGS += -O0 -g
 else
-   CFLAGS += -O3 \
-	-Wno-format -Wno-format-security -Wno-tautological-constant-compare -Wno-unused-value -Wno-deprecated-declarations \
-	-Wno-pointer-bool-conversion -Wno-pointer-sign -Wno-typedef-redefinition -Wno-constant-logical-operand \
-	-Wno-non-literal-null-conversion -Wno-shift-op-parentheses -Wno-deprecated-non-prototype -Wno-dangling-else \
-	-Wno-parentheses-equality -Wno-constant-conversion -Wno-incompatible-pointer-types-discards-qualifiers \
-	-Wno-tautological-pointer-compare -Wno-switch -Wno-invalid-source-encoding -Wno-shift-negative-value \
-	-Wno-pointer-to-int-cast -Wno-int-to-void-pointer-cast -Wno-macro-redefined\
-	-Werror
+   CFLAGS += -O3
    LDFLAGS += -s
 endif
 
@@ -359,6 +352,7 @@ info:
 	$(info -------)
 
 all: $(TARGET)
+	@mkdir -p ../e9k-debugger/system
 	cp $(TARGET) ../e9k-debugger/system/ami9000$(suffix $(TARGET))
 
 

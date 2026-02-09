@@ -58,6 +58,7 @@
 #define PERIOD_MIN_NONCE 60
 #define PERIOD_MIN_LOOP 16
 #define PERIOD_MIN_LOOP_COUNT 64
+#define PERIOD_RESET_SENTINEL (-2)
 
 #define PERIOD_LOW 124
 
@@ -2084,7 +2085,7 @@ void audio_reset (void)
 		for (i = 0; i < AUDIO_CHANNELS_PAULA; i++) {
 			cdp = &audio_channel[i];
 			memset (cdp, 0, sizeof *audio_channel);
-			cdp->per = PERIOD_MAX - 1;
+			cdp->per = PERIOD_RESET_SENTINEL;
 			cdp->data.mixvol = 0;
 			cdp->evtime = MAX_EV;
 		}
@@ -2736,7 +2737,7 @@ void AUDxPER (int nr, uae_u16 v)
 		per = PERIOD_MIN_NONCE * CYCLE_UNIT;
 	}
 
-	if (cdp->per == PERIOD_MAX - 1 && per != PERIOD_MAX - 1) {
+	if (cdp->per == PERIOD_RESET_SENTINEL && per != PERIOD_RESET_SENTINEL) {
 		cdp->evtime = CYCLE_UNIT;
 		if (isaudio ()) {
 			schedule_audio ();
