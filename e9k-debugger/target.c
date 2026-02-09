@@ -5,6 +5,14 @@ target_iface_t* target_targets[3];
 target_iface_t* target;
 static size_t target_targetCount = 0;
 
+static void
+target_applyConfigDefaultsFor(target_iface_t *iface)
+{
+    if (iface && iface->setConfigDefaults) {
+        iface->setConfigDefaults(&debugger.config);
+    }
+}
+
 void
 target_ctor(void)
 {
@@ -15,6 +23,20 @@ target_ctor(void)
     target_targets[TARGET_MEGADRIVE] = target_megadrive();
     target_targetCount = 3;
 #endif
+
+    target_setConfigDefaults();
+}
+
+void
+target_setConfigDefaults(void)
+{
+    target_iface_t *amiga = target_amiga();
+    target_iface_t *neogeo = target_neogeo();
+    target_iface_t *megadrive = target_megadrive();
+
+    target_applyConfigDefaultsFor(amiga);
+    target_applyConfigDefaultsFor(neogeo);
+    target_applyConfigDefaultsFor(megadrive);
 }
 
 void

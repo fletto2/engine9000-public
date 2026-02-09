@@ -433,55 +433,6 @@ debugger_configTempPath(void)
     return pathbuf;
 }
 
-void
-debugger_platform_setDefaults(e9k_neogeo_config_t *config)
-{
-    if (!config) {
-        return;
-    }
-    snprintf(config->libretro.systemDir, sizeof(config->libretro.systemDir), "./system");
-    snprintf(config->libretro.saveDir, sizeof(config->libretro.saveDir), "./saves");
-    snprintf(config->libretro.sourceDir, sizeof(config->libretro.sourceDir), ".");
-    snprintf(config->libretro.toolchainPrefix, sizeof(config->libretro.toolchainPrefix), "m68k-neogeo-elf");
-    config->libretro.audioBufferMs = 250;
-    config->skipBiosLogo = 0;
-    strncpy(config->systemType, "aes", sizeof(config->systemType) - 1);
-    config->systemType[sizeof(config->systemType) - 1] = '\0';
-    config->libretro.exePath[0] = '\0';
-}
-
-void
-debugger_platform_setDefaultsAmiga(e9k_amiga_config_t *config)
-{
-    if (!config) {
-        return;
-    }
-    snprintf(config->libretro.systemDir, sizeof(config->libretro.systemDir), "./system");
-    snprintf(config->libretro.saveDir, sizeof(config->libretro.saveDir), "./saves");
-    snprintf(config->libretro.sourceDir, sizeof(config->libretro.sourceDir), ".");
-    snprintf(config->libretro.toolchainPrefix, sizeof(config->libretro.toolchainPrefix), "m68k-amigaos-");
-    config->libretro.audioBufferMs = 250;
-    config->libretro.exePath[0] = '\0';
-}
-
-void
-debugger_platform_setDefaultsMegaDrive(e9k_megadrive_config_t *config)
-{
-    if (!config) {
-        return;
-    }
-#if E9K_ENABLE_MEGADRIVE
-    snprintf(config->libretro.systemDir, sizeof(config->libretro.systemDir), "./system");
-    snprintf(config->libretro.saveDir, sizeof(config->libretro.saveDir), "./saves");
-    snprintf(config->libretro.sourceDir, sizeof(config->libretro.sourceDir), ".");
-    snprintf(config->libretro.toolchainPrefix, sizeof(config->libretro.toolchainPrefix), "m68k-elf");
-    config->libretro.audioBufferMs = 250;
-    config->libretro.exePath[0] = '\0';
-    config->romFolder[0] = '\0';
-#else
-    memset(config, 0, sizeof(*config));
-#endif
-}
 
 ssize_t
 w64_getline(char **lineptr, size_t *n, FILE *stream)

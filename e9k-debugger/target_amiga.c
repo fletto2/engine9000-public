@@ -14,6 +14,20 @@
 static const char *
 target_amiga_defaultCorePath(void);
 
+static void
+target_amiga_setConfigDefaults(e9k_system_config_t *config)
+{
+    if (!config) {
+        return;
+    }
+    snprintf(config->amiga.libretro.systemDir, sizeof(config->amiga.libretro.systemDir), "./system");
+    snprintf(config->amiga.libretro.saveDir, sizeof(config->amiga.libretro.saveDir), "./saves");
+    snprintf(config->amiga.libretro.sourceDir, sizeof(config->amiga.libretro.sourceDir), ".");
+    snprintf(config->amiga.libretro.toolchainPrefix, sizeof(config->amiga.libretro.toolchainPrefix), "m68k-amigaos-");
+    config->amiga.libretro.audioBufferMs = 250;
+    config->amiga.libretro.exePath[0] = '\0';
+}
+
 
 typedef struct target_amiga_romselect_extra {
     e9ui_component_t *df0Select;
@@ -158,7 +172,7 @@ target_amiga_settingsDefault(void)
     settings_copyPath(uaePath, sizeof(uaePath), debugger.settingsEdit.amiga.libretro.romPath);
     settings_copyPath(elfPath, sizeof(elfPath), debugger.settingsEdit.amiga.libretro.exePath);
     int audioEnabled = debugger.settingsEdit.amiga.libretro.audioEnabled;
-    debugger_platform_setDefaultsAmiga(&debugger.settingsEdit.amiga);
+    target_amiga_setConfigDefaults(&debugger.settingsEdit);
     debugger.settingsEdit.amiga.libretro.audioEnabled = audioEnabled;
     settings_copyPath(debugger.settingsEdit.amiga.libretro.romPath, sizeof(debugger.settingsEdit.amiga.libretro.romPath), uaePath);
     settings_copyPath(debugger.settingsEdit.amiga.libretro.exePath, sizeof(debugger.settingsEdit.amiga.libretro.exePath), elfPath);
@@ -676,6 +690,7 @@ static target_iface_t _target_amiga = {
     .name = "AMIGA",
     .dasm = &dasm_ami_iface,
     .emu = &emu_ami_iface,
+    .setConfigDefaults = target_amiga_setConfigDefaults,
     .setActiveDefaultsFromCurrentSystem = target_amiga_setActiveDefaultsFromCurrentSystem,
     .applyActiveSettingsToCurrentSystem = target_amiga_applyActiveSettingsToCurrentSystem,
     .configIsOk = target_amiga_configIsOk,

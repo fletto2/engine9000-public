@@ -290,16 +290,40 @@ debugger_platform_makeTempFilePath(char *out, size_t cap, const char *prefix, co
     }
     const char *filePrefix = (prefix && *prefix) ? prefix : "e9k";
     const char *fileSuffix = suffix ? suffix : "";
-    int written = snprintf(out, cap, "%s/%s-XXXXXX%s", tmpDir, filePrefix, fileSuffix);
-    if (written <= 0 || (size_t)written >= cap) {
+    char templatePath[PATH_MAX];
+    int written = snprintf(templatePath, sizeof(templatePath), "%s/%s-XXXXXX", tmpDir, filePrefix);
+    if (written <= 0 || (size_t)written >= sizeof(templatePath)) {
         return 0;
     }
-    int suffixLen = (int)strlen(fileSuffix);
-    int fd = mkstemps(out, suffixLen);
+    int fd = mkstemp(templatePath);
     if (fd < 0) {
         return 0;
     }
     close(fd);
+    if (!fileSuffix[0]) {
+        written = snprintf(out, cap, "%s", templatePath);
+        if (written <= 0 || (size_t)written >= cap) {
+            unlink(templatePath);
+            return 0;
+        }
+        return 1;
+    }
+
+    char finalPath[PATH_MAX];
+    written = snprintf(finalPath, sizeof(finalPath), "%s%s", templatePath, fileSuffix);
+    if (written <= 0 || (size_t)written >= sizeof(finalPath)) {
+        unlink(templatePath);
+        return 0;
+    }
+    if (rename(templatePath, finalPath) != 0) {
+        unlink(templatePath);
+        return 0;
+    }
+    written = snprintf(out, cap, "%s", finalPath);
+    if (written <= 0 || (size_t)written >= cap) {
+        unlink(finalPath);
+        return 0;
+    }
     return 1;
 }
 
@@ -462,54 +486,4 @@ debugger_configTempPath(void)
         return NULL;
     }
     return pathbuf;
-}
-
-void
-debugger_platform_setDefaults(e9k_neogeo_config_t *config)
-{
-    if (!config) {
-        return;
-    }
-    snprintf(config->libretro.systemDir, sizeof(config->libretro.systemDir), "./system");
-    snprintf(config->libretro.saveDir, sizeof(config->libretro.saveDir), "./saves");
-    snprintf(config->libretro.sourceDir, sizeof(config->libretro.sourceDir), ".");
-    snprintf(config->libretro.toolchainPrefix, sizeof(config->libretro.toolchainPrefix), "m68k-neogeo-elf");
-    config->libretro.audioBufferMs = 250;
-    config->skipBiosLogo = 0;
-    strncpy(config->systemType, "aes", sizeof(config->systemType) - 1);
-    config->systemType[sizeof(config->systemType) - 1] = '\0';
-    config->libretro.exePath[0] = '\0';
-}
-
-void
-debugger_platform_setDefaultsAmiga(e9k_amiga_config_t *config)
-{
-    if (!config) {
-        return;
-    }
-    snprintf(config->libretro.systemDir, sizeof(config->libretro.systemDir), "./system");
-    snprintf(config->libretro.saveDir, sizeof(config->libretro.saveDir), "./saves");
-    snprintf(config->libretro.sourceDir, sizeof(config->libretro.sourceDir), ".");
-    snprintf(config->libretro.toolchainPrefix, sizeof(config->libretro.toolchainPrefix), "m68k-amigaos-");
-    config->libretro.audioBufferMs = 250;
-    config->libretro.exePath[0] = '\0';
-}
-
-void
-debugger_platform_setDefaultsMegaDrive(e9k_megadrive_config_t *config)
-{
-    if (!config) {
-        return;
-    }
-#if E9K_ENABLE_MEGADRIVE
-    snprintf(config->libretro.systemDir, sizeof(config->libretro.systemDir), "./system");
-    snprintf(config->libretro.saveDir, sizeof(config->libretro.saveDir), "./saves");
-    snprintf(config->libretro.sourceDir, sizeof(config->libretro.sourceDir), ".");
-    snprintf(config->libretro.toolchainPrefix, sizeof(config->libretro.toolchainPrefix), "m68k-elf");
-    config->libretro.audioBufferMs = 250;
-    config->libretro.exePath[0] = '\0';
-    config->romFolder[0] = '\0';
-#else
-    memset(config, 0, sizeof(*config));
-#endif
 }

@@ -76,6 +76,9 @@ textbox_history_clear(list_t **list);
 static void
 textbox_selectOverlay_toggle(e9ui_context_t *ctx, e9ui_component_t *owner);
 
+static void
+textbox_selectOverlay_openForTyping(e9ui_context_t *ctx, e9ui_component_t *owner);
+
 static const char *
 textbox_select_displayLabel(const e9ui_textbox_option_t *opt)
 {
@@ -86,6 +89,104 @@ textbox_select_displayLabel(const e9ui_textbox_option_t *opt)
         return opt->label;
     }
     return opt->value ? opt->value : "";
+}
+
+static int
+textbox_select_containsInsensitive(const char *haystack, const char *needle)
+{
+    if (!needle || !needle[0]) {
+        return 1;
+    }
+    if (!haystack || !haystack[0]) {
+        return 0;
+    }
+    for (const char *h = haystack; *h; ++h) {
+        const char *p = h;
+        const char *n = needle;
+        while (*p && *n && tolower((unsigned char)*p) == tolower((unsigned char)*n)) {
+            ++p;
+            ++n;
+        }
+        if (!*n) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+textbox_select_optionMatchesFilter(const e9ui_textbox_option_t *opt, const char *filter)
+{
+    if (!opt) {
+        return 0;
+    }
+    if (!filter || !filter[0]) {
+        return 1;
+    }
+    const char *label = textbox_select_displayLabel(opt);
+    if (textbox_select_containsInsensitive(label, filter)) {
+        return 1;
+    }
+    if (opt->value && textbox_select_containsInsensitive(opt->value, filter)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
+textbox_select_filteredCount(const textbox_state_t *st, const char *filter)
+{
+    if (!st || !st->select_options || st->select_optionCount <= 0) {
+        return 0;
+    }
+    int count = 0;
+    for (int i = 0; i < st->select_optionCount; ++i) {
+        if (textbox_select_optionMatchesFilter(&st->select_options[i], filter)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static int
+textbox_select_filteredNthToOptionIndex(const textbox_state_t *st, const char *filter, int nth)
+{
+    if (!st || !st->select_options || st->select_optionCount <= 0 || nth < 0) {
+        return -1;
+    }
+    int seen = 0;
+    for (int i = 0; i < st->select_optionCount; ++i) {
+        if (!textbox_select_optionMatchesFilter(&st->select_options[i], filter)) {
+            continue;
+        }
+        if (seen == nth) {
+            return i;
+        }
+        seen++;
+    }
+    return -1;
+}
+
+static int
+textbox_select_filteredOptionToNthIndex(const textbox_state_t *st, const char *filter, int optionIndex)
+{
+    if (!st || !st->select_options || st->select_optionCount <= 0) {
+        return -1;
+    }
+    if (optionIndex < 0 || optionIndex >= st->select_optionCount) {
+        return -1;
+    }
+    int seen = 0;
+    for (int i = 0; i < st->select_optionCount; ++i) {
+        if (!textbox_select_optionMatchesFilter(&st->select_options[i], filter)) {
+            continue;
+        }
+        if (i == optionIndex) {
+            return seen;
+        }
+        seen++;
+    }
+    return -1;
 }
 
 static int
@@ -1009,7 +1110,11 @@ textbox_renderComp(e9ui_component_t *self, e9ui_context_t *ctx)
         textCol = st->textColor;
     }
     if (st->len > 0) {
-        textbox_updateScroll(st, font, viewW);
+        if (st->select_optionCount > 0) {
+            st->scrollX = 0;
+        } else {
+            textbox_updateScroll(st, font, viewW);
+        }
         if (textbox_hasSelection(st)) {
             int a = 0;
             int b = 0;
@@ -1199,7 +1304,7 @@ textbox_onClick(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mouse_ev
         return;
     }
     textbox_state_t *st = (textbox_state_t*)self->state;
-    if (!st || st->editable) {
+    if (!st) {
         return;
     }
     if (ev->button != E9UI_MOUSE_BUTTON_LEFT) {
@@ -1208,6 +1313,7 @@ textbox_onClick(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mouse_ev
     if (st->select_optionCount <= 0) {
         return;
     }
+    e9ui_setFocus(ctx, self);
     textbox_selectOverlay_toggle(ctx, self);
 }
 
@@ -1259,6 +1365,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         st->cursor += len;
         textbox_clearSelection(st);
         textbox_notifyChange(st, ctx);
+        textbox_selectOverlay_openForTyping(ctx, self);
         textbox_updateScroll(st, font, viewW);
         return 1;
     }
@@ -1319,6 +1426,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
             textbox_recordUndo(st);
             textbox_deleteSelection(st);
             textbox_notifyChange(st, ctx);
+            textbox_selectOverlay_openForTyping(ctx, self);
             textbox_updateScroll(st, font, viewW);
             return 1;
         }
@@ -1327,6 +1435,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
             memmove(&st->text[st->cursor], &st->text[st->cursor + 1], (size_t)(st->len - st->cursor));
             st->len--;
             textbox_notifyChange(st, ctx);
+            textbox_selectOverlay_openForTyping(ctx, self);
             textbox_updateScroll(st, font, viewW);
         }
         return 1;
@@ -1345,6 +1454,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
             st->len = st->cursor;
             textbox_clearSelection(st);
             textbox_notifyChange(st, ctx);
+            textbox_selectOverlay_openForTyping(ctx, self);
             textbox_updateScroll(st, font, viewW);
         }
         return 1;
@@ -1359,6 +1469,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
                 }
                 textbox_insertText(st, clip, (int)strlen(clip));
                 textbox_notifyChange(st, ctx);
+                textbox_selectOverlay_openForTyping(ctx, self);
                 textbox_updateScroll(st, font, viewW);
             }
             if (clip) {
@@ -1398,6 +1509,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
                 }
                 if (textbox_deleteSelection(st)) {
                     textbox_notifyChange(st, ctx);
+                    textbox_selectOverlay_openForTyping(ctx, self);
                     textbox_updateScroll(st, font, viewW);
                 }
             }
@@ -1415,6 +1527,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
                 int len = (int)strlen(clip);
                 textbox_insertText(st, clip, len);
                 textbox_notifyChange(st, ctx);
+                textbox_selectOverlay_openForTyping(ctx, self);
                 textbox_updateScroll(st, font, viewW);
             }
             if (clip) {
@@ -1475,6 +1588,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
             textbox_recordUndo(st);
             textbox_deleteSelection(st);
             textbox_notifyChange(st, ctx);
+            textbox_selectOverlay_openForTyping(ctx, self);
             textbox_updateScroll(st, font, viewW);
             return 1;
         }
@@ -1484,6 +1598,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
             st->cursor--;
             st->len--;
             textbox_notifyChange(st, ctx);
+            textbox_selectOverlay_openForTyping(ctx, self);
             textbox_updateScroll(st, font, viewW);
         }
         return 1;
@@ -1880,14 +1995,24 @@ e9ui_textbox_setTextColor(e9ui_component_t *comp, int enabled, SDL_Color color)
 typedef struct textbox_select_overlay_state {
     int open;
     e9ui_component_t *owner;
-    int hoverIndex;
+    int hoverOptionIndex;
     int scrollIndex;
     int pressActive;
-    int pressIndex;
+    int pressOptionIndex;
     int justOpened;
+    int useFilter;
 } textbox_select_overlay_state_t;
 
 static textbox_select_overlay_state_t textbox_select_overlay = {0};
+
+static const char *
+textbox_selectOverlay_filterText(const textbox_state_t *st)
+{
+    if (!st || !st->editable || !st->text || !textbox_select_overlay.useFilter) {
+        return "";
+    }
+    return st->text;
+}
 
 static int
 textbox_selectOverlay_pointInRect(const SDL_Rect *r, int x, int y)
@@ -1912,6 +2037,11 @@ textbox_selectOverlay_computeLayout(e9ui_context_t *ctx, SDL_Rect *outRect, int 
     if (!st || !st->select_options || st->select_optionCount <= 0) {
         return 0;
     }
+    const char *filter = textbox_selectOverlay_filterText(st);
+    int filteredCount = textbox_select_filteredCount(st, filter);
+    if (filteredCount <= 0) {
+        return 0;
+    }
 
     TTF_Font *font = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : ctx->font;
     int lh = font ? TTF_FontHeight(font) : 16;
@@ -1930,7 +2060,7 @@ textbox_selectOverlay_computeLayout(e9ui_context_t *ctx, SDL_Rect *outRect, int 
     int below = ctx->winH - (owner->bounds.y + owner->bounds.h);
     int above = owner->bounds.y;
     int useBelow = 1;
-    int desiredH = st->select_optionCount * itemH + outerPad * 2;
+    int desiredH = filteredCount * itemH + outerPad * 2;
     if (below < desiredH && above > below) {
         useBelow = 0;
     }
@@ -1940,8 +2070,8 @@ textbox_selectOverlay_computeLayout(e9ui_context_t *ctx, SDL_Rect *outRect, int 
     if (visible < 1) {
         visible = 1;
     }
-    if (visible > st->select_optionCount) {
-        visible = st->select_optionCount;
+    if (visible > filteredCount) {
+        visible = filteredCount;
     }
 
     int menuH = visible * itemH + outerPad * 2;
@@ -1964,8 +2094,8 @@ textbox_selectOverlay_computeLayout(e9ui_context_t *ctx, SDL_Rect *outRect, int 
             if (visible < 1) {
                 visible = 1;
             }
-            if (visible > st->select_optionCount) {
-                visible = st->select_optionCount;
+            if (visible > filteredCount) {
+                visible = filteredCount;
             }
             r.h = visible * itemH + outerPad * 2;
             r.y = owner->bounds.y - r.h;
@@ -1986,11 +2116,12 @@ textbox_selectOverlay_close(void)
 {
     textbox_select_overlay.open = 0;
     textbox_select_overlay.owner = NULL;
-    textbox_select_overlay.hoverIndex = -1;
+    textbox_select_overlay.hoverOptionIndex = -1;
     textbox_select_overlay.scrollIndex = 0;
     textbox_select_overlay.pressActive = 0;
-    textbox_select_overlay.pressIndex = -1;
+    textbox_select_overlay.pressOptionIndex = -1;
     textbox_select_overlay.justOpened = 0;
+    textbox_select_overlay.useFilter = 0;
 }
 
 void
@@ -2021,23 +2152,56 @@ textbox_selectOverlay_toggle(e9ui_context_t *ctx, e9ui_component_t *owner)
         return;
     }
 
+    const char *filter = "";
+    int filteredCount = textbox_select_filteredCount(st, filter);
+    if (filteredCount <= 0) {
+        return;
+    }
+
     textbox_select_overlay.open = 1;
     textbox_select_overlay.owner = owner;
-    textbox_select_overlay.hoverIndex = (st->select_selectedIndex >= 0) ? st->select_selectedIndex : 0;
+    textbox_select_overlay.hoverOptionIndex = st->select_selectedIndex;
+    if (textbox_select_overlay.hoverOptionIndex < 0 ||
+        textbox_select_filteredOptionToNthIndex(st, filter, textbox_select_overlay.hoverOptionIndex) < 0) {
+        textbox_select_overlay.hoverOptionIndex = textbox_select_filteredNthToOptionIndex(st, filter, 0);
+    }
     textbox_select_overlay.scrollIndex = 0;
     textbox_select_overlay.pressActive = 0;
-    textbox_select_overlay.pressIndex = -1;
+    textbox_select_overlay.pressOptionIndex = -1;
     textbox_select_overlay.justOpened = 1;
+    textbox_select_overlay.useFilter = 0;
 }
 
 static void
-textbox_selectOverlay_clampScroll(const textbox_state_t *st, int visibleCount)
+textbox_selectOverlay_openForTyping(e9ui_context_t *ctx, e9ui_component_t *owner)
+{
+    if (!ctx || !owner || !owner->state) {
+        return;
+    }
+    textbox_state_t *st = (textbox_state_t*)owner->state;
+    if (!st->editable || st->select_optionCount <= 0) {
+        return;
+    }
+    if (!textbox_select_overlay.open || textbox_select_overlay.owner != owner) {
+        if (textbox_select_overlay.open && textbox_select_overlay.owner != owner) {
+            textbox_selectOverlay_close();
+        }
+        textbox_selectOverlay_toggle(ctx, owner);
+    }
+    if (textbox_select_overlay.open && textbox_select_overlay.owner == owner) {
+        textbox_select_overlay.useFilter = 1;
+    }
+}
+
+static void
+textbox_selectOverlay_clampScroll(const textbox_state_t *st, int visibleCount, const char *filter)
 {
     if (!st) {
         textbox_select_overlay.scrollIndex = 0;
         return;
     }
-    int maxScroll = st->select_optionCount - visibleCount;
+    int filteredCount = textbox_select_filteredCount(st, filter);
+    int maxScroll = filteredCount - visibleCount;
     if (maxScroll < 0) {
         maxScroll = 0;
     }
@@ -2050,17 +2214,21 @@ textbox_selectOverlay_clampScroll(const textbox_state_t *st, int visibleCount)
 }
 
 static void
-textbox_selectOverlay_ensureIndexVisible(const textbox_state_t *st, int visibleCount, int index)
+textbox_selectOverlay_ensureIndexVisible(const textbox_state_t *st, int visibleCount, const char *filter, int optionIndex)
 {
     if (!st || visibleCount <= 0) {
         return;
     }
-    if (index < textbox_select_overlay.scrollIndex) {
-        textbox_select_overlay.scrollIndex = index;
-    } else if (index >= textbox_select_overlay.scrollIndex + visibleCount) {
-        textbox_select_overlay.scrollIndex = index - visibleCount + 1;
+    int filteredIndex = textbox_select_filteredOptionToNthIndex(st, filter, optionIndex);
+    if (filteredIndex < 0) {
+        return;
     }
-    textbox_selectOverlay_clampScroll(st, visibleCount);
+    if (filteredIndex < textbox_select_overlay.scrollIndex) {
+        textbox_select_overlay.scrollIndex = filteredIndex;
+    } else if (filteredIndex >= textbox_select_overlay.scrollIndex + visibleCount) {
+        textbox_select_overlay.scrollIndex = filteredIndex - visibleCount + 1;
+    }
+    textbox_selectOverlay_clampScroll(st, visibleCount, filter);
 }
 
 static void
@@ -2074,6 +2242,10 @@ textbox_selectOverlay_selectIndex(e9ui_context_t *ctx, e9ui_component_t *owner, 
         return;
     }
     if (index < 0 || index >= st->select_optionCount) {
+        return;
+    }
+    if (st->select_selectedIndex == index) {
+        textbox_select_applyDisplay(st, textbox_select_displayLabel(&st->select_options[index]));
         return;
     }
     st->select_selectedIndex = index;
@@ -2097,6 +2269,12 @@ e9ui_textbox_selectOverlayHandleEvent(e9ui_context_t *ctx, const e9ui_event_t *e
         textbox_selectOverlay_close();
         return 0;
     }
+    const char *filter = textbox_selectOverlay_filterText(st);
+    int filteredCount = textbox_select_filteredCount(st, filter);
+    if (filteredCount <= 0) {
+        textbox_selectOverlay_close();
+        return 0;
+    }
 
     SDL_Rect rect = {0};
     int itemH = 0;
@@ -2109,8 +2287,12 @@ e9ui_textbox_selectOverlayHandleEvent(e9ui_context_t *ctx, const e9ui_event_t *e
     if (outerPad < 0) {
         outerPad = 0;
     }
-    textbox_selectOverlay_clampScroll(st, visibleCount);
-    textbox_selectOverlay_ensureIndexVisible(st, visibleCount, textbox_select_overlay.hoverIndex);
+    textbox_selectOverlay_clampScroll(st, visibleCount, filter);
+    if (textbox_select_overlay.hoverOptionIndex < 0 ||
+        textbox_select_filteredOptionToNthIndex(st, filter, textbox_select_overlay.hoverOptionIndex) < 0) {
+        textbox_select_overlay.hoverOptionIndex = textbox_select_filteredNthToOptionIndex(st, filter, 0);
+    }
+    textbox_selectOverlay_ensureIndexVisible(st, visibleCount, filter, textbox_select_overlay.hoverOptionIndex);
 
     if (ev->type == SDL_MOUSEMOTION) {
         int inside = textbox_selectOverlay_pointInRect(&rect, ev->motion.x, ev->motion.y);
@@ -2120,26 +2302,23 @@ e9ui_textbox_selectOverlayHandleEvent(e9ui_context_t *ctx, const e9ui_event_t *e
                 return 1;
             }
             int row = (itemH > 0) ? (relY / itemH) : 0;
-            int idx = textbox_select_overlay.scrollIndex + row;
-            if (idx < 0) {
-                idx = 0;
+            int filteredIdx = textbox_select_overlay.scrollIndex + row;
+            int optionIdx = textbox_select_filteredNthToOptionIndex(st, filter, filteredIdx);
+            if (optionIdx >= 0) {
+                textbox_select_overlay.hoverOptionIndex = optionIdx;
             }
-            if (idx >= st->select_optionCount) {
-                idx = st->select_optionCount - 1;
-            }
-            textbox_select_overlay.hoverIndex = idx;
         }
         return 1;
     }
 
     if (ev->type == SDL_MOUSEWHEEL) {
-        if (st->select_optionCount > visibleCount) {
+        if (filteredCount > visibleCount) {
             if (ev->wheel.y > 0) {
                 textbox_select_overlay.scrollIndex -= 1;
             } else if (ev->wheel.y < 0) {
                 textbox_select_overlay.scrollIndex += 1;
             }
-            textbox_selectOverlay_clampScroll(st, visibleCount);
+            textbox_selectOverlay_clampScroll(st, visibleCount, filter);
         }
         return 1;
     }
@@ -2158,23 +2337,21 @@ e9ui_textbox_selectOverlayHandleEvent(e9ui_context_t *ctx, const e9ui_event_t *e
             return 1;
         }
         int row = (itemH > 0) ? (relY / itemH) : 0;
-        int idx = textbox_select_overlay.scrollIndex + row;
-        if (idx < 0) {
-            idx = 0;
+        int filteredIdx = textbox_select_overlay.scrollIndex + row;
+        int optionIdx = textbox_select_filteredNthToOptionIndex(st, filter, filteredIdx);
+        if (optionIdx < 0) {
+            return 1;
         }
-        if (idx >= st->select_optionCount) {
-            idx = st->select_optionCount - 1;
-        }
-        textbox_select_overlay.hoverIndex = idx;
+        textbox_select_overlay.hoverOptionIndex = optionIdx;
         textbox_select_overlay.pressActive = 1;
-        textbox_select_overlay.pressIndex = idx;
+        textbox_select_overlay.pressOptionIndex = optionIdx;
         return 1;
     }
 
     if (ev->type == SDL_MOUSEBUTTONUP) {
         if (ev->button.button != SDL_BUTTON_LEFT) {
             textbox_select_overlay.pressActive = 0;
-            textbox_select_overlay.pressIndex = -1;
+            textbox_select_overlay.pressOptionIndex = -1;
             return 1;
         }
         if (textbox_select_overlay.justOpened && !textbox_select_overlay.pressActive) {
@@ -2186,24 +2363,19 @@ e9ui_textbox_selectOverlayHandleEvent(e9ui_context_t *ctx, const e9ui_event_t *e
             int relY = ev->button.y - (rect.y + outerPad);
             if (relY < 0 || relY >= visibleCount * itemH) {
                 textbox_select_overlay.pressActive = 0;
-                textbox_select_overlay.pressIndex = -1;
+                textbox_select_overlay.pressOptionIndex = -1;
                 textbox_selectOverlay_close();
                 return 1;
             }
             int row = (itemH > 0) ? (relY / itemH) : 0;
-            int idx = textbox_select_overlay.scrollIndex + row;
-            if (idx < 0) {
-                idx = 0;
-            }
-            if (idx >= st->select_optionCount) {
-                idx = st->select_optionCount - 1;
-            }
-            if (idx == textbox_select_overlay.pressIndex) {
-                textbox_selectOverlay_selectIndex(ctx, owner, idx);
+            int filteredIdx = textbox_select_overlay.scrollIndex + row;
+            int optionIdx = textbox_select_filteredNthToOptionIndex(st, filter, filteredIdx);
+            if (optionIdx >= 0 && optionIdx == textbox_select_overlay.pressOptionIndex) {
+                textbox_selectOverlay_selectIndex(ctx, owner, optionIdx);
             }
         }
         textbox_select_overlay.pressActive = 0;
-        textbox_select_overlay.pressIndex = -1;
+        textbox_select_overlay.pressOptionIndex = -1;
         textbox_selectOverlay_close();
         return 1;
     }
@@ -2215,34 +2387,61 @@ e9ui_textbox_selectOverlayHandleEvent(e9ui_context_t *ctx, const e9ui_event_t *e
             return 1;
         }
         if (kc == SDLK_UP) {
-            if (textbox_select_overlay.hoverIndex < 0) {
-                textbox_select_overlay.hoverIndex = 0;
-            } else if (textbox_select_overlay.hoverIndex > 0) {
-                textbox_select_overlay.hoverIndex -= 1;
+            int filteredIdx = textbox_select_filteredOptionToNthIndex(st, filter, textbox_select_overlay.hoverOptionIndex);
+            if (filteredIdx < 0) {
+                filteredIdx = 0;
+            } else if (filteredIdx > 0) {
+                filteredIdx -= 1;
             }
-            textbox_selectOverlay_ensureIndexVisible(st, visibleCount, textbox_select_overlay.hoverIndex);
+            int optionIdx = textbox_select_filteredNthToOptionIndex(st, filter, filteredIdx);
+            if (optionIdx >= 0) {
+                textbox_select_overlay.hoverOptionIndex = optionIdx;
+            }
+            textbox_selectOverlay_ensureIndexVisible(st, visibleCount, filter, textbox_select_overlay.hoverOptionIndex);
             return 1;
         }
         if (kc == SDLK_DOWN) {
-            if (textbox_select_overlay.hoverIndex < 0) {
-                textbox_select_overlay.hoverIndex = 0;
-            } else if (textbox_select_overlay.hoverIndex + 1 < st->select_optionCount) {
-                textbox_select_overlay.hoverIndex += 1;
+            int filteredIdx = textbox_select_filteredOptionToNthIndex(st, filter, textbox_select_overlay.hoverOptionIndex);
+            if (filteredIdx < 0) {
+                filteredIdx = 0;
+            } else if (filteredIdx + 1 < filteredCount) {
+                filteredIdx += 1;
             }
-            textbox_selectOverlay_ensureIndexVisible(st, visibleCount, textbox_select_overlay.hoverIndex);
+            int optionIdx = textbox_select_filteredNthToOptionIndex(st, filter, filteredIdx);
+            if (optionIdx >= 0) {
+                textbox_select_overlay.hoverOptionIndex = optionIdx;
+            }
+            textbox_selectOverlay_ensureIndexVisible(st, visibleCount, filter, textbox_select_overlay.hoverOptionIndex);
             return 1;
         }
         if (kc == SDLK_RETURN || kc == SDLK_KP_ENTER) {
-            if (textbox_select_overlay.hoverIndex >= 0 && textbox_select_overlay.hoverIndex < st->select_optionCount) {
-                textbox_selectOverlay_selectIndex(ctx, owner, textbox_select_overlay.hoverIndex);
+            if (textbox_select_overlay.hoverOptionIndex >= 0 &&
+                textbox_select_overlay.hoverOptionIndex < st->select_optionCount) {
+                textbox_selectOverlay_selectIndex(ctx, owner, textbox_select_overlay.hoverOptionIndex);
             }
             textbox_selectOverlay_close();
+            return 1;
+        }
+        if (st->editable) {
+            textbox_select_overlay.useFilter = 1;
+            e9ui_setFocus(ctx, owner);
+            if (owner->handleEvent) {
+                (void)owner->handleEvent(owner, ctx, ev);
+            }
             return 1;
         }
         return 1;
     }
 
     if (ev->type == SDL_TEXTINPUT) {
+        if (st->editable) {
+            textbox_select_overlay.useFilter = 1;
+            e9ui_setFocus(ctx, owner);
+            if (owner->handleEvent) {
+                (void)owner->handleEvent(owner, ctx, ev);
+            }
+            return 1;
+        }
         return 1;
     }
 
@@ -2264,6 +2463,12 @@ e9ui_textbox_selectOverlayRender(e9ui_context_t *ctx)
         textbox_selectOverlay_close();
         return;
     }
+    const char *filter = textbox_selectOverlay_filterText(st);
+    int filteredCount = textbox_select_filteredCount(st, filter);
+    if (filteredCount <= 0) {
+        textbox_selectOverlay_close();
+        return;
+    }
 
     SDL_Rect rect = {0};
     int itemH = 0;
@@ -2276,11 +2481,17 @@ e9ui_textbox_selectOverlayRender(e9ui_context_t *ctx)
     if (outerPad < 0) {
         outerPad = 0;
     }
-    textbox_selectOverlay_clampScroll(st, visibleCount);
-    if (textbox_select_overlay.hoverIndex < 0) {
-        textbox_select_overlay.hoverIndex = (st->select_selectedIndex >= 0) ? st->select_selectedIndex : 0;
+    textbox_selectOverlay_clampScroll(st, visibleCount, filter);
+    if (textbox_select_overlay.hoverOptionIndex < 0 ||
+        textbox_select_filteredOptionToNthIndex(st, filter, textbox_select_overlay.hoverOptionIndex) < 0) {
+        if (st->select_selectedIndex >= 0 &&
+            textbox_select_filteredOptionToNthIndex(st, filter, st->select_selectedIndex) >= 0) {
+            textbox_select_overlay.hoverOptionIndex = st->select_selectedIndex;
+        } else {
+            textbox_select_overlay.hoverOptionIndex = textbox_select_filteredNthToOptionIndex(st, filter, 0);
+        }
     }
-    textbox_selectOverlay_ensureIndexVisible(st, visibleCount, textbox_select_overlay.hoverIndex);
+    textbox_selectOverlay_ensureIndexVisible(st, visibleCount, filter, textbox_select_overlay.hoverOptionIndex);
 
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(ctx->renderer, 30, 30, 34, 255);
@@ -2293,14 +2504,32 @@ e9ui_textbox_selectOverlayRender(e9ui_context_t *ctx)
         return;
     }
 
+    SDL_bool hadClip = SDL_RenderIsClipEnabled(ctx->renderer);
+    SDL_Rect prevClip = {0};
+    if (hadClip) {
+        SDL_RenderGetClipRect(ctx->renderer, &prevClip);
+    }
+    SDL_Rect listClip = {
+        rect.x + 1,
+        rect.y + outerPad,
+        rect.w - 2,
+        rect.h - (outerPad * 2)
+    };
+    if (listClip.w > 0 && listClip.h > 0) {
+        SDL_RenderSetClipRect(ctx->renderer, &listClip);
+    } else {
+        SDL_RenderSetClipRect(ctx->renderer, NULL);
+    }
+
     const int padPx = 8;
     for (int row = 0; row < visibleCount; ++row) {
-        int idx = textbox_select_overlay.scrollIndex + row;
+        int filteredIdx = textbox_select_overlay.scrollIndex + row;
+        int idx = textbox_select_filteredNthToOptionIndex(st, filter, filteredIdx);
         if (idx < 0 || idx >= st->select_optionCount) {
             continue;
         }
         SDL_Rect item = { rect.x, rect.y + outerPad + row * itemH, rect.w, itemH };
-        int isHover = (idx == textbox_select_overlay.hoverIndex) ? 1 : 0;
+        int isHover = (idx == textbox_select_overlay.hoverOptionIndex) ? 1 : 0;
         int isSelected = (idx == st->select_selectedIndex) ? 1 : 0;
         if (isHover) {
             SDL_SetRenderDrawColor(ctx->renderer, 52, 52, 60, 255);
@@ -2324,5 +2553,11 @@ e9ui_textbox_selectOverlayRender(e9ui_context_t *ctx)
             SDL_Rect dst = { tx, ty, tw, th };
             SDL_RenderCopy(ctx->renderer, tex, NULL, &dst);
         }
+    }
+
+    if (hadClip) {
+        SDL_RenderSetClipRect(ctx->renderer, &prevClip);
+    } else {
+        SDL_RenderSetClipRect(ctx->renderer, NULL);
     }
 }

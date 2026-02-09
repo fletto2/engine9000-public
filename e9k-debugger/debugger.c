@@ -461,7 +461,6 @@ debugger_ctor(void)
   snprintf(debugger.config.neogeo.libretro.toolchainPrefix, sizeof(debugger.config.neogeo.libretro.toolchainPrefix), "m68k-neogeo-elf");
   snprintf(debugger.config.amiga.libretro.toolchainPrefix, sizeof(debugger.config.amiga.libretro.toolchainPrefix), "m68k-amigaos-");
   snprintf(debugger.config.megadrive.libretro.toolchainPrefix, sizeof(debugger.config.megadrive.libretro.toolchainPrefix), "m68k-elf");
-  debugger_platform_setDefaultsMegaDrive(&debugger.config.megadrive);
   debugger.recordPath[0] = '\0';
   debugger.playbackPath[0] = '\0';
   smoke_test_reset(&debugger);

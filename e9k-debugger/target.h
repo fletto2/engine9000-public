@@ -32,6 +32,7 @@ typedef struct target_iface
   
     void (*setActiveDefaultsFromCurrentSystem)(void);
     void (*applyActiveSettingsToCurrentSystem)(void);
+    void (*setConfigDefaults)(struct e9k_system_config *config);
     int (*configIsOk)(void);
     int (*needsRestart)(void);
     int (*settingsSaveButtonDisabled)(void);
@@ -85,6 +86,9 @@ target_setTargetIndex(int index);
 
 void
 target_settingsClearAllOptions(void);
+
+void
+target_setConfigDefaults(void);
 
 target_iface_t *target_amiga(void);
 

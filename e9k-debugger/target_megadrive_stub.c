@@ -6,81 +6,90 @@
  * See COPYING for license details
  */
 
-#include <string.h>
-
 #include "target.h"
 #include "debugger.h"
-#include "debugger_platform.h"
+#include "debug.h"
+
+#include <stdlib.h>
+#include <string.h>
 
 static void
-target_megadrive_stubCopyPath(char *dest, size_t cap, const char *src)
+target_megadrive_stubSetConfigDefaults(e9k_system_config_t *config)
 {
-    if (!dest || cap == 0) {
+    if (!config) {
         return;
     }
-    if (!src) {
-        dest[0] = '\0';
-        return;
-    }
-    strncpy(dest, src, cap - 1);
-    dest[cap - 1] = '\0';
+    memset(&config->megadrive, 0, sizeof(config->megadrive));
 }
 
 static const char *
 target_megadrive_stubDefaultCorePath(void)
 {
+    debug_error("BUG: target_megadrive_stubDefaultCorePath called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
     return NULL;
 }
 
 static void
 target_megadrive_stubSetActiveDefaultsFromCurrentSystem(void)
 {
+    debug_error("BUG: target_megadrive_stubSetActiveDefaultsFromCurrentSystem called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubApplyActiveSettingsToCurrentSystem(void)
 {
+    debug_error("BUG: target_megadrive_stubApplyActiveSettingsToCurrentSystem called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static int
 target_megadrive_stubConfigIsOk(void)
 {
+    debug_error("BUG: target_megadrive_stubConfigIsOk called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
     return 0;
 }
 
 static int
 target_megadrive_stubNeedsRestart(void)
 {
+    debug_error("BUG: target_megadrive_stubNeedsRestart called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
     return 0;
 }
 
 static int
 target_megadrive_stubSettingsSaveButtonDisabled(void)
 {
+    debug_error("BUG: target_megadrive_stubSettingsSaveButtonDisabled called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
     return 1;
 }
 
 static void
 target_megadrive_stubValidateSettings(void)
 {
+    debug_error("BUG: target_megadrive_stubValidateSettings called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubSettingsDefaults(void)
 {
-    debugger_platform_setDefaultsMegaDrive(&debugger.settingsEdit.megadrive);
+    debug_error("BUG: target_megadrive_stubSettingsDefaults called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubApplyRomConfigForSelection(settings_romselect_state_t *st, const char **saveDirP, const char **romPathP)
 {
     (void)st;
-    if (saveDirP) {
-        *saveDirP = debugger.settingsEdit.megadrive.libretro.saveDir;
-    }
-    if (romPathP) {
-        *romPathP = debugger.settingsEdit.megadrive.libretro.romPath;
-    }
+    (void)saveDirP;
+    (void)romPathP;
+    debug_error("BUG: target_megadrive_stubApplyRomConfigForSelection called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
@@ -91,68 +100,77 @@ target_megadrive_stubSettingsSetConfigPaths(int hasElf,
                                             int hasToolchain,
                                             const char *toolchainPrefix)
 {
-    target_megadrive_stubCopyPath(debugger.settingsEdit.megadrive.libretro.exePath,
-                                  sizeof(debugger.settingsEdit.megadrive.libretro.exePath),
-                                  hasElf ? elfPath : "");
-    target_megadrive_stubCopyPath(debugger.settingsEdit.megadrive.libretro.sourceDir,
-                                  sizeof(debugger.settingsEdit.megadrive.libretro.sourceDir),
-                                  hasSource ? sourceDir : "");
-    target_megadrive_stubCopyPath(debugger.settingsEdit.megadrive.libretro.toolchainPrefix,
-                                  sizeof(debugger.settingsEdit.megadrive.libretro.toolchainPrefix),
-                                  hasToolchain ? toolchainPrefix : "");
+    (void)hasElf;
+    (void)elfPath;
+    (void)hasSource;
+    (void)sourceDir;
+    (void)hasToolchain;
+    (void)toolchainPrefix;
+    debug_error("BUG: target_megadrive_stubSettingsSetConfigPaths called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubSettingsRomPathChanged(settings_romselect_state_t *st)
 {
     (void)st;
+    debug_error("BUG: target_megadrive_stubSettingsRomPathChanged called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubSettingsRomFolderChanged(void)
 {
+    debug_error("BUG: target_megadrive_stubSettingsRomFolderChanged called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubSettingsCoreChanged(void)
 {
+    debug_error("BUG: target_megadrive_stubSettingsCoreChanged called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubSettingsClearOptions(void)
 {
+    debug_error("BUG: target_megadrive_stubSettingsClearOptions called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubSettingsLoadOptions(struct e9k_system_config *st)
 {
     (void)st;
+    debug_error("BUG: target_megadrive_stubSettingsLoadOptions called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubSettingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *out)
 {
     (void)ctx;
-    if (!out) {
-        return;
-    }
-    out->body = NULL;
-    out->footerWarning = NULL;
+    (void)out;
+    debug_error("BUG: target_megadrive_stubSettingsBuildModal called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static const struct e9k_libretro_config *
 target_megadrive_stubSelectLibretroConfig(const struct e9k_system_config *cfg)
 {
-    if (!cfg) {
-        return NULL;
-    }
-    return &cfg->megadrive.libretro;
+    (void)cfg;
+    debug_error("BUG: target_megadrive_stubSelectLibretroConfig called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
+    return NULL;
 }
 
 static int
 target_megadrive_stubCoreOptionsHasGeneral(const struct core_options_modal_state *st)
 {
     (void)st;
+    debug_error("BUG: target_megadrive_stubCoreOptionsHasGeneral called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
     return 0;
 }
 
@@ -161,81 +179,87 @@ target_megadrive_stubCoreOptionsSaveClicked(e9ui_context_t *ctx, struct core_opt
 {
     (void)ctx;
     (void)st;
+    debug_error("BUG: target_megadrive_stubCoreOptionsSaveClicked called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static const char *
 target_megadrive_stubCoreOptionGetValue(const char *key)
 {
     (void)key;
+    debug_error("BUG: target_megadrive_stubCoreOptionGetValue called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
     return NULL;
 }
 
 static struct e9k_libretro_config *
 target_megadrive_stubGetLibretroCliConfig(void)
 {
-    return &debugger.cliConfig.megadrive.libretro;
+    debug_error("BUG: target_megadrive_stubGetLibretroCliConfig called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
+    return NULL;
 }
 
 static void
 target_megadrive_stubOnVblank(void)
 {
+    debug_error("BUG: target_megadrive_stubOnVblank called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubLibretroSelectConfig(void)
 {
-    debugger.libretro.audioBufferMs = debugger.config.megadrive.libretro.audioBufferMs;
-    debugger.libretro.audioEnabled = debugger.config.megadrive.libretro.audioEnabled;
-    debugger_copyPath(debugger.libretro.sourceDir, sizeof(debugger.libretro.sourceDir), debugger.config.megadrive.libretro.sourceDir);
-    debugger_copyPath(debugger.libretro.exePath, sizeof(debugger.libretro.exePath), debugger.config.megadrive.libretro.exePath);
-    debugger_copyPath(debugger.libretro.toolchainPrefix, sizeof(debugger.libretro.toolchainPrefix), debugger.config.megadrive.libretro.toolchainPrefix);
-    debugger_copyPath(debugger.libretro.romPath, sizeof(debugger.libretro.romPath), debugger.config.megadrive.libretro.romPath);
-    debugger_copyPath(debugger.libretro.systemDir, sizeof(debugger.libretro.systemDir), debugger.config.megadrive.libretro.systemDir);
-    debugger_copyPath(debugger.libretro.saveDir, sizeof(debugger.libretro.saveDir), debugger.config.megadrive.libretro.saveDir);
+    debug_error("BUG: target_megadrive_stubLibretroSelectConfig called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubPickElfToolchainPaths(const char **rawElf, const char **toolchainPrefix)
 {
-    if (rawElf) {
-        *rawElf = debugger.config.megadrive.libretro.exePath;
-    }
-    if (toolchainPrefix) {
-        *toolchainPrefix = debugger.config.megadrive.libretro.toolchainPrefix;
-    }
+    (void)rawElf;
+    (void)toolchainPrefix;
+    debug_error("BUG: target_megadrive_stubPickElfToolchainPaths called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubApplyCoreOptions(void)
 {
+    debug_error("BUG: target_megadrive_stubApplyCoreOptions called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static void
 target_megadrive_stubValidateAPI(void)
 {
+    debug_error("BUG: target_megadrive_stubValidateAPI called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static int
 target_megadrive_stubAudioEnabled(void)
 {
-    return debugger.config.megadrive.libretro.audioEnabled;
+    debug_error("BUG: target_megadrive_stubAudioEnabled called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
+    return 0;
 }
 
 static void
 target_megadrive_stubAudioEnable(int enabled)
 {
-    debugger.config.megadrive.libretro.audioEnabled = enabled ? 1 : 0;
+    (void)enabled;
+    debug_error("BUG: target_megadrive_stubAudioEnable called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static int
 target_megadrive_stubMemoryGetLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
 {
-    if (outMinAddr) {
-        *outMinAddr = 0;
-    }
-    if (outMaxAddr) {
-        *outMaxAddr = 0;
-    }
+    (void)outMinAddr;
+    (void)outMaxAddr;
+    debug_error("BUG: target_megadrive_stubMemoryGetLimits called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
     return 0;
 }
 
@@ -244,18 +268,18 @@ target_megadrive_stubGetBadgeTexture(SDL_Renderer *renderer, target_iface_t *t, 
 {
     (void)renderer;
     (void)t;
-    if (outW) {
-        *outW = 0;
-    }
-    if (outH) {
-        *outH = 0;
-    }
+    (void)outW;
+    (void)outH;
+    debug_error("BUG: target_megadrive_stubGetBadgeTexture called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
     return NULL;
 }
 
 static void
 target_megadrive_stubConfigControllerPorts(void)
 {
+    debug_error("BUG: target_megadrive_stubConfigControllerPorts called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
 }
 
 static int
@@ -263,12 +287,15 @@ target_megadrive_stubControllerMapButton(SDL_GameControllerButton button, unsign
 {
     (void)button;
     (void)outId;
+    debug_error("BUG: target_megadrive_stubControllerMapButton called with E9K_ENABLE_MEGADRIVE=0");
+    abort();
     return 0;
 }
 
 static target_iface_t target_megadrive_stubTarget = {
     .name = "MEGA DRIVE (DISABLED)",
     .defaultCorePath = target_megadrive_stubDefaultCorePath,
+    .setConfigDefaults = target_megadrive_stubSetConfigDefaults,
     .setActiveDefaultsFromCurrentSystem = target_megadrive_stubSetActiveDefaultsFromCurrentSystem,
     .applyActiveSettingsToCurrentSystem = target_megadrive_stubApplyActiveSettingsToCurrentSystem,
     .configIsOk = target_megadrive_stubConfigIsOk,

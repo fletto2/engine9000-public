@@ -110,12 +110,17 @@ addr2line_readLine(char **out)
                 return 1;
             }
         }
-        if (addr2line.bufLen >= sizeof(addr2line.buf) - 1) {
+        if (addr2line.bufLen > sizeof(addr2line.buf) - 1) {
             addr2line.bufLen = 0;
+        }
+        size_t avail = (sizeof(addr2line.buf) - 1) - addr2line.bufLen;
+        if (avail == 0) {
+            addr2line.bufLen = 0;
+            avail = sizeof(addr2line.buf) - 1;
         }
         ssize_t n = read(addr2line.outFD,
                          addr2line.buf + addr2line.bufLen,
-                         sizeof(addr2line.buf) - 1 - addr2line.bufLen);
+                         avail);
         if (n > 0) {
             addr2line.bufLen += (size_t)n;
             continue;
@@ -404,4 +409,3 @@ addr2line_resolveDetailed(uint64_t addr, char *out_file, size_t file_cap, int *o
     }
     return ok;
 }
-

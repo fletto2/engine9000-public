@@ -13,7 +13,6 @@
 #include "sprite_debug.h"
 #include "transition.h"
 #include "ui_test.h"
-#include "debugger_platform.h"
 
 
 static void
@@ -178,9 +177,7 @@ config_loadConfig(void)
     if (!path) {
         return;
     }
-    debugger_platform_setDefaults(&debugger.config.neogeo);
-    debugger_platform_setDefaultsAmiga(&debugger.config.amiga);
-    debugger_platform_setDefaultsMegaDrive(&debugger.config.megadrive);
+    target_setConfigDefaults();
     FILE *f = fopen(path, "r");
     if (!f) {
         return;

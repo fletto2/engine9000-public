@@ -24,15 +24,6 @@
 #include "system_badge.h"
 #include "rom_config.h"
 
-void
-debugger_platform_setDefaults(e9k_neogeo_config_t *config);
-
-void
-debugger_platform_setDefaultsAmiga(e9k_amiga_config_t *config);
-
-void
-debugger_platform_setDefaultsMegaDrive(e9k_megadrive_config_t *config);
-
 //static
 //TODO    
 
@@ -325,6 +316,34 @@ settings_checkboxMeasureWidth(const char *label, e9ui_context_t *ctx)
     int size = height > 24 ? 24 : (height - 4 > 0 ? height - 4 : 16);
     int gap = settings_checkboxGetTextGap(ctx);
     return size + gap + textW;
+}
+
+static int
+settings_componentPreferredHeight(e9ui_component_t *comp, e9ui_context_t *ctx, int availW)
+{
+    if (!comp || !comp->preferredHeight) {
+        return 0;
+    }
+    int h = comp->preferredHeight(comp, ctx, availW);
+    return h > 0 ? h : 0;
+}
+
+static int
+settings_measureTargetBodyHeight(target_iface_t *system, e9ui_context_t *ctx, int availW)
+{
+    if (!system || !system->settingsBuildModal || !ctx) {
+        return 0;
+    }
+    target_settings_modal_t modal = {0};
+    system->settingsBuildModal(ctx, &modal);
+    int height = settings_componentPreferredHeight(modal.body, ctx, availW);
+    if (modal.body) {
+        e9ui_childDestroy(modal.body, ctx);
+    }
+    if (modal.footerWarning) {
+        e9ui_childDestroy(modal.footerWarning, ctx);
+    }
+    return height;
 }
 
 static void
@@ -897,9 +916,42 @@ settings_buildModalBody(e9ui_context_t *ctx)
         e9ui_stack_addFixed(stack, e9ui_vspacer_make(12));
         e9ui_stack_addFixed(stack, rowGlobalCenter);
     }
+
+    int contentWidth = e9ui_scale_px(ctx, 640);
+    int selectedBodyHeight = settings_componentPreferredHeight(targetModal.body, ctx, contentWidth);
+    int maxBodyHeight = selectedBodyHeight;
+    {
+        int h = settings_measureTargetBodyHeight(target_amiga(), ctx, contentWidth);
+        if (h > maxBodyHeight) {
+            maxBodyHeight = h;
+        }
+    }
+    {
+        int h = settings_measureTargetBodyHeight(target_neogeo(), ctx, contentWidth);
+        if (h > maxBodyHeight) {
+            maxBodyHeight = h;
+        }
+    }
+#if E9K_ENABLE_MEGADRIVE
+    {
+        int h = settings_measureTargetBodyHeight(target_megadrive(), ctx, contentWidth);
+        if (h > maxBodyHeight) {
+            maxBodyHeight = h;
+        }
+    }
+#endif
+
     e9ui_component_t *center = e9ui_center_make(stack);
     if (center) {
-        e9ui_center_setSize(center, 640, 0);
+        int fixedHeight = 0;
+        int stackHeight = settings_componentPreferredHeight(stack, ctx, contentWidth);
+        if (stackHeight > 0 && selectedBodyHeight > 0 && maxBodyHeight > selectedBodyHeight) {
+            fixedHeight = stackHeight + (maxBodyHeight - selectedBodyHeight);
+            if (fixedHeight < stackHeight) {
+                fixedHeight = stackHeight;
+            }
+        }
+        e9ui_center_setSize(center, 640, fixedHeight > 0 ? e9ui_unscale_px(ctx, fixedHeight) : 0);
     }
     e9ui_component_t *btnDefaults = e9ui_button_make("Defaults", settings_uiDefaults, NULL);
     e9ui_component_t *btnSave = e9ui_button_make("Save", settings_uiSave, NULL);

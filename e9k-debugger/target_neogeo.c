@@ -4,7 +4,6 @@
 #include "rom_config.h"
 #include "amiga_uae_options.h"
 #include "neogeo_core_options.h"
-#include "debugger_platform.h"
 #include "core_options.h"
 #include "libretro_host.h"
 #include "romset.h"
@@ -14,6 +13,23 @@
 
 static const char *
 target_neogeo_defaultCorePath(void);
+
+static void
+target_neogeo_setConfigDefaults(e9k_system_config_t *config)
+{
+    if (!config) {
+        return;
+    }
+    snprintf(config->neogeo.libretro.systemDir, sizeof(config->neogeo.libretro.systemDir), "./system");
+    snprintf(config->neogeo.libretro.saveDir, sizeof(config->neogeo.libretro.saveDir), "./saves");
+    snprintf(config->neogeo.libretro.sourceDir, sizeof(config->neogeo.libretro.sourceDir), ".");
+    snprintf(config->neogeo.libretro.toolchainPrefix, sizeof(config->neogeo.libretro.toolchainPrefix), "m68k-neogeo-elf");
+    config->neogeo.libretro.audioBufferMs = 250;
+    config->neogeo.skipBiosLogo = 0;
+    strncpy(config->neogeo.systemType, "aes", sizeof(config->neogeo.systemType) - 1);
+    config->neogeo.systemType[sizeof(config->neogeo.systemType) - 1] = '\0';
+    config->neogeo.libretro.exePath[0] = '\0';
+}
 
 typedef struct target_neogeo_systemtype_state {
     e9ui_component_t *aesCheckbox;
@@ -488,7 +504,7 @@ target_neogeo_settingsDefault(void)
     settings_copyPath(romFolder, sizeof(romFolder), debugger.settingsEdit.neogeo.romFolder);
     settings_copyPath(elfPath, sizeof(elfPath), debugger.settingsEdit.neogeo.libretro.exePath);
     int audioEnabled = debugger.settingsEdit.neogeo.libretro.audioEnabled;
-    debugger_platform_setDefaults(&debugger.settingsEdit.neogeo);
+    target_neogeo_setConfigDefaults(&debugger.settingsEdit);
     debugger.settingsEdit.neogeo.libretro.audioEnabled = audioEnabled;
     settings_copyPath(debugger.settingsEdit.neogeo.libretro.romPath, sizeof(debugger.settingsEdit.neogeo.libretro.romPath), romPath);
     settings_copyPath(debugger.settingsEdit.neogeo.romFolder, sizeof(debugger.settingsEdit.neogeo.romFolder), romFolder);
@@ -817,6 +833,7 @@ static target_iface_t _target_neogeo = {
     .name = "NEO GEO",
     .dasm = &dasm_geo_iface,
     .emu = &emu_geo_iface,
+    .setConfigDefaults = target_neogeo_setConfigDefaults,
     .setActiveDefaultsFromCurrentSystem = target_neogeo_setActiveDefaultsFromCurrentSystem,
     .applyActiveSettingsToCurrentSystem = target_neogeo_applyActiveSettingsToCurrentSystem,
     .configIsOk = target_neogeo_configIsOk,

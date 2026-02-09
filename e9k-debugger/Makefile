@@ -30,6 +30,10 @@ LIBS   += -framework Cocoa
 ifeq ($(E9K_ENABLE_GL_COMPOSITE),1)
 LIBS   += -framework OpenGL
 endif
+else
+ifeq ($(E9K_ENABLE_GL_COMPOSITE),1)
+LIBS   += -lGL
+endif
 endif
 
 TARGET = e9k-debugger
@@ -75,7 +79,11 @@ SRCS += target_megadrive.c
 else
 SRCS += target_megadrive_stub.c
 endif
+ifeq ($(UNAME_S),Darwin)
 SRCS += $(PLATFORM_POSIX_SRCS) $(PLATFORM_MACOS_SRCS)
+else
+SRCS += $(PLATFORM_POSIX_SRCS)
+endif
 SRCS += syntax_highlight.c
 
 TREE_SITTER_CORE_DIR = deps/tree-sitter/lib

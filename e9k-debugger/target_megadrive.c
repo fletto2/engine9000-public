@@ -14,6 +14,25 @@ static const char *
 target_megadrive_defaultCorePath(void);
 
 static void
+target_megadrive_setConfigDefaults(e9k_system_config_t *config)
+{
+    if (!config) {
+        return;
+    }
+#if E9K_ENABLE_MEGADRIVE
+    snprintf(config->megadrive.libretro.systemDir, sizeof(config->megadrive.libretro.systemDir), "./system");
+    snprintf(config->megadrive.libretro.saveDir, sizeof(config->megadrive.libretro.saveDir), "./saves");
+    snprintf(config->megadrive.libretro.sourceDir, sizeof(config->megadrive.libretro.sourceDir), ".");
+    snprintf(config->megadrive.libretro.toolchainPrefix, sizeof(config->megadrive.libretro.toolchainPrefix), "m68k-elf");
+    config->megadrive.libretro.audioBufferMs = 250;
+    config->megadrive.libretro.exePath[0] = '\0';
+    config->megadrive.romFolder[0] = '\0';
+#else
+    memset(&config->megadrive, 0, sizeof(config->megadrive));
+#endif
+}
+
+static void
 target_megadrive_settingsClearOptions(void)
 {
     megadrive_coreOptionsClear();
@@ -276,7 +295,7 @@ target_megadrive_settingsDefault(void)
     settings_copyPath(romPath, sizeof(romPath), debugger.settingsEdit.megadrive.libretro.romPath);
     settings_copyPath(elfPath, sizeof(elfPath), debugger.settingsEdit.megadrive.libretro.exePath);
     int audioEnabled = debugger.settingsEdit.megadrive.libretro.audioEnabled;
-    debugger_platform_setDefaultsMegaDrive(&debugger.settingsEdit.megadrive);
+    target_megadrive_setConfigDefaults(&debugger.settingsEdit);
     debugger.settingsEdit.megadrive.libretro.audioEnabled = audioEnabled;
     settings_copyPath(debugger.settingsEdit.megadrive.libretro.romPath, sizeof(debugger.settingsEdit.megadrive.libretro.romPath), romPath);
     settings_copyPath(debugger.settingsEdit.megadrive.libretro.exePath, sizeof(debugger.settingsEdit.megadrive.libretro.exePath), elfPath);
@@ -542,6 +561,7 @@ static target_iface_t _target_megadrive = {
     .name = "MEGA DRIVE",
     .dasm = &dasm_ami_iface,
     .emu = &emu_mega_iface,
+    .setConfigDefaults = target_megadrive_setConfigDefaults,
     .setActiveDefaultsFromCurrentSystem = target_megadrive_setActiveDefaultsFromCurrentSystem,
     .applyActiveSettingsToCurrentSystem = target_megadrive_applyActiveSettingsToCurrentSystem,
     .configIsOk = target_megadrive_configIsOk,
