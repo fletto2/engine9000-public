@@ -34,8 +34,8 @@ clean:
 	$(MAKE) $(JOBS) -C tools/amiga/adf9000 clean
 
 test:
-	make -C e9k-debugger test
-	make -C tools/amiga/adf9000 test
+	$(MAKE) -C e9k-debugger test
+	$(MAKE) -C tools/amiga/adf9000 test
 
 mega9000-support:
 	@if [ -f .gitmodules ] && git config -f .gitmodules --get submodule.mega9000.path >/dev/null 2>&1; then \

@@ -13,7 +13,12 @@ INCLUDES += -I.
 
 UNAME_S := $(shell uname -s)
 
-DEBUG_FLAGS=-g -fno-omit-frame-pointer -fsanitize=address,undefined 
+DEBUG_FLAGS=-g -fno-omit-frame-pointer
+SANITIZER_LIBS=
+ifeq ($(UNAME_S),Darwin)
+DEBUG_FLAGS += -fsanitize=address,undefined
+SANITIZER_LIBS += -fsanitize=address,undefined
+endif
 CFLAGS += $(DEBUG_FLAGS) -Wall -Wextra -std=c99 -MMD -MP -Werror -pthread
 CFLAGS += -O2 -flto
 ifeq ($(UNAME_S),Linux)
@@ -26,7 +31,7 @@ CFLAGS += $(INCLUDES)
 
 LIBS   += $(shell $(PKG_CONFIG) --libs sdl2 SDL2_image SDL2_ttf libpng)
 LIBS   += -ldl
-LIBS   += -fsanitize=address,undefined
+LIBS   += $(SANITIZER_LIBS)
 LIBS   += -lreadline
 LIBS   += -pthread
 LIBS   += -lm

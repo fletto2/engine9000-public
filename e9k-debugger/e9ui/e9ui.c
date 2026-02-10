@@ -1383,8 +1383,12 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
   
     // Load persisted layout before creating window (for geometry)
     if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER) != 0) {
-        debug_error("SDL_Init failed: %s", SDL_GetError());
-        return 0;
+        debug_error("SDL_Init with audio failed: %s", SDL_GetError());
+        if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_GAMECONTROLLER) != 0) {
+            debug_error("SDL_Init failed: %s", SDL_GetError());
+            return 0;
+        }
+        debug_error("SDL audio disabled (continuing without SDL_INIT_AUDIO)");
     }
     {
         int refresh = e9ui_getDisplayRefreshRate(0);

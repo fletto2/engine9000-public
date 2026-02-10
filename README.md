@@ -637,3 +637,9 @@ This should create
 - You are likely to need to recreate my dist directory structure for the w64 build 
 - I currently have dist/e9kd/ which contains the exe and any dll (SDL etc) used to link
 - Inside that symlink to ../../assets and ../../system - you will also need a "saves" folder 
+
+#### FreeBSD
+
+- `pkg install gmake sdl2 sdl2_image sdl2_ttf readline pkgconf`
+
+- `MAKE=gmake gmake`
