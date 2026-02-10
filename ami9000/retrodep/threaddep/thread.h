@@ -166,7 +166,13 @@ int uae_sem_init (uae_sem_t *sem, int pshared, unsigned int value);
 
 STATIC_INLINE int uae_sem_destroy (uae_sem_t *sem)
 {
-    return sem_destroy (sem->sem);
+    int result;
+    if (!sem || !sem->sem) {
+        return -1;
+    }
+    result = sem_destroy(sem->sem);
+    sem->sem = 0;
+    return result;
 }
 
 STATIC_INLINE int uae_sem_post (uae_sem_t *sem)
@@ -200,7 +206,13 @@ int uae_sem_init (uae_sem_t *sem, int pshared, unsigned int value);
 
 STATIC_INLINE int uae_sem_destroy (uae_sem_t *sem)
 {
-    return sem->sem == 0 ? -1 : sem_close (sem->sem);
+    int result;
+    if (!sem || sem->sem == 0) {
+        return -1;
+    }
+    result = sem_close(sem->sem);
+    sem->sem = 0;
+    return result;
 }
 
 STATIC_INLINE int uae_sem_post (uae_sem_t *sem)
