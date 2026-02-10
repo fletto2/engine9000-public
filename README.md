@@ -522,6 +522,10 @@ In this repo, the default `./system` directory corresponds to `e9k-debugger/syst
 - A complete set of WHDLoad kickstart roms in your system folder is the best option.
 - Otherwise manually settting kickstart roms in the .uae file is required.
 
+### Linux/BSD
+
+- zenity for file dialogs
+
 ### Toolchain 
 
 For C source-level stepping, symbol breakpoints, and rich `print` expressions:
@@ -611,16 +615,15 @@ To enable Mega Drive core first run the following command to pull mega9000 git s
 
 ### macOS
 
+- `brew install sdl2 sdl2_image sdl2_ttf readline`
 - `make`
 
 This should create
 - `e9k-debugger/e9k-debugger` - macOS executable
 - `e9k-debugger/system/ami9000.dll` - Amiga emulator core
 - `e9k-debugger/system/geo9000.dylib` - Neo Geo emulator core
-
 - `e9k-debugger` links against at least: SDL2, SDL2_ttf, SDL2_image, readline, and OpenGL/Cocoa frameworks.
 - The macOS build currently links sanitizers (`-fsanitize=address,undefined`) by default; adjust the Makefile if you want a non-sanitized release build.
-- Typical Homebrew deps: `brew install sdl2 sdl2_image sdl2_ttf readline`
 
 ### Windows (MinGW, cross-compiling)
 
@@ -638,8 +641,12 @@ This should create
 - I currently have dist/e9kd/ which contains the exe and any dll (SDL etc) used to link
 - Inside that symlink to ../../assets and ../../system - you will also need a "saves" folder 
 
-#### FreeBSD
+### Linux (Ubuntu/Debian)
 
-- `pkg install gmake sdl2 sdl2_image sdl2_ttf readline pkgconf`
+- `apt install -y libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libreadline-dev pkg-config zenity`
+- `make`
 
+### FreeBSD
+
+- `pkg install gmake sdl2 sdl2_image sdl2_ttf readline pkgconf zenity`
 - `MAKE=gmake gmake`
