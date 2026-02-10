@@ -1376,6 +1376,13 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
   e9ui_theme_ctor();
   e9ui_loadWindowConfig(configPath);
 
+#ifdef __APPLE__
+  if (e9ui->glCompositeEnabled && !debugger_platform_glCompositeNeedsOpenGLHint()) {
+    e9ui->glCompositeEnabled = 0;
+    debug_error("gl-composite: disabled (virtualized macOS renderer path)");
+  }
+#endif
+
   if (cliOverrideWindowSize) {
     e9ui->layout.winW = cliWinW;
     e9ui->layout.winH = cliWinH;

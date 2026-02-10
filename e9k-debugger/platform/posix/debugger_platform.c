@@ -20,6 +20,7 @@
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#include <sys/sysctl.h>
 #endif
 
 #include "debugger.h"
@@ -418,6 +419,25 @@ int
 debugger_platform_glCompositeNeedsOpenGLHint(void)
 {
 #ifdef __APPLE__
+    int vmmPresent = 0;
+    size_t vmmSize = sizeof(vmmPresent);
+    if (sysctlbyname("kern.hv_vmm_present", &vmmPresent, &vmmSize, NULL, 0) == 0 &&
+        vmmSize == sizeof(vmmPresent) && vmmPresent != 0) {
+        return 0;
+    }
+
+    size_t featSize = 0;
+    if (sysctlbyname("machdep.cpu.features", NULL, &featSize, NULL, 0) == 0 && featSize > 1) {
+        char *features = (char *)malloc(featSize);
+        if (features) {
+            if (sysctlbyname("machdep.cpu.features", features, &featSize, NULL, 0) == 0 &&
+                strstr(features, "VMM") != NULL) {
+                free(features);
+                return 0;
+            }
+            free(features);
+        }
+    }
     return 1;
 #else
     return 0;

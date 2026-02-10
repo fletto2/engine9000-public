@@ -615,7 +615,15 @@ To enable Mega Drive core first run the following command to pull mega9000 git s
 
 ### macOS
 
-- `brew install sdl2 sdl2_image sdl2_ttf readline`
+Install xcode
+- `xcode-select --install`
+Install homebrew
+- `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
+Install dependencies
+- `brew install make sdl2 sdl2_image sdl2_ttf readline pkg-config`
+Build
+- `export PATH="$(brew --prefix make)/libexec/gnubin:$PATH"`
+- `make mega9000-support`
 - `make`
 
 This should create
