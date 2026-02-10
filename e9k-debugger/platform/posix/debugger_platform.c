@@ -200,19 +200,63 @@ debugger_platform_formatToolCommand(char *out,
 int
 debugger_platform_getExeDir(char *out, size_t cap)
 {
+    size_t len;
+    char path[PATH_MAX];
+    char resolvedPath[PATH_MAX];
+    const char *fullPath;
+
     if (!out || cap == 0) {
         return 0;
     }
+
+    out[0] = '\0';
+    fullPath = NULL;
+
+    path[0] = '\0';
+    resolvedPath[0] = '\0';
+
 #ifdef __APPLE__
-    char path[PATH_MAX];
     uint32_t sz = (uint32_t)sizeof(path);
-    if (_NSGetExecutablePath(path, &sz) != 0) {
+    if (_NSGetExecutablePath(path, &sz) == 0) {
+        const char *resolved = realpath(path, resolvedPath);
+        fullPath = resolved ? resolved : path;
+    }
+#else
+    ssize_t count = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (count <= 0) {
+        count = readlink("/proc/curproc/file", path, sizeof(path) - 1);
+    }
+    if (count <= 0) {
+        count = readlink("/proc/curproc/exe", path, sizeof(path) - 1);
+    }
+    if (count > 0) {
+        path[count] = '\0';
+        fullPath = path;
+    }
+#endif
+
+    if (!fullPath || !*fullPath) {
+        if (debugger.argv0[0]) {
+            const char *resolved = realpath(debugger.argv0, resolvedPath);
+            if (resolved && *resolved) {
+                fullPath = resolved;
+            } else if (debugger.argv0[0] == '/') {
+                fullPath = debugger.argv0;
+            } else {
+                char cwd[PATH_MAX];
+                if (getcwd(cwd, sizeof(cwd))) {
+                    snprintf(path, sizeof(path), "%s/%s", cwd, debugger.argv0);
+                    fullPath = path;
+                }
+            }
+        }
+    }
+
+    if (!fullPath || !*fullPath) {
         return 0;
     }
-    char resolvedPath[PATH_MAX];
-    const char *resolved = realpath(path, resolvedPath);
-    const char *fullPath = resolved ? resolved : path;
-    size_t len = strlen(fullPath);
+
+    len = strlen(fullPath);
     while (len > 0 && fullPath[len - 1] != '/') {
         len--;
     }
@@ -225,27 +269,6 @@ debugger_platform_getExeDir(char *out, size_t cap)
     memcpy(out, fullPath, len);
     out[len] = '\0';
     return 1;
-#else
-    char path[PATH_MAX];
-    ssize_t count = readlink("/proc/self/exe", path, sizeof(path) - 1);
-    if (count <= 0) {
-        return 0;
-    }
-    path[count] = '\0';
-    size_t len = (size_t)count;
-    while (len > 0 && path[len - 1] != '/') {
-        len--;
-    }
-    if (len == 0) {
-        return 0;
-    }
-    if (len >= cap) {
-        len = cap - 1;
-    }
-    memcpy(out, path, len);
-    out[len] = '\0';
-    return 1;
-#endif
 }
 
 int
