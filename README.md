@@ -22,12 +22,14 @@ Project layout
 - `e9k-debugger` - The debugger project
 - `geo9000` - Neo Geo emulator - (forked from `geolith-libretro` https://github.com/libretro/geolith-libretro)
 - `ami9000` - Amiga emulator - (fored from `libretro-uae` https://github.com/libretro/libretro-uae)
+- `mega9000` - Mega Drive emulator (forked from `picodrive` https://git.libretro.com/libretro/picodrive
 
 Platform support:
 
 - macOS
 - Windows via MinGW (`x86_64-w64-mingw32`); so far only tested by cross-compiling from macOS
 - Linux
+- BSD
 
 NOTE: Testing on Linux/Windows builds has been minimal at this stage.
 
@@ -521,6 +523,7 @@ In this repo, the default `./system` directory corresponds to `e9k-debugger/syst
 - Kickstart ROMS are not included.
 - A complete set of WHDLoad kickstart roms in your system folder is the best option.
 - Otherwise manually settting kickstart roms in the .uae file is required.
+- The AROS kickstart will be a fallback and may work depending on your usage.
 
 ### Linux/BSD
 
@@ -534,6 +537,7 @@ Configure your toolchain for each platform in the settings screen. Currently tes
 
 - Neo Geo - ngdevkit `m68k-neogeo-elf`
 - Amiga - bebbo's amiga-gcc `m68k-amigaos`
+- Mega Drive - mars/sgdk `m68k-elf`
 
 Without these, the debugger can still run, but symbol/source-aware features degrade or become unavailable.
 
@@ -543,6 +547,13 @@ Without these, the debugger can still run, but symbol/source-aware features degr
   - `m68k-neogeo-elf-addr2line`
   - `m68k-neogeo-elf-objdump`
   - `m68k-neogeo-elf-readelf`
+  
+#### Mega Drive
+- An ELF compiled with DWARF debug info (`Settings → ELF`, or `--elf PATH`)
+- The toolchain binaries on `PATH`:
+  - `m68k-elf-addr2line`
+  - `m68k-elf-objdump`
+  - `m68k-elf-readelf`
 
 #### Amiga
 - To use bebbo's toolchain please use https://github.com/AmigaPorts/m68k-amigaos-gcc - it contains important fixes to addr2line
@@ -551,9 +562,26 @@ Without these, the debugger can still run, but symbol/source-aware features degr
   - `m68k-amigaos-addr2line`
   - `m68k-amigaos-objdump`
   
-Note: Amiga debugging is complicated by relocation. If your target application is relocated you must inform the debugger of the base address of each section. This can be done with either the `base` command or using the Amiga fake perphierals such that your Amiga loader can automatically inform the debugger of the base addresses. See "Amiga Fake Peripherals" section or "base" command documentation.
+Note: Amiga debugging is complicated by relocation. If your target application is relocated you must inform the debugger of the base address of each section. This can be done with either"
 
-- An ELF image with dwarf information running on Amiga should technically work but is untested.
+- The `base` command - see "base" command documentation
+- Makeing your custom loader use the Amiga fake perphierals - see "Amiga Debug Peripherals" section
+- Use `load9000` amiga program to load your hunk based exectuable - see "load9000" section
+
+- An ELF image with dwarf information running on Amiga should technically work but is untested
+
+### load9000
+
+A simple Amiga program is available in:
+
+`tools/amiga/load9000`
+
+This program is run on the emulated Amiga and will parse your hunk looking for three sections (.text, .bss, .data). 
+
+`load9000` will load your application, inform the debugger of your section base addresses and then optionally set a breakpoint at the entry point.
+
+`load9000 <hunk>`
+`load9000 --break <hunk>`
 
 ### Config file + environment variables
 
@@ -564,7 +592,7 @@ Config is persisted automatically (layout + settings):
 
 Useful environment variables:
 
-- `E9K_STATE_BUFFER_BYTES`: state buffer capacity (default is `64*1024*1024`)
+- `E9K_STATE_BUFFER_BYTES`: state buffer capacity (default is `512*1024*1024`)
 - `E9K_PROFILE_JSON`: output path for profiler analysis JSON (otherwise a temp file is used)
 
 ### Command-line options
@@ -609,41 +637,46 @@ This project contains files with various licenses, unless otherwise specified as
 
 ## Building
 
-To enable Mega Drive core first run the following command to pull mega9000 git submodule.
+Mega Drive core is in a separate repo (License seems incompatible with GPL/MIT) - so to add the git submodule use:
 
 - `make mega9000-support`
 
-### macOS
+### macOS (tested on 26.2)
 
 Install xcode
 - `xcode-select --install`
+
 Install homebrew
 - `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
+
 Install dependencies
 - `brew install make sdl2 sdl2_image sdl2_ttf readline pkg-config`
+
 Build
-- `export PATH="$(brew --prefix make)/libexec/gnubin:$PATH"`
+- `export PATH="$(brew --prefix make)/libexec/gnubin:$PATH"` (ensure we use gnu make, not default macOS make)
 - `make mega9000-support`
 - `make`
 
-This should create
+This should create:
 - `e9k-debugger/e9k-debugger` - macOS executable
-- `e9k-debugger/system/ami9000.dll` - Amiga emulator core
+- `e9k-debugger/system/ami9000.dylibl` - Amiga emulator core
 - `e9k-debugger/system/geo9000.dylib` - Neo Geo emulator core
-- `e9k-debugger` links against at least: SDL2, SDL2_ttf, SDL2_image, readline, and OpenGL/Cocoa frameworks.
+- `e9k-debugger/system/mega9000.dylib` - Mega Drive emulator core
+
 - The macOS build currently links sanitizers (`-fsanitize=address,undefined`) by default; adjust the Makefile if you want a non-sanitized release build.
 
-### Windows (MinGW, cross-compiling)
+### Windows (MinGW, cross-compiling) - Native builds on msys2 to come
 
 Windows builds use a `x86_64-w64-mingw32` toolchain and have so far only been tested by cross-compiling from macOS.
 
+- `make mega9000-support`
 - `make w64`
 
-This should create
-
+This should create:
 - `e9k-debugger/dist/e9kd/e9k-debugger` - I create it here so can place all my .dll's for wine to find
 - `e9k-debugger/system/geo9000.dll` - I link `e9k-debugger/system` to `e9k-debugger/dist/e9kd/system`
 - `e9k-debugger/system/ami9000.dll` - I link `e9k-debugger/system` to `e9k-debugger/dist/e9kd/system`
+- `e9k-debugger/system/mega9000.dll` - I link `e9k-debugger/system` to `e9k-debugger/dist/e9kd/system`
 
 - You are likely to need to recreate my dist directory structure for the w64 build 
 - I currently have dist/e9kd/ which contains the exe and any dll (SDL etc) used to link
@@ -652,9 +685,23 @@ This should create
 ### Linux (Ubuntu/Debian)
 
 - `apt install -y libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libreadline-dev pkg-config zenity`
+- `make mega9000-support`
 - `make`
 
-### FreeBSD
+This should create:
+- `e9k-debugger/e9k-debugger` - Linux executable
+- `e9k-debugger/system/ami9000.so` - Amiga emulator core
+- `e9k-debugger/system/geo9000.so` - Neo Geo emulator core
+- `e9k-debugger/system/mega9000.so` - Mega Drive emulator core
+
+### BSD (FreeBSD)
 
 - `pkg install gmake sdl2 sdl2_image sdl2_ttf readline pkgconf zenity`
+- `gmake mega9000-support`
 - `MAKE=gmake gmake`
+
+This should create:
+- `e9k-debugger/e9k-debugger` - BSD executable
+- `e9k-debugger/system/ami9000.so` - Amiga emulator core
+- `e9k-debugger/system/geo9000.so` - Neo Geo emulator core
+- `e9k-debugger/system/mega9000.so` - Mega Drive emulator core
