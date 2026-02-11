@@ -3540,7 +3540,7 @@ e9ui_component_t *
 source_pane_make(void)
 {
   static const e9ui_textbox_option_t modeOptions[] = {
-      { .value = "c",   .label = "C" },
+      { .value = "c",   .label = "SRC" },
       { .value = "asm", .label = "ASM" },
       { .value = "hex", .label = "HEX" },
   };
