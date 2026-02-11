@@ -575,13 +575,16 @@ rom_config_parseFile(const char *path, rom_config_data_t *outData)
 
     struct json_object_s *cfgObj = json_value_as_object(rom_config_jsonObjectFind(object, "config"));
     if (cfgObj) {
-        if (rom_config_jsonGetString(rom_config_jsonObjectFind(cfgObj, "elf"), outData->elfPath, sizeof(outData->elfPath))) {
+        if (rom_config_jsonGetString(rom_config_jsonObjectFind(cfgObj, "elf"), outData->elfPath, sizeof(outData->elfPath)) &&
+            outData->elfPath[0]) {
             outData->hasElf = 1;
         }
-        if (rom_config_jsonGetString(rom_config_jsonObjectFind(cfgObj, "source"), outData->sourceDir, sizeof(outData->sourceDir))) {
+        if (rom_config_jsonGetString(rom_config_jsonObjectFind(cfgObj, "source"), outData->sourceDir, sizeof(outData->sourceDir)) &&
+            outData->sourceDir[0]) {
             outData->hasSource = 1;
         }
-        if (rom_config_jsonGetString(rom_config_jsonObjectFind(cfgObj, "toolchain_prefix"), outData->toolchainPrefix, sizeof(outData->toolchainPrefix))) {
+        if (rom_config_jsonGetString(rom_config_jsonObjectFind(cfgObj, "toolchain_prefix"), outData->toolchainPrefix, sizeof(outData->toolchainPrefix)) &&
+            outData->toolchainPrefix[0]) {
             outData->hasToolchain = 1;
         }
     }
