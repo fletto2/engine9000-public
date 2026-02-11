@@ -199,6 +199,16 @@ debugger_platform_formatToolCommand(char *out,
 }
 
 int
+debugger_platform_finalizeToolBinary(char *toolPath, size_t cap)
+{
+    (void)cap;
+    if (!toolPath || !*toolPath) {
+        return 0;
+    }
+    return 1;
+}
+
+int
 debugger_platform_getExeDir(char *out, size_t cap)
 {
     size_t len;

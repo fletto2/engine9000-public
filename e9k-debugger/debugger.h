@@ -262,6 +262,9 @@ debugger_platform_formatToolCommand(char *out,
                                     const char *targetPath,
                                     int suppressStderr);
 
+int
+debugger_platform_finalizeToolBinary(char *toolPath, size_t cap);
+
 void
 debugger_suppressBreakpointAtPC(void);
 

@@ -145,6 +145,30 @@ debugger_platform_formatToolCommand(char *out,
 }
 
 int
+debugger_platform_finalizeToolBinary(char *toolPath, size_t cap)
+{
+    if (!toolPath || !*toolPath || cap == 0) {
+        return 0;
+    }
+    size_t len = strlen(toolPath);
+    if (len >= 4) {
+        const char *suffix = toolPath + len - 4;
+        if (suffix[0] == '.' &&
+            (suffix[1] == 'e' || suffix[1] == 'E') &&
+            (suffix[2] == 'x' || suffix[2] == 'X') &&
+            (suffix[3] == 'e' || suffix[3] == 'E')) {
+            return 1;
+        }
+    }
+    if (len + 4 >= cap) {
+        toolPath[cap - 1] = '\0';
+        return 0;
+    }
+    memcpy(toolPath + len, ".exe", 5);
+    return 1;
+}
+
+int
 debugger_platform_getExeDir(char *out, size_t cap)
 {
     return w64_getExeDir(out, cap);

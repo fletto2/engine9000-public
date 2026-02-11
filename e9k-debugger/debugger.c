@@ -323,30 +323,6 @@ debugger_libretroSelectConfig(void)
   debugger.libretro.enabled = (corePath && corePath[0] && debugger.libretro.romPath[0]) ? 1 : 0;
 }
 
-#if defined(_WIN32)
-static int
-debugger_hasExeSuffix(const char *path)
-{
-    if (!path) {
-        return 0;
-    }
-    size_t len = strlen(path);
-    if (len < 4) {
-        return 0;
-    }
-    const char *suffix = path + len - 4;
-    if (suffix[0] != '.') {
-        return 0;
-    }
-    if ((suffix[1] == 'e' || suffix[1] == 'E') &&
-        (suffix[2] == 'x' || suffix[2] == 'X') &&
-        (suffix[3] == 'e' || suffix[3] == 'E')) {
-        return 1;
-    }
-    return 0;
-}
-#endif
-
 int
 debugger_toolchainBuildBinary(char *out, size_t cap, const char *tool)
 {
@@ -370,19 +346,7 @@ debugger_toolchainBuildBinary(char *out, size_t cap, const char *tool)
         out[cap - 1] = '\0';
         return 0;
     }
-
-#if defined(_WIN32)
-    if (!debugger_hasExeSuffix(out)) {
-        size_t outLen = strlen(out);
-        if (outLen + 4 >= cap) {
-            out[cap - 1] = '\0';
-            return 0;
-        }
-        memcpy(out + outLen, ".exe", 5);
-    }
-#endif
-
-    return 1;
+    return debugger_platform_finalizeToolBinary(out, cap);
 }
 
 void
