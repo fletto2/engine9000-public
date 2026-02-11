@@ -323,6 +323,7 @@ debugger_libretroSelectConfig(void)
   debugger.libretro.enabled = (corePath && corePath[0] && debugger.libretro.romPath[0]) ? 1 : 0;
 }
 
+#if defined(_WIN32)
 static int
 debugger_hasExeSuffix(const char *path)
 {
@@ -344,6 +345,7 @@ debugger_hasExeSuffix(const char *path)
     }
     return 0;
 }
+#endif
 
 int
 debugger_toolchainBuildBinary(char *out, size_t cap, const char *tool)
