@@ -63,13 +63,13 @@ W64_CFLAGS +=  -D_THREAD_SAFE
 W64_CFLAGS += -DE9K_ENABLE_MEGADRIVE=$(E9K_ENABLE_MEGADRIVE)
 W64_CFLAGS += -DE9K_ENABLE_GL_COMPOSITE=$(E9K_ENABLE_GL_COMPOSITE)
 W64_CFLAGS += $(W64_EXTRA_CFLAGS)
-W64_LIBS =
-W64_LIBS += $(W64_EXTRA_LIBS)
+W64_LIBS    = -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lSDL2_image -lreadline -lole32 -lcomdlg32 -lpng -lz -lopengl32
+W64_LIBS   += $(W64_EXTRA_LIBS)
 W64_LDFLAGS = -s -flto -mconsole
 
 ifneq ($(IS_MAC_TO_W64),)
 W64_CFLAGS += -I$(MINGW_HOME)/include/SDL2 -I$(MINGW_HOME)/include -I$(MINGW_HOME)/include/readline
-W64_LIBS += -L$(MINGW_HOME)/lib -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lSDL2_image -lreadline -lole32 -lcomdlg32 -lpng -lz -lopengl32
+W64_LIBS += -L$(MINGW_HOME)/lib
 else
 W64_CFLAGS += $(PKG_CFLAGS)
 W64_LIBS += $(PKG_LIBS)
