@@ -50,7 +50,7 @@ NOTE: Testing on Linux/Windows builds has been minimal at this stage.
 ![Console](assets/console.png)
 
 - UI or Console based debug
-- Syntax highlighting 
+- ASM/C Syntax highlighting 
 - File/function selection
 - Pause / continue
 - Step line / step instruction / next (step over) / step out
@@ -659,7 +659,7 @@ Build
 
 This should create:
 - `e9k-debugger/e9k-debugger` - macOS executable
-- `e9k-debugger/system/ami9000.dylibl` - Amiga emulator core
+- `e9k-debugger/system/ami9000.dylib` - Amiga emulator core
 - `e9k-debugger/system/geo9000.dylib` - Neo Geo emulator core
 - `e9k-debugger/system/mega9000.dylib` - Mega Drive emulator core
 
