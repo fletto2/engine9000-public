@@ -5,16 +5,14 @@ Amiga/Neo Geo/Mega Drive debugger/profiler - under heavy development so likely t
 Expect file format changes, regressions and other incompatibilities with new versions. 
 
 	
-<p align="center">
-<table align="center">
+<table>
   <tr>
     <td align="center" width="50%">
       <a href="https://www.youtube.com/watch?v=Q24F6S8J57U">
         <img
           src="assets/video.png"
-          width="100%"
-          style="max-width:400px; min-width:180px;"
-          alt="Demo video 1"
+          width="95%"
+          alt="Neo Geo Trainer"
         />
       </a>
       <br/>
@@ -28,9 +26,8 @@ Expect file format changes, regressions and other incompatibilities with new ver
       <a href="https://www.youtube.com/watch?v=KIjZ9-WTvFY">
         <img
           src="assets/video.png"
-          width="100%"
-          style="max-width:400px; min-width:180px;"
-          alt="Demo video 2"
+          width="95%"
+          alt="Amiga Debugging"
         />
       </a>
       <br/>
@@ -41,7 +38,7 @@ Expect file format changes, regressions and other incompatibilities with new ver
     </td>
   </tr>
 </table>
-</p>
+
 
 ![Debugger UI](assets/debugger.png)
 
