@@ -122,13 +122,19 @@ The debugger keeps a rolling save-state timeline (“state buffer”) implemente
 - Smoke test recording (`--make-smoke`) and compare mode (`--smoke-test`)
   - Designed for “record inputs + frames” and later replay/compare
 
-### Sprite Debug Window
+### Neo Geo Sprite Debug Window
 
 ![Neo Geo Sprite Debug](assets/sprite_debug.png)
 
 - Available via a hidden button in the emulator window - hover in top right hand corner to reveal
 - Renders a full view of the Neo Geo coordinate space allowing visualsation of off screen sprites
 - Renders a "sprite-line" histogram showing how close you are to hitting the Neo Geo sprites-per-line limits
+
+### Amiga Custom Chipset Controls
+
+![Amiga Custom Chipset Controls](assets/custom.png)
+
+- Very early controls for disabling various custom chipset functions
 
 ## Trainer
 - Simple training function
