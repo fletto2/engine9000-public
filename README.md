@@ -40,7 +40,7 @@ Project layout
 Platform support:
 
 - macOS
-- Windows via MinGW (`x86_64-w64-mingw32`); so far only tested by cross-compiling from macOS
+- Windows via MSYS2
 - Linux
 - BSD
 
@@ -684,22 +684,21 @@ This should create:
 
 - The macOS build currently links sanitizers (`-fsanitize=address,undefined`) by default; adjust the Makefile if you want a non-sanitized release build.
 
-### Windows (MinGW, cross-compiling) - Native builds on msys2 to come
+### Windows (msys2) 
 
-Windows builds use a `x86_64-w64-mingw32` toolchain and have so far only been tested by cross-compiling from macOS.
+Install msys2 (note: following the default install instructions will install ALOT of packages)
 
+From MSYS2 MINGW64 Shell:
+- `pacman -S mingw-w64-x86_64-toolchain`
+- `pacman -S make git mingw-w64-x86_64-SDL2 mingw-w64-x86_64-SDL2_image mingw-w64-x86_64-SDL2_ttf mingw-w64-x86_64-readline mingw-w64-x86_64-pkgconf`
 - `make mega9000-support`
 - `make w64`
 
 This should create:
-- `e9k-debugger/dist/e9kd/e9k-debugger` - I create it here so can place all my .dll's for wine to find
-- `e9k-debugger/system/geo9000.dll` - I link `e9k-debugger/system` to `e9k-debugger/dist/e9kd/system`
-- `e9k-debugger/system/ami9000.dll` - I link `e9k-debugger/system` to `e9k-debugger/dist/e9kd/system`
-- `e9k-debugger/system/mega9000.dll` - I link `e9k-debugger/system` to `e9k-debugger/dist/e9kd/system`
-
-- You are likely to need to recreate my dist directory structure for the w64 build 
-- I currently have dist/e9kd/ which contains the exe and any dll (SDL etc) used to link
-- Inside that symlink to ../../assets and ../../system - you will also need a "saves" folder 
+- `e9k-debugger/e9k-debugger.exe` 
+- `e9k-debugger/system/geo9000.dll`
+- `e9k-debugger/system/ami9000.dll` 
+- `e9k-debugger/system/mega9000.dll`
 
 ### Linux (Ubuntu/Debian)
 

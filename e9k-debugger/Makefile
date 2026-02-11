@@ -1,17 +1,23 @@
 CC ?= cc
 PKG_CONFIG ?= pkg-config
-MINGW_HOME ?= /usr/local/mingw
+W64_CC ?= x86_64-w64-mingw32-gcc
+
 E9K_ENABLE_MEGADRIVE ?= 1
 E9K_ENABLE_GL_COMPOSITE ?= 1
 
-#INCLUDES += -I../geo9000/libretro
-#INCLUDES += -I../geo9000/src
-INCLUDES += -I../e9k-lib
-INCLUDES += -I./e9ui
-INCLUDES += -I./lib9000
-INCLUDES += -I.
-
 UNAME_S := $(shell uname -s)
+MINGW_HOME ?= /usr/local/mingw
+W64_TRIPLE := $(shell command -v $(W64_CC) >/dev/null 2>&1 && $(W64_CC) -dumpmachine 2>/dev/null || true)
+IS_MAC_TO_W64 := $(and $(filter Darwin,$(UNAME_S)),$(findstring w64-mingw32,$(W64_TRIPLE)))
+PKG_CFLAGS := $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_image SDL2_ttf libpng)
+PKG_LIBS := $(shell $(PKG_CONFIG) --libs sdl2 SDL2_image SDL2_ttf libpng)
+
+BASE_INCLUDES += -I../e9k-lib
+BASE_INCLUDES += -I./e9ui
+BASE_INCLUDES += -I./lib9000
+BASE_INCLUDES += -I.
+INCLUDES += $(BASE_INCLUDES)
+INCLUDES += $(PKG_CFLAGS)
 
 DEBUG_FLAGS=-g -fno-omit-frame-pointer
 SANITIZER_LIBS=
@@ -26,15 +32,14 @@ CFLAGS += -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 endif
 CFLAGS += -DE9K_ENABLE_MEGADRIVE=$(E9K_ENABLE_MEGADRIVE)
 CFLAGS += -DE9K_ENABLE_GL_COMPOSITE=$(E9K_ENABLE_GL_COMPOSITE)
-CFLAGS += $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_image SDL2_ttf libpng)
 CFLAGS += $(INCLUDES)
 
-LIBS   += $(shell $(PKG_CONFIG) --libs sdl2 SDL2_image SDL2_ttf libpng)
 LIBS   += -ldl
 LIBS   += $(SANITIZER_LIBS)
 LIBS   += -lreadline
 LIBS   += -pthread
 LIBS   += -lm
+LIBS   += $(PKG_LIBS)
 
 ifeq ($(UNAME_S),Darwin)
 LIBS   += -framework Cocoa
@@ -49,19 +54,26 @@ endif
 
 TARGET = e9k-debugger
 BUILD_DIR = build
-W64_CC ?= x86_64-w64-mingw32-gcc
-W64_TARGET = dist/e9kd/e9k-debugger.exe
+W64_TARGET = e9k-debugger.exe
+W64_ADDITIONAL_TARGET = dist/e9kd/e9k-debugger.exe
 W64_BUILD_DIR = build-w64
 W64_CFLAGS = -flto -O2 -Wall -Wextra -std=c99 -MMD -MP
-W64_CFLAGS += $(INCLUDES)
-W64_CFLAGS += -I$(MINGW_HOME)/include/SDL2 -I$(MINGW_HOME)/include -I$(MINGW_HOME)/include/readline -D_THREAD_SAFE
+W64_CFLAGS += $(BASE_INCLUDES)
+W64_CFLAGS +=  -D_THREAD_SAFE
 W64_CFLAGS += -DE9K_ENABLE_MEGADRIVE=$(E9K_ENABLE_MEGADRIVE)
 W64_CFLAGS += -DE9K_ENABLE_GL_COMPOSITE=$(E9K_ENABLE_GL_COMPOSITE)
 W64_CFLAGS += $(W64_EXTRA_CFLAGS)
 W64_LIBS =
-W64_LIBS += -L$(MINGW_HOME)/lib -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lSDL2_image -lreadline -lole32 -lcomdlg32 -lpng -lz -lopengl32
 W64_LIBS += $(W64_EXTRA_LIBS)
 W64_LDFLAGS = -s -flto -mconsole
+
+ifneq ($(IS_MAC_TO_W64),)
+W64_CFLAGS += -I$(MINGW_HOME)/include/SDL2 -I$(MINGW_HOME)/include -I$(MINGW_HOME)/include/readline
+W64_LIBS += -L$(MINGW_HOME)/lib -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lSDL2_image -lreadline -lole32 -lcomdlg32 -lpng -lz -lopengl32
+else
+W64_CFLAGS += $(PKG_CFLAGS)
+W64_LIBS += $(PKG_LIBS)
+endif
 
 BUNDLE_NAME = Engine9000.app
 BUNDLE_DIR = $(BUNDLE_NAME)/Contents
@@ -130,6 +142,7 @@ $(TARGET): $(OBJS)
 $(W64_TARGET): $(W64_OBJS)
 	@mkdir -p $(dir $@)
 	$(W64_CC) $(W64_CFLAGS) $(W64_LDFLAGS) -o $@ $(W64_OBJS) $(W64_LIBS)
+	@cp $(W64_TARGET) $(W64_ADDITIONAL_TARGET)
 
 w64: $(W64_TARGET)
 
