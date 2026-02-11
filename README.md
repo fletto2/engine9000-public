@@ -4,15 +4,43 @@ Amiga/Neo Geo/Mega Drive debugger/profiler - under heavy development so likely t
 
 Expect file format changes, regressions and other incompatibilities with new versions. 
 
-
+	
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=Q24F6S8J57U">
-    <img
-      src="assets/video.png"
-      style="width: 50%; min-width: 180px; max-width: 400px;"
-      alt="Demo video"
-    >
-  </a>
+<table align="center">
+  <tr>
+    <td align="center" width="50%">
+      <a href="https://www.youtube.com/watch?v=Q24F6S8J57U">
+        <img
+          src="assets/video.png"
+          width="100%"
+          style="max-width:400px; min-width:180px;"
+          alt="Demo video 1"
+        />
+      </a>
+      <br/>
+      <sub>
+        <b>Neo Geo Trainer</b><br/>
+        Using the trainer for unlimited time and lives
+      </sub>
+    </td>
+
+    <td align="center" width="50%">
+      <a href="https://www.youtube.com/watch?v=KIjZ9-WTvFY">
+        <img
+          src="assets/video.png"
+          width="100%"
+          style="max-width:400px; min-width:180px;"
+          alt="Demo video 2"
+        />
+      </a>
+      <br/>
+      <sub>
+        <b>Amiga Debugging</b><br/>
+        Debug a system friendly Amiga program
+      </sub>
+    </td>
+  </tr>
+</table>
 </p>
 
 ![Debugger UI](assets/debugger.png)
