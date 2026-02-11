@@ -28,6 +28,7 @@
 #include "debug.h"
 #include "file.h"
 #include "syntax_highlight.h"
+#include "syntax_highlight_asm.h"
 #include "print_eval.h"
 
 typedef struct source_pane_state {
@@ -311,6 +312,10 @@ source_pane_hasCSourceExtension(const char *path)
     const char *dot = strrchr(path, '.');
     if (!dot || !dot[1]) {
         return 0;
+    }
+    if (strcmp(dot, ".s") == 0 || strcmp(dot, ".S") == 0 ||
+        strcmp(dot, ".asm") == 0 || strcmp(dot, ".ASM") == 0) {
+        return 1;
     }
     return strcmp(dot, ".c") == 0 || strcmp(dot, ".cc") == 0 ||
            strcmp(dot, ".cpp") == 0 || strcmp(dot, ".cxx") == 0;
@@ -1220,6 +1225,115 @@ source_pane_collectStabsFunctions(source_pane_state_t *st, const char *elf_path,
     return added;
 }
 
+static int
+source_pane_collectObjdumpTextFunctions(source_pane_state_t *st, const char *elf_path, const char *source_file)
+{
+    if (!st || !elf_path || !*elf_path || !debugger.elfValid) {
+        return 0;
+    }
+    char objdump[PATH_MAX];
+    if (!debugger_toolchainBuildBinary(objdump, sizeof(objdump), "objdump")) {
+        return 0;
+    }
+    char objdump_exe[PATH_MAX];
+    if (!file_findInPath(objdump, objdump_exe, sizeof(objdump_exe))) {
+        return 0;
+    }
+    char cmd[PATH_MAX * 2];
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump_exe, "-t", elf_path, 1)) {
+        return 0;
+    }
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return 0;
+    }
+
+    int added = 0;
+    char line[2048];
+    char resolved_source[PATH_MAX];
+    if (source_file && *source_file) {
+        source_pane_resolveSourcePath(source_file, resolved_source, sizeof(resolved_source));
+    } else {
+        resolved_source[0] = '\0';
+    }
+    if (!addr2line_start(elf_path)) {
+        pclose(fp);
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *tokens[16];
+        int count = 0;
+        char *cursor = line;
+        while (*cursor && isspace((unsigned char)*cursor)) {
+            ++cursor;
+        }
+        if (!*cursor || !isxdigit((unsigned char)*cursor)) {
+            continue;
+        }
+        while (count < (int)(sizeof(tokens) / sizeof(tokens[0]))) {
+            while (*cursor && isspace((unsigned char)*cursor)) {
+                ++cursor;
+            }
+            if (!*cursor) {
+                break;
+            }
+            tokens[count++] = cursor;
+            while (*cursor && !isspace((unsigned char)*cursor)) {
+                ++cursor;
+            }
+            if (*cursor) {
+                *cursor++ = '\0';
+            }
+        }
+        if (count < 4) {
+            continue;
+        }
+        uint64_t symbol_addr = 0;
+        if (!source_pane_parseHex64(tokens[0], &symbol_addr) || symbol_addr == 0) {
+            continue;
+        }
+        int text_symbol = 0;
+        for (int i = 1; i < count; ++i) {
+            if (strcmp(tokens[i], ".text") == 0 || strncmp(tokens[i], ".text.", 6) == 0) {
+                text_symbol = 1;
+                break;
+            }
+        }
+        if (!text_symbol) {
+            continue;
+        }
+        const char *symbol_name = tokens[count - 1];
+        if (!symbol_name || !*symbol_name || symbol_name[0] == '.') {
+            continue;
+        }
+
+        char resolved_file[PATH_MAX];
+        char function_name[1024];
+        int function_line = 0;
+        if (!addr2line_resolveDetailed(symbol_addr, resolved_file, sizeof(resolved_file),
+                                       &function_line, function_name, sizeof(function_name))) {
+            continue;
+        }
+        if (function_line <= 0 || !resolved_file[0]) {
+            continue;
+        }
+        char resolved_path[PATH_MAX];
+        source_pane_resolveSourcePath(resolved_file, resolved_path, sizeof(resolved_path));
+        if (resolved_source[0] && !source_pane_fileMatches(resolved_path, resolved_source)) {
+            continue;
+        }
+        const char *display_name = function_name[0] ? function_name : symbol_name;
+        if (!display_name[0] || strcmp(display_name, "??") == 0) {
+            continue;
+        }
+        added += source_pane_addSourceFunction(st, resolved_path, display_name, function_line);
+    }
+
+    pclose(fp);
+    return added;
+}
+
 static void
 source_pane_refreshSourceFunctions(e9ui_component_t *comp, source_pane_state_t *st, const char *source_file)
 {
@@ -1261,6 +1375,9 @@ source_pane_refreshSourceFunctions(e9ui_component_t *comp, source_pane_state_t *
     int added = source_pane_collectFunctionSymbols(st, elf, source_file);
     if (added == 0) {
         added += source_pane_collectStabsFunctions(st, elf, source_file);
+    }
+    if (added == 0) {
+        added += source_pane_collectObjdumpTextFunctions(st, elf, source_file);
     }
     st->sourceFunctionsLoaded = 1;
     strncpy(st->sourceFunctionsElf, elf, sizeof(st->sourceFunctionsElf) - 1);
@@ -1633,6 +1750,131 @@ source_pane_drawSegment(e9ui_context_t *ctx, e9ui_component_t *owner, TTF_Font *
     if (seg != stackBuf) {
         alloc_free(seg);
     }
+}
+
+typedef struct source_pane_asm_spans {
+    syntax_highlight_span_t *items;
+    int count;
+    int cap;
+} source_pane_asm_spans_t;
+
+static void
+source_pane_freeAsmSpans(source_pane_asm_spans_t *spans)
+{
+    if (!spans) {
+        return;
+    }
+    if (spans->items) {
+        alloc_free(spans->items);
+    }
+    memset(spans, 0, sizeof(*spans));
+}
+
+static int
+source_pane_addAsmSpan(void *user, int lineIndex, int startColumn, int length, syntax_highlight_kind_t kind)
+{
+    if (!user || lineIndex != 0 || startColumn < 0 || length <= 0) {
+        return 0;
+    }
+    source_pane_asm_spans_t *spans = (source_pane_asm_spans_t*)user;
+    if (spans->count >= spans->cap) {
+        int nextCap = spans->cap ? spans->cap * 2 : 8;
+        syntax_highlight_span_t *nextItems = (syntax_highlight_span_t*)alloc_realloc(
+            spans->items, (size_t)nextCap * sizeof(*nextItems));
+        if (!nextItems) {
+            return 0;
+        }
+        spans->items = nextItems;
+        spans->cap = nextCap;
+    }
+    syntax_highlight_span_t *dst = &spans->items[spans->count++];
+    dst->startColumn = startColumn;
+    dst->length = length;
+    dst->kind = kind;
+    return 1;
+}
+
+static int
+source_pane_buildAsmLineSpans(const char *line, source_pane_asm_spans_t *outSpans)
+{
+    if (!line || !outSpans) {
+        return 0;
+    }
+    memset(outSpans, 0, sizeof(*outSpans));
+    int lineLength = (int)strlen(line);
+    if (lineLength <= 0) {
+        return 1;
+    }
+    if (!syntax_highlight_asm_buildLineSpans(line, lineLength, 0, source_pane_addAsmSpan, outSpans)) {
+        source_pane_freeAsmSpans(outSpans);
+        return 0;
+    }
+    return 1;
+}
+
+static void
+source_pane_renderAsmLineHighlighted(e9ui_context_t *ctx, e9ui_component_t *owner, TTF_Font *font,
+                                     const char *line, int highlightOffset, SDL_Color baseColor, int textX, int y,
+                                     int lineHeight, int hitW, void *sourceBucket)
+{
+    if (!ctx || !owner || !font || !line) {
+        return;
+    }
+    e9ui_text_select_drawText(ctx, owner, font, line, baseColor, textX, y,
+                              lineHeight, hitW, sourceBucket, 0, 1);
+    if (highlightOffset < 0) {
+        highlightOffset = 0;
+    }
+    int lineLen = (int)strlen(line);
+    if (highlightOffset > lineLen) {
+        highlightOffset = lineLen;
+    }
+    source_pane_asm_spans_t spans;
+    if (!source_pane_buildAsmLineSpans(line + highlightOffset, &spans)) {
+        return;
+    }
+    if (!spans.items || spans.count <= 0) {
+        source_pane_freeAsmSpans(&spans);
+        return;
+    }
+    int cursorIndex = 0;
+    int cursorX = textX;
+    if (highlightOffset > 0) {
+        cursorX += source_pane_measureSegment(font, line, 0, highlightOffset);
+        cursorIndex = highlightOffset;
+    }
+    for (int i = 0; i < spans.count; ++i) {
+        int start = spans.items[i].startColumn + highlightOffset;
+        int len = spans.items[i].length;
+        if (start < cursorIndex) {
+            int trim = cursorIndex - start;
+            if (trim >= len) {
+                continue;
+            }
+            start += trim;
+            len -= trim;
+        }
+        if (start >= lineLen || len <= 0) {
+            continue;
+        }
+        if (start > cursorIndex) {
+            int gap = source_pane_measureSegment(font, line, cursorIndex, start - cursorIndex);
+            cursorX += gap;
+            cursorIndex = start;
+        }
+        if (start + len > lineLen) {
+            len = lineLen - start;
+        }
+        if (len <= 0) {
+            continue;
+        }
+        SDL_Color color = source_pane_syntaxColor(spans.items[i].kind);
+        source_pane_drawSegment(ctx, owner, font, line, start, len, color, cursorX, y, lineHeight);
+        int segw = source_pane_measureSegment(font, line, start, len);
+        cursorX += segw;
+        cursorIndex = start + len;
+    }
+    source_pane_freeAsmSpans(&spans);
 }
 
 static void
@@ -2438,8 +2680,8 @@ source_pane_renderAsm(e9ui_component_t *self, e9ui_context_t *ctx)
         void *sourceBucket = st ? (void*)&st->bucketSource : (void*)self;
         e9ui_text_select_drawText(ctx, self, useFont, abuf, use_col, lnx, y,
                                   metrics.lineHeight, 0, addrBucket, 1, 1);
-        e9ui_text_select_drawText(ctx, self, useFont, ins, txt, textX, y,
-                                  metrics.lineHeight, hitW, sourceBucket, 0, 1);
+        source_pane_renderAsmLineHighlighted(ctx, self, useFont, ins, 0, txt, textX, y,
+                                             metrics.lineHeight, hitW, sourceBucket);
         y += metrics.lineHeight;
         if (y > clipBottom) {
             break;
@@ -2577,8 +2819,8 @@ source_pane_renderHex(e9ui_component_t *self, e9ui_context_t *ctx)
         void *sourceBucket = st ? (void*)&st->bucketSource : (void*)self;
         e9ui_text_select_drawText(ctx, self, useFont, abuf, use_col, lnx, y,
                                   metrics.lineHeight, 0, addrBucket, 1, 1);
-        e9ui_text_select_drawText(ctx, self, useFont, linebuf, txt, textX, y,
-                                  metrics.lineHeight, hitW, sourceBucket, 0, 1);
+        source_pane_renderAsmLineHighlighted(ctx, self, useFont, linebuf, (int)strlen(hexbuf), txt,
+                                             textX, y, metrics.lineHeight, hitW, sourceBucket);
 
         y += metrics.lineHeight;
         if (y > clipBottom) {
@@ -3093,50 +3335,16 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
                 return 0;
             }
             int maxLines = metrics.maxLines > 0 ? metrics.maxLines : 1;
-            int streaming = (dasm_getFlags() & DASM_IFACE_FLAG_STREAMING) ? 1 : 0;
-            int total = dasm_getTotal();
-            if (!streaming && total <= 0) {
-                return 0;
-            }
-            int curIndex = 0;
-            unsigned long curAddr = 0;
-            (void)machine_findReg(&debugger.machine, "PC", &curAddr);
-            if (!dasm_findIndexForAddr(curAddr, &curIndex) && !streaming) {
-                curIndex = 0;
-            }
-            int startIndex = curIndex - (maxLines / 2);
-            if (st && st->scrollIndexValid) {
-                startIndex = st->scrollIndex;
-            }
-            if (startIndex < 0 && !streaming) {
-                startIndex = 0;
-            }
-            if (!streaming && startIndex >= total) {
-                startIndex = total - 1;
-            }
-            int endIndex = startIndex + maxLines - 1;
-            if (!streaming && endIndex >= total) {
-                endIndex = total - 1;
-            }
+            int drawMaxLines = maxLines + 1;
+            uint64_t curAddr = 0;
             const char **lines = NULL;
             const uint64_t *addrs = NULL;
-            int first = 0;
             int count = 0;
-            if (!dasm_getRangeByIndex(startIndex, endIndex, &lines, &addrs, &first, &count)) {
+            if (!source_pane_getAsmWindow(st, drawMaxLines, &curAddr, &lines, &addrs, &count)) {
                 return 0;
             }
-            if (!streaming && count < maxLines && total > 0) {
-                int missing = maxLines - count;
-                int altStart = first - missing;
-                if (altStart < 0) {
-                    altStart = 0;
-                }
-                int altEnd = altStart + maxLines - 1;
-                if (altEnd >= total) {
-                    altEnd = total - 1;
-                }
-                dasm_getRangeByIndex(altStart, altEnd, &lines, &addrs, &first, &count);
-            }
+            (void)curAddr;
+            (void)lines;
             int hexw = dasm_getAddrHexWidth();
             if (hexw < 6) {
                 hexw = 6;

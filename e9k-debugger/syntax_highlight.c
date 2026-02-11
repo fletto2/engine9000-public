@@ -14,6 +14,7 @@
 
 #include "syntax_highlight.h"
 #include "alloc.h"
+#include "syntax_highlight_asm.h"
 
 #ifdef E9K_USE_TREE_SITTER
 #include "tree_sitter/api.h"
@@ -267,6 +268,19 @@ syntax_highlight_addLineSpan(syntax_highlight_line_entry_t *line, int startColum
 }
 
 static int
+syntax_highlight_addAsmSpan(void *user, int lineIndex, int startColumn, int length, syntax_highlight_kind_t kind)
+{
+    if (!user || lineIndex < 0 || startColumn < 0 || length <= 0) {
+        return 0;
+    }
+    syntax_highlight_entry_t *entry = (syntax_highlight_entry_t*)user;
+    if (!entry->lines || lineIndex >= entry->lineCount) {
+        return 0;
+    }
+    return syntax_highlight_addLineSpan(&entry->lines[lineIndex], startColumn, length, kind);
+}
+
+static int
 syntax_highlight_kindPriority(syntax_highlight_kind_t kind)
 {
     switch (kind) {
@@ -425,6 +439,14 @@ syntax_highlight_buildSpans(syntax_highlight_entry_t *entry)
 {
     if (!entry || !entry->text) {
         return 0;
+    }
+    const char *dot = entry->path ? strrchr(entry->path, '.') : NULL;
+    if (dot &&
+        (strcmp(dot, ".s") == 0 || strcmp(dot, ".S") == 0 ||
+         strcmp(dot, ".asm") == 0 || strcmp(dot, ".ASM") == 0)) {
+        return syntax_highlight_asm_buildSpans(entry->text, entry->textLength,
+                                               entry->lineStarts, entry->lineCount,
+                                               syntax_highlight_addAsmSpan, entry);
     }
     if (!syntax_highlight_prepareParser()) {
         return 0;

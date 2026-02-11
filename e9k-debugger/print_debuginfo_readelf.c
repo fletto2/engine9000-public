@@ -507,6 +507,12 @@ print_debuginfo_readelf_addSymbol(print_index_t *index, const char *name, uint32
     if (!index || !name) {
         return 0;
     }
+    for (int i = 0; i < index->symbolCount; ++i) {
+        if (index->symbols[i].name && strcmp(index->symbols[i].name, name) == 0) {
+            index->symbols[i].addr = addr;
+            return 1;
+        }
+    }
     if (index->symbolCount >= index->symbolCap) {
         int next = index->symbolCap ? index->symbolCap * 2 : 1024;
         print_symbol_t *nextSyms = (print_symbol_t *)alloc_realloc(index->symbols, sizeof(*nextSyms) * (size_t)next);
@@ -521,6 +527,28 @@ print_debuginfo_readelf_addSymbol(print_index_t *index, const char *name, uint32
     sym->name = print_debuginfo_readelf_strdup(name);
     sym->addr = addr;
     return sym->name ? 1 : 0;
+}
+
+static uint32_t
+print_debuginfo_readelf_symbolRuntimeAddress(uint32_t symAddr, const char *section)
+{
+    uint32_t base = 0;
+    if (!section || !*section) {
+        return symAddr & 0x00ffffffu;
+    }
+    if (strcmp(section, ".text") == 0 || strncmp(section, ".text.", 6) == 0) {
+        base = debugger.machine.textBaseAddr;
+    } else if (strcmp(section, ".data") == 0 || strncmp(section, ".data.", 6) == 0) {
+        base = debugger.machine.dataBaseAddr;
+    } else if (strcmp(section, ".bss") == 0 || strncmp(section, ".bss.", 5) == 0) {
+        base = debugger.machine.bssBaseAddr;
+    } else if (strcmp(section, ".rodata") == 0 || strncmp(section, ".rodata.", 8) == 0) {
+        base = debugger.machine.dataBaseAddr ? debugger.machine.dataBaseAddr : debugger.machine.textBaseAddr;
+    }
+    if (base == 0) {
+        return symAddr & 0x00ffffffu;
+    }
+    return (base + symAddr) & 0x00ffffffu;
 }
 
 int
@@ -569,6 +597,14 @@ print_debuginfo_readelf_loadSymbols(const char *elfPath, print_index_t *index)
         if (!end || end == tokens[0]) {
             continue;
         }
+        const char *section = NULL;
+        for (int i = 1; i < count - 1; ++i) {
+            if (tokens[i] && tokens[i][0] == '.') {
+                section = tokens[i];
+                break;
+            }
+        }
+        addr = print_debuginfo_readelf_symbolRuntimeAddress(addr, section);
         const char *name = tokens[count - 1];
         if (!name || !*name) {
             continue;

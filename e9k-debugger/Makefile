@@ -96,7 +96,7 @@ SRCS += $(PLATFORM_POSIX_SRCS) $(PLATFORM_MACOS_SRCS)
 else
 SRCS += $(PLATFORM_POSIX_SRCS) $(PLATFORM_LINUX_SRCS)
 endif
-SRCS += syntax_highlight.c
+SRCS += syntax_highlight.c syntax_highlight_asm.c
 
 TREE_SITTER_CORE_DIR = deps/tree-sitter/lib
 TREE_SITTER_C_DIR = deps/tree-sitter-c
