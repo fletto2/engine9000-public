@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "debugger.h"
 #include "sprite_debug.h"
+#include "mega_sprite_debug.h"
 #include "ui.h"
 #include "crt.h"
 #include "state_buffer.h"
@@ -163,6 +164,12 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
             }
             return 1;
         }
+        if (mega_sprite_debug_ownsWindowId(kev->windowID)) {
+            if (mega_sprite_debug_is_open()) {
+                mega_sprite_debug_toggle();
+            }
+            return 1;
+        }
         if (e9ui->helpModal) {
             help_cancelModal();
             return 1;
@@ -176,6 +183,11 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
             return 1;
         }
         return 1;
+    }
+    if (mega_sprite_debug_ownsWindowId(kev->windowID)) {
+        if (mega_sprite_debug_handleKeydown(kev)) {
+            return 1;
+        }
     }
     if (key == SDLK_F1) {
         e9ui_setFocus(ctx, NULL);

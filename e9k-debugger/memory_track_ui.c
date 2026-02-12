@@ -35,8 +35,9 @@
 #include "state_buffer.h"
 
 #define MEMORY_TRACK_UI_TITLE "ENGINE9000 DEBUGGER - MEMORY TRACKER"
-#define MEMORY_TRACK_UI_REGION_BASE 0x00100000u
-#define MEMORY_TRACK_UI_REGION_SIZE 0x10000u
+#define MEMORY_TRACK_UI_REGION_BASE_NEOGEO 0x00100000u
+#define MEMORY_TRACK_UI_REGION_BASE_MEGADRIVE 0x00ff0000u
+#define MEMORY_TRACK_UI_REGION_SIZE_DEFAULT 0x10000u
 
 typedef struct memory_track_entry {
     uint32_t address;
@@ -234,6 +235,26 @@ memory_track_ui_readFrameBytes(uint64_t frameNo, uint32_t base, uint8_t *out, si
         return 0;
     }
     return 1;
+}
+
+static void
+memory_track_ui_getRegion(uint32_t *outBase, size_t *outSize)
+{
+    uint32_t base = MEMORY_TRACK_UI_REGION_BASE_NEOGEO;
+    size_t size = MEMORY_TRACK_UI_REGION_SIZE_DEFAULT;
+    if (target) {
+        if (target->coreIndex == TARGET_MEGADRIVE) {
+            base = MEMORY_TRACK_UI_REGION_BASE_MEGADRIVE;
+        } else if (target->coreIndex == TARGET_NEOGEO) {
+            base = MEMORY_TRACK_UI_REGION_BASE_NEOGEO;
+        }
+    }
+    if (outBase) {
+        *outBase = base;
+    }
+    if (outSize) {
+        *outSize = size;
+    }
 }
 
 static uint32_t
@@ -1018,22 +1039,25 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
 
     uint64_t restoreFrame = state_buffer_getCurrentFrameNo();
     uint64_t currentFrameNo = restoreFrame;
-    if (ui->scratchSize != MEMORY_TRACK_UI_REGION_SIZE) {
+    uint32_t regionBase = 0;
+    size_t regionSize = 0;
+    memory_track_ui_getRegion(&regionBase, &regionSize);
+    if (ui->scratchSize != regionSize) {
         ui->scratchBase = NULL;
         ui->scratchCur = NULL;
         ui->scratchRef = NULL;
         ui->scratchSize = 0;
     }
     if (!ui->scratchBase) {
-        ui->scratchBase = (uint8_t*)alloc_alloc(MEMORY_TRACK_UI_REGION_SIZE);
+        ui->scratchBase = (uint8_t*)alloc_alloc(regionSize);
     }
     if (!ui->scratchCur) {
-        ui->scratchCur = (uint8_t*)alloc_alloc(MEMORY_TRACK_UI_REGION_SIZE);
+        ui->scratchCur = (uint8_t*)alloc_alloc(regionSize);
     }
     if (!ui->scratchRef) {
-        ui->scratchRef = (uint8_t*)alloc_alloc(MEMORY_TRACK_UI_REGION_SIZE);
+        ui->scratchRef = (uint8_t*)alloc_alloc(regionSize);
     }
-    ui->scratchSize = MEMORY_TRACK_UI_REGION_SIZE;
+    ui->scratchSize = regionSize;
     if (ui->scratchFrameCap < (size_t)columnCount) {
         size_t newCap = ui->scratchFrameCap ? ui->scratchFrameCap : 4;
         while (newCap < (size_t)columnCount) {
@@ -1247,7 +1271,7 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
         return 0;
     }
 
-    size_t addressSlots = MEMORY_TRACK_UI_REGION_SIZE / (size_t)accessSize;
+    size_t addressSlots = regionSize / (size_t)accessSize;
     if (addressSlots > ui->addressSeenCap) {
         uint8_t *next = (uint8_t*)alloc_realloc(ui->addressSeen, addressSlots);
         if (!next) {
@@ -1275,8 +1299,8 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
     }
 
     if (frameActive[0]) {
-        if (!memory_track_ui_readFrameBytes(frameNos[0], MEMORY_TRACK_UI_REGION_BASE, refBytes,
-                                            MEMORY_TRACK_UI_REGION_SIZE)) {
+        if (!memory_track_ui_readFrameBytes(frameNos[0], regionBase, refBytes,
+                                            regionSize)) {
             memory_track_ui_setError(ui, "Failed to read frame %llu",
                                      (unsigned long long)frameNos[0]);
             goto cleanup;
@@ -1306,20 +1330,20 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
             baseBytes = curBytes;
             curBytes = tmp;
         } else {
-            if (!memory_track_ui_readFrameBytes(baseFrameNo, MEMORY_TRACK_UI_REGION_BASE, baseBytes,
-                                                MEMORY_TRACK_UI_REGION_SIZE)) {
+            if (!memory_track_ui_readFrameBytes(baseFrameNo, regionBase, baseBytes,
+                                                regionSize)) {
                 memory_track_ui_setError(ui, "Failed to read frame %llu",
                                          (unsigned long long)baseFrameNo);
                 goto cleanup;
             }
         }
-        if (!memory_track_ui_readFrameBytes(frameNo, MEMORY_TRACK_UI_REGION_BASE, curBytes,
-                                            MEMORY_TRACK_UI_REGION_SIZE)) {
+        if (!memory_track_ui_readFrameBytes(frameNo, regionBase, curBytes,
+                                            regionSize)) {
             memory_track_ui_setError(ui, "Failed to read frame %llu", (unsigned long long)frameNo);
             goto cleanup;
         }
         memory_track_entry_t *entries = NULL;
-        size_t maxEntries = MEMORY_TRACK_UI_REGION_SIZE / (size_t)accessSize;
+        size_t maxEntries = regionSize / (size_t)accessSize;
         size_t entryCount = 0;
         if (maxEntries > 0) {
             entries = (memory_track_entry_t*)alloc_alloc(maxEntries * sizeof(*entries));
@@ -1329,11 +1353,11 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
             }
         }
         if (entries) {
-            for (size_t offset = 0; offset + (size_t)accessSize <= MEMORY_TRACK_UI_REGION_SIZE; offset += (size_t)accessSize) {
+            for (size_t offset = 0; offset + (size_t)accessSize <= regionSize; offset += (size_t)accessSize) {
                 uint32_t baseValue = memory_track_ui_readValueBE(baseBytes + offset, accessSize);
                 uint32_t curValue = memory_track_ui_readValueBE(curBytes + offset, accessSize);
                 if (baseValue != curValue) {
-                    entries[entryCount].address = MEMORY_TRACK_UI_REGION_BASE + (uint32_t)offset;
+                    entries[entryCount].address = regionBase + (uint32_t)offset;
                     entries[entryCount].value = curValue;
                     entryCount++;
                     size_t slot = offset / (size_t)accessSize;
@@ -1373,7 +1397,7 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
             if (!ui->addressSeen[slot]) {
                 continue;
             }
-            uint32_t address = MEMORY_TRACK_UI_REGION_BASE + (uint32_t)(slot * (size_t)accessSize);
+            uint32_t address = regionBase + (uint32_t)(slot * (size_t)accessSize);
             ui->baseAddresses[ui->baseAddressCount++] = address;
         }
     }
@@ -1387,7 +1411,7 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
         }
         for (size_t entryIndex = 0; entryIndex < entryCount; ++entryIndex) {
             uint32_t address = ui->baseAddresses[entryIndex];
-            uint32_t offset = address - MEMORY_TRACK_UI_REGION_BASE;
+            uint32_t offset = address - regionBase;
             entries[entryIndex].address = address;
             entries[entryIndex].value = memory_track_ui_readValueBE(refBytes + offset, accessSize);
         }

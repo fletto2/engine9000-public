@@ -11,6 +11,7 @@
 #include "debugger.h"
 #include "e9ui.h"
 #include "sprite_debug.h"
+#include "mega_sprite_debug.h"
 #include "transition.h"
 #include "ui_test.h"
 
@@ -149,6 +150,7 @@ config_persistConfig(FILE *f)
     fprintf(f, "comp.config.core_system=%d\n", target->coreIndex);
     crt_persistConfig(f);
     sprite_debug_persistConfig(f);
+    mega_sprite_debug_persistConfig(f);
 }
 
 void
@@ -295,6 +297,11 @@ config_loadConfig(void)
         if (strncmp(key, "comp.sprite_debug.", 18) == 0) {
             const char *prop = key + 18;
             sprite_debug_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.mega_sprite_debug.", 23) == 0) {
+            const char *prop = key + 23;
+            mega_sprite_debug_loadConfigProperty(prop, value);
             continue;
         }
     }

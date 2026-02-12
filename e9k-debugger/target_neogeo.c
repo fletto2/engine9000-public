@@ -688,21 +688,9 @@ target_neogeo_onVblank(void)
 {
   e9k_debug_sprite_state_t spriteState;
   if (libretro_host_debugGetSpriteState(&spriteState) && spriteState.vram && spriteState.vram_words) {
-    size_t byteCount = spriteState.vram_words * sizeof(uint16_t);
-    if (!debugger.spriteShadowVram || debugger.spriteShadowWords != spriteState.vram_words) {
-      void *nextBuffer = realloc(debugger.spriteShadowVram, byteCount);
-      if (nextBuffer) {
-	debugger.spriteShadowVram = (uint16_t *)nextBuffer;
-	debugger.spriteShadowWords = spriteState.vram_words;
-      }
-    }
-    if (debugger.spriteShadowVram && debugger.spriteShadowWords == spriteState.vram_words) {
-      memcpy(debugger.spriteShadowVram, spriteState.vram, byteCount);
-      debugger.spriteShadow = spriteState;
-      debugger.spriteShadow.vram = debugger.spriteShadowVram;
-      debugger.spriteShadow.vram_words = debugger.spriteShadowWords;
-      debugger.spriteShadowReady = 1;
-    }
+    emu_geo_setSpriteState(&spriteState, 1);
+  } else {
+    emu_geo_setSpriteState(NULL, 0);
   }
 }
 
@@ -753,6 +741,8 @@ target_neogeo_applyCoreOptions(void)
 static void
 target_neogeo_validateAPI(void)
 {
+  emu_geo_setSpriteState(NULL, 0);
+  libretro_host_unbindMegaDebugApis();
   libretro_host_bindNeogeoDebugApis();
 }
 

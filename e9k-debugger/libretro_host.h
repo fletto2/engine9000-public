@@ -16,6 +16,7 @@
 #include "libretro.h"
 
 #include "e9k-geo.h"
+#include "e9k-mega.h"
 #include "e9k-lib.h"
 
 #define LIBRETRO_HOST_MAX_PORTS 4
@@ -158,6 +159,9 @@ bool
 libretro_host_debugGetSpriteState(e9k_debug_sprite_state_t *out);
 
 bool
+libretro_host_debugMegaGetSpriteState(e9k_debug_mega_sprite_state_t *out);
+
+bool
 libretro_host_debugGetP1Rom(e9k_debug_rom_region_t *out);
 
 size_t
@@ -249,6 +253,12 @@ libretro_host_bindNeogeoDebugApis(void);
 
 void
 libretro_host_unbindNeogeoDebugApis(void);
+
+void
+libretro_host_bindMegaDebugApis(void);
+
+void
+libretro_host_unbindMegaDebugApis(void);
 
 void
 libretro_host_setCoreOption(const char *key, const char *value);

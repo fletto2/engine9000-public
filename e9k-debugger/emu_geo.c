@@ -10,6 +10,7 @@
 #include "e9ui.h"
 #include "sprite_debug.h"
 #include "libretro.h"
+#include "alloc.h"
 
 #define GEO_SPRITE_COUNT 382u
 #define GEO_SPRITES_PER_LINE_MAX 96u
@@ -38,6 +39,45 @@ typedef struct  {
 
 static emu_geo_overlay_cache_t emu_geo_overlayCache = {0};
 static int emu_geo_histogramEnabled = 0;
+static int emu_geo_spriteShadowReady = 0;
+static e9k_debug_sprite_state_t emu_geo_spriteShadow;
+static uint16_t *emu_geo_spriteShadowVram = NULL;
+static size_t emu_geo_spriteShadowWords = 0;
+
+void
+emu_geo_setSpriteState(const e9k_debug_sprite_state_t *state, int ready)
+{
+    if (!ready || !state || !state->vram || !state->vram_words) {
+        emu_geo_spriteShadowReady = 0;
+        return;
+    }
+
+    size_t byteCount = state->vram_words * sizeof(uint16_t);
+    if (!emu_geo_spriteShadowVram || emu_geo_spriteShadowWords != state->vram_words) {
+        void *nextBuffer = realloc(emu_geo_spriteShadowVram, byteCount);
+        if (!nextBuffer) {
+            emu_geo_spriteShadowReady = 0;
+            return;
+        }
+        emu_geo_spriteShadowVram = (uint16_t *)nextBuffer;
+        emu_geo_spriteShadowWords = state->vram_words;
+    }
+
+    memcpy(emu_geo_spriteShadowVram, state->vram, byteCount);
+    emu_geo_spriteShadow = *state;
+    emu_geo_spriteShadow.vram = emu_geo_spriteShadowVram;
+    emu_geo_spriteShadow.vram_words = emu_geo_spriteShadowWords;
+    emu_geo_spriteShadowReady = 1;
+}
+
+void
+emu_geo_shutdown(void)
+{
+    free(emu_geo_spriteShadowVram);
+    emu_geo_spriteShadowVram = NULL;
+    emu_geo_spriteShadowWords = 0;
+    emu_geo_spriteShadowReady = 0;
+}
 
 static void
 emu_geo_toggleHistogram(e9ui_context_t *ctx, void *user)
@@ -649,12 +689,12 @@ emu_geo_translateKey(SDL_Keycode key)
 void
 emu_geo_render(e9ui_context_t *ctx, SDL_Rect* dst)    
 {
-  if (emu_geo_histogramEnabled && debugger.spriteShadowReady) {
-    emu_e9k_spriteOverlayRender(ctx->renderer, dst, &debugger.spriteShadow);
+  if (emu_geo_histogramEnabled && emu_geo_spriteShadowReady) {
+    emu_e9k_spriteOverlayRender(ctx->renderer, dst, &emu_geo_spriteShadow);
   }
   
-  if (sprite_debug_is_open() && debugger.spriteShadowReady) {
-    sprite_debug_render(&debugger.spriteShadow);
+  if (sprite_debug_is_open() && emu_geo_spriteShadowReady) {
+    sprite_debug_render(&emu_geo_spriteShadow);
   }  
 }
 

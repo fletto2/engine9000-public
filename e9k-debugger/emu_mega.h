@@ -9,6 +9,10 @@
 #pragma once
 
 #include "e9ui.h"
-#include "debugger.h"
+#include "e9k-mega.h"
+#include "emu.h"
+
+void
+emu_mega_setSpriteState(const e9k_debug_mega_sprite_state_t *state, int ready);
 
 extern const emu_system_iface_t emu_mega_iface;

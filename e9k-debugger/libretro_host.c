@@ -80,6 +80,7 @@ typedef size_t (*e9k_debug_text_read_fn_t)(char *out, size_t cap);
 typedef void (*e9k_debug_set_base_callback_fn_t)(void (*cb)(uint32_t section, uint32_t base));
 typedef size_t (*e9k_debug_neogeo_get_sprite_state_fn_t)(e9k_debug_sprite_state_t *out, size_t cap);
 typedef size_t (*e9k_debug_neogeo_get_p1_rom_fn_t)(e9k_debug_rom_region_t *out, size_t cap);
+typedef size_t (*e9k_debug_mega_get_sprite_state_fn_t)(e9k_debug_mega_sprite_state_t *out, size_t cap);
 typedef size_t (*e9k_debug_disassemble_quick_fn_t)(uint32_t pc, char *out, size_t cap);
 typedef size_t (*e9k_debug_read_checkpoints_fn_t)(e9k_debug_checkpoint_t *out, size_t cap);
 typedef void (*e9k_debug_reset_checkpoints_fn_t)(void);
@@ -193,6 +194,7 @@ typedef struct  {
     e9k_debug_set_debug_option_fn_t debugSetDebugOption;
     e9k_debug_neogeo_get_sprite_state_fn_t debugNeoGeoGetSpriteState;
     e9k_debug_neogeo_get_p1_rom_fn_t debugNeoGeoGetP1Rom;
+    e9k_debug_mega_get_sprite_state_fn_t debugMegaGetSpriteState;
     e9k_debug_disassemble_quick_fn_t debugDisassembleQuick;
     e9k_debug_read_checkpoints_fn_t debugReadCheckpoints;
     e9k_debug_reset_checkpoints_fn_t debugResetCheckpoints;
@@ -2067,6 +2069,16 @@ libretro_host_debugGetSpriteState(e9k_debug_sprite_state_t *out)
 }
 
 bool
+libretro_host_debugMegaGetSpriteState(e9k_debug_mega_sprite_state_t *out)
+{
+    if (!out || !libretro_host.debugMegaGetSpriteState) {
+        return false;
+    }
+    size_t n = libretro_host.debugMegaGetSpriteState(out, sizeof(*out));
+    return n == sizeof(*out);
+}
+
+bool
 libretro_host_debugGetP1Rom(e9k_debug_rom_region_t *out)
 {
     if (!out || !libretro_host.debugNeoGeoGetP1Rom) {
@@ -2348,6 +2360,19 @@ libretro_host_unbindNeogeoDebugApis(void)
 {
     libretro_host.debugNeoGeoGetSpriteState = NULL;
     libretro_host.debugNeoGeoGetP1Rom = NULL;
+}
+
+void
+libretro_host_bindMegaDebugApis(void)
+{
+    libretro_host.debugMegaGetSpriteState =
+        (e9k_debug_mega_get_sprite_state_fn_t)libretro_host_loadSymbol("e9k_debug_mega_get_sprite_state");
+}
+
+void
+libretro_host_unbindMegaDebugApis(void)
+{
+    libretro_host.debugMegaGetSpriteState = NULL;
 }
 
 bool

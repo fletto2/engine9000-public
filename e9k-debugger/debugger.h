@@ -106,10 +106,6 @@ typedef struct e9k_debugger {
     uint64_t frameTimeCounter;
     double frameTimeAccum;
     int vblankCaptureActive;
-    int spriteShadowReady;
-    e9k_debug_sprite_state_t spriteShadow;
-    uint16_t *spriteShadowVram;
-    size_t spriteShadowWords;
     uint64_t uiFrameCounter;
     int uiRefreshHz;
     char recordPath[PATH_MAX];

@@ -48,6 +48,7 @@
 #include "amiga_uae_options.h"
 #include "neogeo_core_options.h"
 #include "breakpoints.h"
+#include "mega_sprite_debug.h"
 
 e9ui_global_t _e9ui;
 e9k_debugger_t debugger;
@@ -398,10 +399,11 @@ debugger_cleanup(void)
   if (sprite_debug_is_open()) {
     sprite_debug_toggle();
   }
+  if (mega_sprite_debug_is_open()) {
+    mega_sprite_debug_toggle();
+  }
   libretro_host_shutdown();
-  free(debugger.spriteShadowVram);
-  debugger.spriteShadowVram = NULL;
-  debugger.spriteShadowWords = 0;
+  emu_geo_shutdown();
   addr2line_stop();
   profile_streamStop();
   state_buffer_shutdown();

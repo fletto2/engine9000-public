@@ -393,6 +393,7 @@ target_amiga_applyCoreOptions(void)
 static void
 target_amiga_validateAPI(void)
 {
+  libretro_host_unbindMegaDebugApis();
   libretro_host_unbindNeogeoDebugApis();
   if (!libretro_host_setDebugBaseCallback(debugger_onSetDebugBaseFromCore)) {
     debug_error("debug_base: core does not expose e9k_debug_set_debug_base_callback");

@@ -34,6 +34,7 @@
 #include "debug.h"
 #include "smoke_test.h"
 #include "sprite_debug.h"
+#include "mega_sprite_debug.h"
 #include "libretro_host.h"
 #include "libretro.h"
 #include "e9ui_text_cache.h"
@@ -1565,7 +1566,7 @@ e9ui_processEvents(void)
         e9ui->ctx.cursorOverride = 0;
         if (ev.type == SDL_QUIT) return 1;
         else if (ev.type == SDL_MOUSEMOTION) {
-            if (sprite_debug_is_window_id(ev.motion.windowID)) {
+            if (sprite_debug_is_window_id(ev.motion.windowID) || mega_sprite_debug_ownsWindowId(ev.motion.windowID)) {
                 continue;
             }
             int prevX = e9ui->ctx.mouseX;
@@ -1588,7 +1589,7 @@ e9ui_processEvents(void)
             e9ui_text_select_handleEvent(&e9ui->ctx, &ev);
         }
         else if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP) {
-            if (sprite_debug_is_window_id(ev.button.windowID)) {
+            if (sprite_debug_is_window_id(ev.button.windowID) || mega_sprite_debug_ownsWindowId(ev.button.windowID)) {
                 continue;
             }
             int scaledX = e9ui_scale_coord(&e9ui->ctx, ev.button.x);
@@ -1605,7 +1606,7 @@ e9ui_processEvents(void)
             e9ui_text_select_handleEvent(&e9ui->ctx, &ev);
         }
         else if (ev.type == SDL_MOUSEWHEEL) {
-            if (sprite_debug_is_window_id(ev.wheel.windowID)) {
+            if (sprite_debug_is_window_id(ev.wheel.windowID) || mega_sprite_debug_ownsWindowId(ev.wheel.windowID)) {
                 continue;
             }
             ev.wheel.y = debugger_platform_normalizeMouseWheelY(ev.wheel.y);
@@ -1624,6 +1625,7 @@ e9ui_processEvents(void)
         }
         else if (ev.type == SDL_WINDOWEVENT) {
             sprite_debug_handleWindowEvent(&ev);
+            mega_sprite_debug_handleWindowEvent(&ev);
             if (ev.window.event == SDL_WINDOWEVENT_MOVED) {
                 e9ui->layout.winX = ev.window.data1; e9ui->layout.winY = ev.window.data2; config_saveConfig();
             } else if (ev.window.event == SDL_WINDOWEVENT_RESIZED || ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
@@ -1694,7 +1696,7 @@ e9ui_processEvents(void)
 	  e9ui_event_process(root, &e9ui->ctx, &ev);
 	}
 	if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT && !e9ui->ctx.focusClickHandled) {
-	  if (!sprite_debug_is_window_id(ev.button.windowID)) {
+	  if (!sprite_debug_is_window_id(ev.button.windowID) && !mega_sprite_debug_ownsWindowId(ev.button.windowID)) {
 	    e9ui_setFocus(&e9ui->ctx, NULL);
 	  }
         }

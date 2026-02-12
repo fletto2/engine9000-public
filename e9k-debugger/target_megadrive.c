@@ -451,7 +451,12 @@ target_megadrive_getLibretroCliConfig(void)
 static void
 target_megadrive_onVblank(void)
 {
-
+    e9k_debug_mega_sprite_state_t spriteState;
+    if (libretro_host_debugMegaGetSpriteState(&spriteState)) {
+        emu_mega_setSpriteState(&spriteState, 1);
+    } else {
+        emu_mega_setSpriteState(NULL, 0);
+    }
 }
 
 static void
@@ -487,6 +492,8 @@ target_megadrive_applyCoreOptions(void)
 static void
 target_megadrive_validateAPI(void)
 {
+    emu_mega_setSpriteState(NULL, 0);
+    libretro_host_bindMegaDebugApis();
     libretro_host_unbindNeogeoDebugApis();
 }
 

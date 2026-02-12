@@ -9,7 +9,13 @@
 #pragma once
 
 #include "e9ui.h"
-#include "debugger.h"
+#include "e9k-geo.h"
+#include "emu.h"
 
+void
+emu_geo_setSpriteState(const e9k_debug_sprite_state_t *state, int ready);
+
+void
+emu_geo_shutdown(void);
 
 extern const emu_system_iface_t emu_geo_iface;
