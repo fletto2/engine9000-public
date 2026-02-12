@@ -21,4 +21,3 @@ e9ui_link_setText(e9ui_component_t *link, const char *text);
 
 void
 e9ui_link_setUser(e9ui_component_t *link, void *user);
-

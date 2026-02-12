@@ -4512,23 +4512,28 @@ static void initialize_memwatch (int mode)
 }
 
 #ifdef __LIBRETRO__
-static int e9k_debug_hooks_active;
+#ifdef JIT
+static int e9k_debug_saved_cachesize = -1;
+#endif
 
-void debug_enableE9kHooks(void)
+int debug_enableE9kHooks(void)
 {
-	if (e9k_debug_hooks_active) {
-		return;
-	}
-
-	if (!memwatch_enabled && !mmu_enabled) {
+	if (!memwatch_enabled) {
 		initialize_memwatch(0);
 	}
 	if (!memwatch_enabled || !debug_mem_banks || !debug_mem_area) {
-		return;
+		return 0;
 	}
 
 	for (int i = 0; i < membank_total; ++i) {
 		addrbank *orig = mem_banks[i];
+		if (orig &&
+		    orig->bput == debug_bput &&
+		    orig->wput == debug_wput &&
+		    orig->lput == debug_lput &&
+		    debug_mem_banks[i]) {
+			orig = debug_mem_banks[i];
+		}
 		debug_mem_banks[i] = orig;
 
 		addrbank *newbank = debug_mem_area + i;
@@ -4554,7 +4559,17 @@ void debug_enableE9kHooks(void)
 		map_banks_quick(newbank, i, 1, 1);
 	}
 
-	e9k_debug_hooks_active = 1;
+#ifdef JIT
+	if (e9k_debug_saved_cachesize < 0) {
+		e9k_debug_saved_cachesize = currprefs.cachesize;
+	}
+	if (currprefs.cachesize) {
+		currprefs.cachesize = 0;
+		flush_icache(3);
+		set_special(SPCFLAG_END_COMPILE);
+	}
+#endif
+	return 1;
 }
 #endif
 

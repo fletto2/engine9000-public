@@ -8868,6 +8868,7 @@ bool retro_unserialize(const void *data_, size_t size)
                frame_counter++;
             }
             libretro_runloop_active = true;
+            e9k_debug_reapply_memhooks();
 
             /* If the above while loop times out, then
              * everything is completely broken. We cannot

@@ -60,7 +60,7 @@ static size_t e9k_debug_tempBreakpointCount = 0;
 static void (*e9k_debug_vblankCb)(void *) = NULL;
 static void *e9k_debug_vblankUser = NULL;
 
-void debug_enableE9kHooks(void);
+int debug_enableE9kHooks(void);
 
 static int e9k_debug_memhooksEnabled = 0;
 
@@ -306,6 +306,21 @@ e9k_debug_maskValue(uint32_t v, uint32_t sizeBits)
 	return v;
 }
 
+static uint32_t
+e9k_debug_sizeBytes(uint32_t sizeBits)
+{
+	if (sizeBits == 8u) {
+		return 1u;
+	}
+	if (sizeBits == 16u) {
+		return 2u;
+	}
+	if (sizeBits == 32u) {
+		return 4u;
+	}
+	return 0u;
+}
+
 static int
 e9k_debug_resolveSourceLocation(uint32_t pc24, uint64_t *outLocation)
 {
@@ -365,11 +380,11 @@ e9k_debug_tryGetCallReturnPc(uint32_t pc24, uae_u16 opcode, uint32_t *outReturnP
 static void
 e9k_debug_ensureMemhooks(void)
 {
-	if (e9k_debug_memhooksEnabled) {
-		return;
+	if (debug_enableE9kHooks()) {
+		e9k_debug_memhooksEnabled = 1;
+	} else {
+		e9k_debug_memhooksEnabled = 0;
 	}
-	debug_enableE9kHooks();
-	e9k_debug_memhooksEnabled = 1;
 }
 
 static int
@@ -672,7 +687,7 @@ e9k_debug_read_memory(uint32_t addr, uint8_t *out, size_t cap)
 	e9k_debug_watchpointSuspend++;
 	uaecptr base = (uaecptr)addr;
 	for (size_t i = 0; i < cap; ++i) {
-		out[i] = (uint8_t)get_byte(munge24(base + (uaecptr)i));
+		out[i] = (uint8_t)get_byte_debug(munge24(base + (uaecptr)i));
 	}
 	e9k_debug_watchpointSuspend--;
 	return cap;
@@ -899,6 +914,9 @@ e9k_debug_add_breakpoint_fromPeripheral(uint32_t addr)
 E9K_DEBUG_EXPORT void
 e9k_vblank_notify(void)
 {
+	if (e9k_debug_protectEnabledMask || e9k_debug_watchpointEnabledMask) {
+		e9k_debug_ensureMemhooks();
+	}
 	if (e9k_debug_profilerEnabled && !e9k_debug_paused) {
 		if (e9k_debug_prof_tick == e9k_debug_prof_lastTickAtFrame) {
 			uaecptr pc = m68k_getpc();
@@ -908,6 +926,14 @@ e9k_vblank_notify(void)
 	}
 	if (e9k_debug_vblankCb) {
 		e9k_debug_vblankCb(e9k_debug_vblankUser);
+	}
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_reapply_memhooks(void)
+{
+	if (e9k_debug_protectEnabledMask || e9k_debug_watchpointEnabledMask) {
+		e9k_debug_ensureMemhooks();
 	}
 }
 
@@ -990,14 +1016,8 @@ e9k_debug_protectFilterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldVal
 		return 1;
 	}
 
-	uint32_t sizeBytes = 0;
-	if (sizeBits == 8u) {
-		sizeBytes = 1;
-	} else if (sizeBits == 16u) {
-		sizeBytes = 2;
-	} else if (sizeBits == 32u) {
-		sizeBytes = 4;
-	} else {
+	uint32_t sizeBytes = e9k_debug_sizeBytes(sizeBits);
+	if (sizeBytes == 0u) {
 		return 1;
 	}
 
@@ -1014,6 +1034,34 @@ e9k_debug_protectFilterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldVal
 		}
 	}
 
+	for (uint32_t entryIndex = 0; entryIndex < E9K_PROTECT_COUNT; ++entryIndex) {
+		if ((e9k_debug_protectEnabledMask & (1ull << entryIndex)) == 0ull) {
+			continue;
+		}
+		const e9k_debug_protect_t *p = &e9k_debug_protects[entryIndex];
+		if (p->mode != E9K_PROTECT_MODE_BLOCK) {
+			continue;
+		}
+		uint32_t pSizeBytes = e9k_debug_sizeBytes(p->sizeBits);
+		if (pSizeBytes == 0u) {
+			continue;
+		}
+		uint32_t mask = p->addrMask ? p->addrMask : 0x00ffffffu;
+		for (uint32_t writeIndex = 0; writeIndex < sizeBytes; ++writeIndex) {
+			uint32_t writeAddr = (addr24 + writeIndex) & 0x00ffffffu;
+			for (uint32_t byteIndex = 0; byteIndex < pSizeBytes; ++byteIndex) {
+				uint32_t pa = (p->addr + byteIndex) & 0x00ffffffu;
+				if ((writeAddr & mask) == (pa & mask)) {
+					if (oldValueValid) {
+						*inoutValue = ov;
+						return 1;
+					}
+					return 0;
+				}
+			}
+		}
+	}
+
 	for (uint32_t writeIndex = 0; writeIndex < sizeBytes; ++writeIndex) {
 		uint32_t writeAddr = (addr24 + writeIndex) & 0x00ffffffu;
 		for (uint32_t entryIndex = 0; entryIndex < E9K_PROTECT_COUNT; ++entryIndex) {
@@ -1021,24 +1069,24 @@ e9k_debug_protectFilterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldVal
 				continue;
 			}
 			const e9k_debug_protect_t *p = &e9k_debug_protects[entryIndex];
-			if (p->sizeBits != sizeBits) {
+			if (p->mode != E9K_PROTECT_MODE_SET) {
+				continue;
+			}
+			uint32_t pSizeBytes = e9k_debug_sizeBytes(p->sizeBits);
+			if (pSizeBytes == 0u) {
 				continue;
 			}
 
 			uint32_t mask = p->addrMask ? p->addrMask : 0x00ffffffu;
-			for (uint32_t byteIndex = 0; byteIndex < sizeBytes; ++byteIndex) {
+			for (uint32_t byteIndex = 0; byteIndex < pSizeBytes; ++byteIndex) {
 				uint32_t pa = (p->addr + byteIndex) & 0x00ffffffu;
 				if ((writeAddr & mask) != (pa & mask)) {
 					continue;
 				}
 
 				if (p->mode == E9K_PROTECT_MODE_SET) {
-					uint32_t pshift = (sizeBytes - 1u - byteIndex) * 8u;
+					uint32_t pshift = (pSizeBytes - 1u - byteIndex) * 8u;
 					bytes[writeIndex] = (uint8_t)((p->value >> pshift) & 0xffu);
-				} else if (oldValueValid) {
-					bytes[writeIndex] = oldBytes[writeIndex];
-				} else {
-					return 1;
 				}
 				goto next_write_byte;
 			}
@@ -1218,6 +1266,9 @@ e9k_debug_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand,
                          uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand)
 {
 	e9k_debug_ensureMemhooks();
+	if (!e9k_debug_memhooksEnabled) {
+		return -1;
+	}
 	for (uint32_t i = 0; i < E9K_WATCHPOINT_COUNT; ++i) {
 		uint64_t bit = 1ull << i;
 		if ((e9k_debug_watchpointEnabledMask & bit) != 0ull) {
@@ -1274,6 +1325,9 @@ e9k_debug_set_watchpoint_enabled_mask(uint64_t mask)
 {
 	if (mask) {
 		e9k_debug_ensureMemhooks();
+		if (!e9k_debug_memhooksEnabled) {
+			return;
+		}
 	}
 	e9k_debug_watchpointEnabledMask = mask;
 }
@@ -1303,6 +1357,9 @@ E9K_DEBUG_EXPORT int
 e9k_debug_add_protect(uint32_t addr, uint32_t size_bits, uint32_t mode, uint32_t value)
 {
 	e9k_debug_ensureMemhooks();
+	if (!e9k_debug_memhooksEnabled) {
+		return -1;
+	}
 	if (size_bits != 8u && size_bits != 16u && size_bits != 32u) {
 		return -1;
 	}
@@ -1379,6 +1436,9 @@ e9k_debug_set_protect_enabled_mask(uint64_t mask)
 {
 	if (mask) {
 		e9k_debug_ensureMemhooks();
+		if (!e9k_debug_memhooksEnabled) {
+			return;
+		}
 	}
 	e9k_debug_protectEnabledMask = mask;
 }

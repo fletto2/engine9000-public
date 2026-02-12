@@ -33,11 +33,15 @@
 #include "libretro_host.h"
 #include "protect.h"
 #include "state_buffer.h"
+#include "trainer.h"
 
 #define MEMORY_TRACK_UI_TITLE "ENGINE9000 DEBUGGER - MEMORY TRACKER"
 #define MEMORY_TRACK_UI_REGION_BASE_NEOGEO 0x00100000u
-#define MEMORY_TRACK_UI_REGION_BASE_MEGADRIVE 0x00ff0000u
 #define MEMORY_TRACK_UI_REGION_SIZE_DEFAULT 0x10000u
+#define MEMORY_TRACK_UI_MAX_RANGES 8
+#define MEMORY_TRACK_UI_TREND_ALL 0
+#define MEMORY_TRACK_UI_TREND_INC 1
+#define MEMORY_TRACK_UI_TREND_DEC 2
 
 typedef struct memory_track_entry {
     uint32_t address;
@@ -55,6 +59,12 @@ typedef struct memory_track_ui memory_track_ui_t;
 typedef struct memory_track_table_state {
     memory_track_ui_t *ui;
 } memory_track_table_state_t;
+
+typedef struct memory_track_ranges {
+    target_memory_range_t ranges[MEMORY_TRACK_UI_MAX_RANGES];
+    size_t count;
+    size_t totalSize;
+} memory_track_ranges_t;
 
 struct memory_track_ui {
     int open;
@@ -80,6 +90,9 @@ struct memory_track_ui {
     e9ui_component_t *modeBtn16;
     e9ui_component_t *modeBtn32;
     e9ui_component_t *filterBtn;
+    e9ui_component_t *trendBtnAll;
+    e9ui_component_t *trendBtnInc;
+    e9ui_component_t *trendBtnDec;
     e9ui_component_t **frameInputs;
     size_t frameInputsCap;
     size_t frameInputsCount;
@@ -100,6 +113,8 @@ struct memory_track_ui {
     e9ui_component_t **addressLinks;
     size_t addressLinksCap;
     size_t addressLinksCount;
+    uint8_t *addressLinkProtectState;
+    size_t addressLinkProtectStateCap;
     memory_track_frame_data_t *frames;
     size_t frameCount;
     uint32_t *addresses;
@@ -124,6 +139,8 @@ struct memory_track_ui {
     size_t cachedFrameCap;
     int cachedColumnCount;
     int cachedAccessSize;
+    size_t cachedRangeCount;
+    target_memory_range_t cachedRanges[MEMORY_TRACK_UI_MAX_RANGES];
     int cacheValid;
     uint64_t cachedBuildFrameNo;
     int columnCount;
@@ -135,6 +152,9 @@ struct memory_track_ui {
     int modeWidth;
     int filterButtonWidth;
     int filterButtonGap;
+    int trendButtonWidth;
+    int trendButtonGap;
+    int trendWidth;
     int padding;
     int rowHeight;
     int headerHeight;
@@ -142,6 +162,7 @@ struct memory_track_ui {
     int hasActiveFrames;
     int accessSize;
     int requireAllColumns;
+    int trendFilterMode;
     int needsRebuild;
     int needsRefresh;
     char error[128];
@@ -225,36 +246,105 @@ memory_track_ui_parseFrameText(memory_track_ui_t *ui, const char *text, uint64_t
     return 1;
 }
 
-static int
-memory_track_ui_readFrameBytes(uint64_t frameNo, uint32_t base, uint8_t *out, size_t size)
+static void
+memory_track_ui_getRanges(memory_track_ranges_t *outRanges)
 {
+    if (!outRanges) {
+        return;
+    }
+    memset(outRanges, 0, sizeof(*outRanges));
+    outRanges->count = 1;
+    outRanges->ranges[0].baseAddr = MEMORY_TRACK_UI_REGION_BASE_NEOGEO;
+    outRanges->ranges[0].size = MEMORY_TRACK_UI_REGION_SIZE_DEFAULT;
+    if (target && target->memoryTrackGetRanges) {
+        target_memory_range_t targetRanges[MEMORY_TRACK_UI_MAX_RANGES];
+        size_t targetCount = 0;
+        memset(targetRanges, 0, sizeof(targetRanges));
+        if (target->memoryTrackGetRanges(targetRanges, MEMORY_TRACK_UI_MAX_RANGES, &targetCount)) {
+            if (targetCount > MEMORY_TRACK_UI_MAX_RANGES) {
+                targetCount = MEMORY_TRACK_UI_MAX_RANGES;
+            }
+            size_t writeIndex = 0;
+            for (size_t i = 0; i < targetCount; ++i) {
+                if (targetRanges[i].size == 0) {
+                    continue;
+                }
+                outRanges->ranges[writeIndex++] = targetRanges[i];
+            }
+            if (writeIndex > 0) {
+                outRanges->count = writeIndex;
+            }
+        }
+    }
+    outRanges->totalSize = 0;
+    for (size_t i = 0; i < outRanges->count; ++i) {
+        outRanges->totalSize += (size_t)outRanges->ranges[i].size;
+    }
+}
+
+static int
+memory_track_ui_readFrameRanges(uint64_t frameNo, const memory_track_ranges_t *ranges, uint8_t *out, size_t size)
+{
+    if (!ranges || !out || size != ranges->totalSize) {
+        return 0;
+    }
     if (!state_buffer_restoreFrameNo(frameNo)) {
         return 0;
     }
-    if (!libretro_host_debugReadMemory(base, out, size)) {
-        return 0;
+    size_t offset = 0;
+    for (size_t i = 0; i < ranges->count; ++i) {
+        uint32_t base = ranges->ranges[i].baseAddr;
+        size_t rangeSize = (size_t)ranges->ranges[i].size;
+        if (!libretro_host_debugReadMemory(base, out + offset, rangeSize)) {
+            return 0;
+        }
+        offset += rangeSize;
     }
     return 1;
 }
 
-static void
-memory_track_ui_getRegion(uint32_t *outBase, size_t *outSize)
+static int
+memory_track_ui_slotToAddress(const memory_track_ranges_t *ranges, int accessSize, size_t slot, uint32_t *outAddress)
 {
-    uint32_t base = MEMORY_TRACK_UI_REGION_BASE_NEOGEO;
-    size_t size = MEMORY_TRACK_UI_REGION_SIZE_DEFAULT;
-    if (target) {
-        if (target->coreIndex == TARGET_MEGADRIVE) {
-            base = MEMORY_TRACK_UI_REGION_BASE_MEGADRIVE;
-        } else if (target->coreIndex == TARGET_NEOGEO) {
-            base = MEMORY_TRACK_UI_REGION_BASE_NEOGEO;
+    if (!ranges || accessSize <= 0 || !outAddress) {
+        return 0;
+    }
+    size_t slotBase = 0;
+    for (size_t rangeIndex = 0; rangeIndex < ranges->count; ++rangeIndex) {
+        uint32_t rangeSize = ranges->ranges[rangeIndex].size;
+        size_t slotsInRange = (size_t)rangeSize / (size_t)accessSize;
+        if (slot < slotBase + slotsInRange) {
+            size_t slotInRange = slot - slotBase;
+            *outAddress = ranges->ranges[rangeIndex].baseAddr +
+                          (uint32_t)(slotInRange * (size_t)accessSize);
+            return 1;
         }
+        slotBase += slotsInRange;
     }
-    if (outBase) {
-        *outBase = base;
+    return 0;
+}
+
+static int
+memory_track_ui_addressToBufferOffset(const memory_track_ranges_t *ranges, int accessSize, uint32_t address, size_t *outOffset)
+{
+    if (!ranges || accessSize <= 0 || !outOffset) {
+        return 0;
     }
-    if (outSize) {
-        *outSize = size;
+    size_t byteBase = 0;
+    for (size_t rangeIndex = 0; rangeIndex < ranges->count; ++rangeIndex) {
+        uint32_t rangeBase = ranges->ranges[rangeIndex].baseAddr;
+        uint32_t rangeSize = ranges->ranges[rangeIndex].size;
+        if (address >= rangeBase && address < rangeBase + rangeSize) {
+            uint32_t offset = address - rangeBase;
+            if ((offset % (uint32_t)accessSize) != 0u) {
+                return 0;
+            }
+            *outOffset = byteBase + (size_t)offset;
+            return 1;
+        }
+        byteBase += (size_t)rangeSize;
     }
+    return 0;
 }
 
 static uint32_t
@@ -381,6 +471,58 @@ memory_track_ui_buildVisibleAddresses(memory_track_ui_t *ui, int columnCount, co
         ui->addressCount = writeIndex;
         alloc_free(indices);
     }
+
+    if (ui->trendFilterMode != MEMORY_TRACK_UI_TREND_ALL && ui->addressCount > 0) {
+        size_t *indices = (size_t*)alloc_calloc((size_t)columnCount, sizeof(size_t));
+        if (!indices) {
+            return 0;
+        }
+        size_t writeIndex = 0;
+        for (size_t addrIndex = 0; addrIndex < ui->addressCount; ++addrIndex) {
+            uint32_t address = ui->addresses[addrIndex];
+            int trendSampleCount = 0;
+            int trendIncreasing = 1;
+            int trendDecreasing = 1;
+            uint32_t trendPrevValue = 0;
+            int trendHasPrev = 0;
+            for (int frameIndex = 0; frameIndex < columnCount; ++frameIndex) {
+                memory_track_frame_data_t *frame = &ui->frames[frameIndex];
+                size_t idx = indices[frameIndex];
+                while (idx < frame->entryCount && frame->entries[idx].address < address) {
+                    idx++;
+                }
+                indices[frameIndex] = idx;
+                if (idx < frame->entryCount && frame->entries[idx].address == address) {
+                    uint32_t currentValue = frame->entries[idx].value;
+                    if (trendHasPrev) {
+                        if (currentValue <= trendPrevValue) {
+                            trendIncreasing = 0;
+                        }
+                        if (currentValue >= trendPrevValue) {
+                            trendDecreasing = 0;
+                        }
+                    } else {
+                        trendHasPrev = 1;
+                    }
+                    trendPrevValue = currentValue;
+                    trendSampleCount++;
+                }
+            }
+            int keep = 0;
+            if (trendSampleCount >= 2) {
+                if (ui->trendFilterMode == MEMORY_TRACK_UI_TREND_INC && trendIncreasing) {
+                    keep = 1;
+                } else if (ui->trendFilterMode == MEMORY_TRACK_UI_TREND_DEC && trendDecreasing) {
+                    keep = 1;
+                }
+            }
+            if (keep) {
+                ui->addresses[writeIndex++] = address;
+            }
+        }
+        ui->addressCount = writeIndex;
+        alloc_free(indices);
+    }
     return 1;
 }
 
@@ -410,6 +552,8 @@ memory_track_ui_clearData(memory_track_ui_t *ui)
     ui->frameIndices = NULL;
     ui->frameIndicesCap = 0;
     ui->hasActiveFrames = 0;
+    ui->cachedRangeCount = 0;
+    memset(ui->cachedRanges, 0, sizeof(ui->cachedRanges));
     ui->cacheValid = 0;
 }
 
@@ -761,6 +905,8 @@ memory_track_ui_protectApply(e9ui_context_t *ctx, void *user)
         return;
     }
     debug_printf("protect: added\n");
+    trainer_markDirty();
+    ui->needsRefresh = 1;
     memory_track_ui_protectClose(ui);
 }
 
@@ -879,8 +1025,69 @@ static void
 memory_track_ui_addressLinkClicked(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
-    uint32_t address = (uint32_t)(uintptr_t)user;
-    memory_track_ui_showProtectModal(&memory_track_ui_state, address);
+    memory_track_ui_t *ui = &memory_track_ui_state;
+    uint32_t address = (uint32_t)(uintptr_t)user & 0x00ffffffu;
+    if (!ui) {
+        return;
+    }
+
+    uint32_t sizeBits = 8;
+    if (ui->accessSize == 2) {
+        sizeBits = 16;
+    } else if (ui->accessSize == 4) {
+        sizeBits = 32;
+    }
+
+    e9k_debug_protect_t protects[E9K_PROTECT_COUNT];
+    size_t protectCount = 0;
+    uint64_t enabledMask = 0;
+    if (!libretro_host_debugReadProtects(protects, E9K_PROTECT_COUNT, &protectCount) ||
+        !libretro_host_debugGetProtectEnabledMask(&enabledMask)) {
+        memory_track_ui_showProtectModal(ui, address);
+        return;
+    }
+
+    int matchedEnabledIndex = -1;
+    int matchedDisabledIndex = -1;
+    for (size_t i = 0; i < protectCount && i < E9K_PROTECT_COUNT; ++i) {
+        const e9k_debug_protect_t *p = &protects[i];
+        if (p->sizeBits != sizeBits) {
+            continue;
+        }
+        if ((address & p->addrMask) != (p->addr & p->addrMask)) {
+            continue;
+        }
+        if (((enabledMask >> i) & 1ull) != 0ull) {
+            matchedEnabledIndex = (int)i;
+            break;
+        }
+        if (matchedDisabledIndex < 0) {
+            matchedDisabledIndex = (int)i;
+        }
+    }
+
+    if (matchedEnabledIndex >= 0) {
+        if (!libretro_host_debugRemoveProtect((uint32_t)matchedEnabledIndex)) {
+            debug_error("protect: failed to remove");
+            return;
+        }
+        trainer_markDirty();
+        ui->needsRefresh = 1;
+        return;
+    }
+
+    if (matchedDisabledIndex >= 0) {
+        uint64_t nextMask = enabledMask | (1ull << (uint32_t)matchedDisabledIndex);
+        if (!libretro_host_debugSetProtectEnabledMask(nextMask)) {
+            debug_error("protect: failed to enable");
+            return;
+        }
+        trainer_markDirty();
+        ui->needsRefresh = 1;
+        return;
+    }
+
+    memory_track_ui_showProtectModal(ui, address);
 }
 
 static void
@@ -925,6 +1132,76 @@ memory_track_ui_updateFilterButton(memory_track_ui_t *ui)
     } else {
         e9ui_button_clearTheme(ui->filterBtn);
     }
+}
+
+static void
+memory_track_ui_updateTrendButtons(memory_track_ui_t *ui)
+{
+    if (!ui) {
+        return;
+    }
+    const e9k_theme_button_t *activeTheme = e9ui_theme_button_preset_profile_active();
+    if (ui->trendBtnAll) {
+        if (ui->trendFilterMode == MEMORY_TRACK_UI_TREND_ALL) {
+            e9ui_button_setTheme(ui->trendBtnAll, activeTheme);
+        } else {
+            e9ui_button_clearTheme(ui->trendBtnAll);
+        }
+    }
+    if (ui->trendBtnInc) {
+        if (ui->trendFilterMode == MEMORY_TRACK_UI_TREND_INC) {
+            e9ui_button_setTheme(ui->trendBtnInc, activeTheme);
+        } else {
+            e9ui_button_clearTheme(ui->trendBtnInc);
+        }
+    }
+    if (ui->trendBtnDec) {
+        if (ui->trendFilterMode == MEMORY_TRACK_UI_TREND_DEC) {
+            e9ui_button_setTheme(ui->trendBtnDec, activeTheme);
+        } else {
+            e9ui_button_clearTheme(ui->trendBtnDec);
+        }
+    }
+}
+
+static void
+memory_track_ui_setTrendFilter(memory_track_ui_t *ui, int mode)
+{
+    if (!ui) {
+        return;
+    }
+    if (mode != MEMORY_TRACK_UI_TREND_ALL &&
+        mode != MEMORY_TRACK_UI_TREND_INC &&
+        mode != MEMORY_TRACK_UI_TREND_DEC) {
+        return;
+    }
+    if (ui->trendFilterMode == mode) {
+        return;
+    }
+    ui->trendFilterMode = mode;
+    memory_track_ui_updateTrendButtons(ui);
+    ui->needsRefresh = 1;
+}
+
+static void
+memory_track_ui_setTrendAll(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    memory_track_ui_setTrendFilter((memory_track_ui_t*)user, MEMORY_TRACK_UI_TREND_ALL);
+}
+
+static void
+memory_track_ui_setTrendInc(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    memory_track_ui_setTrendFilter((memory_track_ui_t*)user, MEMORY_TRACK_UI_TREND_INC);
+}
+
+static void
+memory_track_ui_setTrendDec(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    memory_track_ui_setTrendFilter((memory_track_ui_t*)user, MEMORY_TRACK_UI_TREND_DEC);
 }
 
 static void
@@ -1002,9 +1279,32 @@ memory_track_ui_buildAddressLinks(memory_track_ui_t *ui)
         ui->addressLinks = next;
         ui->addressLinksCap = newCap;
     }
+    if (ui->addressCount > ui->addressLinkProtectStateCap) {
+        size_t newCap = ui->addressLinkProtectStateCap ? ui->addressLinkProtectStateCap : 64;
+        while (newCap < ui->addressCount) {
+            newCap *= 2;
+        }
+        uint8_t *next = (uint8_t*)alloc_realloc(ui->addressLinkProtectState, newCap * sizeof(uint8_t));
+        if (!next) {
+            return 0;
+        }
+        ui->addressLinkProtectState = next;
+        ui->addressLinkProtectStateCap = newCap;
+    }
     if (prevCount > ui->addressLinksCap) {
         prevCount = ui->addressLinksCap;
     }
+    uint32_t sizeBits = 8;
+    if (ui->accessSize == 2) {
+        sizeBits = 16;
+    } else if (ui->accessSize == 4) {
+        sizeBits = 32;
+    }
+    e9k_debug_protect_t protects[E9K_PROTECT_COUNT];
+    size_t protectCount = 0;
+    uint64_t enabledMask = 0;
+    int haveProtects = libretro_host_debugReadProtects(protects, E9K_PROTECT_COUNT, &protectCount) &&
+                       libretro_host_debugGetProtectEnabledMask(&enabledMask);
     for (size_t i = 0; i < ui->addressCount; ++i) {
         char text[16];
         uint32_t address = ui->addresses[i];
@@ -1025,6 +1325,32 @@ memory_track_ui_buildAddressLinks(memory_track_ui_t *ui)
             ui->addressLinksCount = i;
             return 0;
         }
+        int protectState = 0;
+        if (haveProtects) {
+            for (size_t pi = 0; pi < protectCount && pi < E9K_PROTECT_COUNT; ++pi) {
+                const e9k_debug_protect_t *p = &protects[pi];
+                if (p->sizeBits != sizeBits) {
+                    continue;
+                }
+                if ((address & p->addrMask) != (p->addr & p->addrMask)) {
+                    continue;
+                }
+                if (((enabledMask >> pi) & 1ull) != 0ull) {
+                    protectState = 1;
+                    break;
+                }
+                if (protectState == 0) {
+                    protectState = 2;
+                }
+            }
+        }
+        if (protectState == 1) {
+            ui->addressLinkProtectState[i] = 1;
+        } else if (protectState == 2) {
+            ui->addressLinkProtectState[i] = 2;
+        } else {
+            ui->addressLinkProtectState[i] = 0;
+        }
     }
     ui->addressLinksCount = ui->addressCount;
     return 1;
@@ -1039,10 +1365,13 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
 
     uint64_t restoreFrame = state_buffer_getCurrentFrameNo();
     uint64_t currentFrameNo = restoreFrame;
-    uint32_t regionBase = 0;
-    size_t regionSize = 0;
-    memory_track_ui_getRegion(&regionBase, &regionSize);
+    memory_track_ranges_t ranges = {0};
+    memory_track_ui_getRanges(&ranges);
+    size_t regionSize = ranges.totalSize;
     if (ui->scratchSize != regionSize) {
+        alloc_free(ui->scratchBase);
+        alloc_free(ui->scratchCur);
+        alloc_free(ui->scratchRef);
         ui->scratchBase = NULL;
         ui->scratchCur = NULL;
         ui->scratchRef = NULL;
@@ -1228,8 +1557,17 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
 
     int cacheUsable = 0;
     if (ui->cacheValid && ui->frames && ui->baseAddresses &&
-        ui->cachedAccessSize == accessSize && ui->cachedColumnCount == columnCount) {
+        ui->cachedAccessSize == accessSize &&
+        ui->cachedColumnCount == columnCount &&
+        ui->cachedRangeCount == ranges.count) {
         cacheUsable = 1;
+        for (size_t i = 0; i < ranges.count; ++i) {
+            if (ui->cachedRanges[i].baseAddr != ranges.ranges[i].baseAddr ||
+                ui->cachedRanges[i].size != ranges.ranges[i].size) {
+                cacheUsable = 0;
+                break;
+            }
+        }
         if (currentFrameNo <= ui->cachedBuildFrameNo) {
             cacheUsable = 0;
         }
@@ -1271,7 +1609,10 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
         return 0;
     }
 
-    size_t addressSlots = regionSize / (size_t)accessSize;
+    size_t addressSlots = 0;
+    for (size_t rangeIndex = 0; rangeIndex < ranges.count; ++rangeIndex) {
+        addressSlots += (size_t)ranges.ranges[rangeIndex].size / (size_t)accessSize;
+    }
     if (addressSlots > ui->addressSeenCap) {
         uint8_t *next = (uint8_t*)alloc_realloc(ui->addressSeen, addressSlots);
         if (!next) {
@@ -1299,8 +1640,7 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
     }
 
     if (frameActive[0]) {
-        if (!memory_track_ui_readFrameBytes(frameNos[0], regionBase, refBytes,
-                                            regionSize)) {
+        if (!memory_track_ui_readFrameRanges(frameNos[0], &ranges, refBytes, regionSize)) {
             memory_track_ui_setError(ui, "Failed to read frame %llu",
                                      (unsigned long long)frameNos[0]);
             goto cleanup;
@@ -1330,20 +1670,18 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
             baseBytes = curBytes;
             curBytes = tmp;
         } else {
-            if (!memory_track_ui_readFrameBytes(baseFrameNo, regionBase, baseBytes,
-                                                regionSize)) {
+            if (!memory_track_ui_readFrameRanges(baseFrameNo, &ranges, baseBytes, regionSize)) {
                 memory_track_ui_setError(ui, "Failed to read frame %llu",
                                          (unsigned long long)baseFrameNo);
                 goto cleanup;
             }
         }
-        if (!memory_track_ui_readFrameBytes(frameNo, regionBase, curBytes,
-                                            regionSize)) {
+        if (!memory_track_ui_readFrameRanges(frameNo, &ranges, curBytes, regionSize)) {
             memory_track_ui_setError(ui, "Failed to read frame %llu", (unsigned long long)frameNo);
             goto cleanup;
         }
         memory_track_entry_t *entries = NULL;
-        size_t maxEntries = regionSize / (size_t)accessSize;
+        size_t maxEntries = addressSlots;
         size_t entryCount = 0;
         if (maxEntries > 0) {
             entries = (memory_track_entry_t*)alloc_alloc(maxEntries * sizeof(*entries));
@@ -1353,19 +1691,27 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
             }
         }
         if (entries) {
-            for (size_t offset = 0; offset + (size_t)accessSize <= regionSize; offset += (size_t)accessSize) {
-                uint32_t baseValue = memory_track_ui_readValueBE(baseBytes + offset, accessSize);
-                uint32_t curValue = memory_track_ui_readValueBE(curBytes + offset, accessSize);
-                if (baseValue != curValue) {
-                    entries[entryCount].address = regionBase + (uint32_t)offset;
-                    entries[entryCount].value = curValue;
-                    entryCount++;
-                    size_t slot = offset / (size_t)accessSize;
-                    if (slot < addressSlots && !ui->addressSeen[slot]) {
-                        ui->addressSeen[slot] = 1;
-                        uniqueAddressCount++;
+            size_t slot = 0;
+            size_t rangeOffset = 0;
+            for (size_t rangeIndex = 0; rangeIndex < ranges.count; ++rangeIndex) {
+                uint32_t rangeBase = ranges.ranges[rangeIndex].baseAddr;
+                size_t rangeSize = (size_t)ranges.ranges[rangeIndex].size;
+                for (size_t offset = 0; offset + (size_t)accessSize <= rangeSize; offset += (size_t)accessSize) {
+                    size_t byteOffset = rangeOffset + offset;
+                    uint32_t baseValue = memory_track_ui_readValueBE(baseBytes + byteOffset, accessSize);
+                    uint32_t curValue = memory_track_ui_readValueBE(curBytes + byteOffset, accessSize);
+                    if (baseValue != curValue) {
+                        entries[entryCount].address = rangeBase + (uint32_t)offset;
+                        entries[entryCount].value = curValue;
+                        entryCount++;
+                        if (slot < addressSlots && !ui->addressSeen[slot]) {
+                            ui->addressSeen[slot] = 1;
+                            uniqueAddressCount++;
+                        }
                     }
+                    slot++;
                 }
+                rangeOffset += rangeSize;
             }
         }
         if (entryCount == 0) {
@@ -1397,7 +1743,10 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
             if (!ui->addressSeen[slot]) {
                 continue;
             }
-            uint32_t address = regionBase + (uint32_t)(slot * (size_t)accessSize);
+            uint32_t address = 0;
+            if (!memory_track_ui_slotToAddress(&ranges, accessSize, slot, &address)) {
+                continue;
+            }
             ui->baseAddresses[ui->baseAddressCount++] = address;
         }
     }
@@ -1411,7 +1760,10 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
         }
         for (size_t entryIndex = 0; entryIndex < entryCount; ++entryIndex) {
             uint32_t address = ui->baseAddresses[entryIndex];
-            uint32_t offset = address - regionBase;
+            size_t offset = 0;
+            if (!memory_track_ui_addressToBufferOffset(&ranges, accessSize, address, &offset)) {
+                continue;
+            }
             entries[entryIndex].address = address;
             entries[entryIndex].value = memory_track_ui_readValueBE(refBytes + offset, accessSize);
         }
@@ -1453,6 +1805,11 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
     }
     ui->cachedAccessSize = accessSize;
     ui->cachedColumnCount = columnCount;
+    ui->cachedRangeCount = ranges.count;
+    memset(ui->cachedRanges, 0, sizeof(ui->cachedRanges));
+    for (size_t i = 0; i < ranges.count; ++i) {
+        ui->cachedRanges[i] = ranges.ranges[i];
+    }
     ui->cacheValid = 1;
     ui->cachedBuildFrameNo = currentFrameNo;
     memory_track_ui_setError(ui, NULL);
@@ -1518,9 +1875,16 @@ memory_track_ui_updateMetrics(memory_track_ui_t *ui, int winW)
     }
     ui->filterButtonWidth = filterW + e9ui_scale_px(&ui->ctx, 16);
     ui->filterButtonGap = e9ui_scale_px(&ui->ctx, 6);
+    int trendW = memory_track_ui_measureTextWidth(&ui->ctx, "Dec");
+    if (trendW <= 0) {
+        trendW = e9ui_scale_px(&ui->ctx, 44);
+    }
+    ui->trendButtonWidth = trendW + e9ui_scale_px(&ui->ctx, 16);
+    ui->trendButtonGap = e9ui_scale_px(&ui->ctx, 4);
+    ui->trendWidth = ui->trendButtonWidth * 3 + ui->trendButtonGap * 2;
 
     int availableW = winW - pad * 2 - ui->addressWidth - ui->modeWidth - ui->filterButtonWidth -
-                     ui->filterButtonGap - gap;
+                     ui->filterButtonGap - ui->trendWidth - gap * 3;
     int columns = 1;
     if (availableW > ui->columnWidth) {
         columns = 1 + (availableW - ui->columnWidth) / (ui->columnWidth + gap);
@@ -1618,7 +1982,12 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
         return;
     }
     SDL_Color addrColor = { 180, 200, 180, 255 };
+    SDL_Color addrColorNormal = { 170, 190, 230, 255 };
+    SDL_Color addrColorProtected = { 112, 226, 128, 255 };
+    SDL_Color addrColorProtectedDisabled = { 156, 156, 156, 255 };
     SDL_Color valueColor = { 200, 220, 200, 255 };
+    SDL_Color valueColorInc = { 255, 80, 80, 255 };
+    SDL_Color valueColorDec = { 80, 255, 80, 255 };
     SDL_Color errorColor = { 220, 80, 80, 255 };
 
     int pad = ui->padding;
@@ -1636,8 +2005,8 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
         return;
     }
 
-    int columnsX = startX + ui->addressWidth + ui->modeWidth + ui->filterButtonWidth +
-                   ui->filterButtonGap + ui->columnGap;
+    int columnsX = startX + ui->addressWidth + ui->columnGap + ui->modeWidth + ui->columnGap +
+                   ui->filterButtonWidth + ui->filterButtonGap + ui->trendWidth + ui->columnGap;
     if (ui->addressCount == 0) {
         int textW = 0;
         int textH = 0;
@@ -1672,9 +2041,25 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
         uint32_t address = ui->addresses[rowIndex];
         if (ui->addressLinks && rowIndex < ui->addressLinksCount &&
             rowIndex < ui->addressLinksCap) {
-            e9ui_component_t *link = ui->addressLinks[rowIndex];
-            if (link && link->render) {
-                link->render(link, ctx);
+            char addrText[16];
+            snprintf(addrText, sizeof(addrText), "0x%06X", address & 0x00FFFFFFu);
+            SDL_Color rowAddrColor = addrColorNormal;
+            if (ui->addressLinkProtectState &&
+                rowIndex < ui->addressLinkProtectStateCap) {
+                uint8_t state = ui->addressLinkProtectState[rowIndex];
+                if (state == 1) {
+                    rowAddrColor = addrColorProtected;
+                } else if (state == 2) {
+                    rowAddrColor = addrColorProtectedDisabled;
+                }
+            }
+            int addrW = 0;
+            int addrH = 0;
+            SDL_Texture *addrTex = e9ui_text_cache_getText(ctx->renderer, font, addrText, rowAddrColor,
+                                                           &addrW, &addrH);
+            if (addrTex) {
+                SDL_Rect tr = { startX, startY, addrW, addrH };
+                SDL_RenderCopy(ctx->renderer, addrTex, NULL, &tr);
             }
         } else {
             char addrText[16];
@@ -1689,6 +2074,11 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
             }
         }
 
+        int trendSampleCount = 0;
+        int trendIncreasing = 1;
+        int trendDecreasing = 1;
+        uint32_t trendPrevValue = 0;
+        int trendHasPrev = 0;
         for (size_t colIndex = 0; colIndex < ui->frameCount; ++colIndex) {
             memory_track_frame_data_t *frame = &ui->frames[colIndex];
             size_t idx = ui->frameIndices[colIndex];
@@ -1696,6 +2086,35 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
                 idx++;
             }
             ui->frameIndices[colIndex] = idx;
+            if (idx < frame->entryCount && frame->entries[idx].address == address) {
+                uint32_t currentValue = frame->entries[idx].value;
+                if (trendHasPrev) {
+                    if (currentValue <= trendPrevValue) {
+                        trendIncreasing = 0;
+                    }
+                    if (currentValue >= trendPrevValue) {
+                        trendDecreasing = 0;
+                    }
+                } else {
+                    trendHasPrev = 1;
+                }
+                trendPrevValue = currentValue;
+                trendSampleCount++;
+            }
+        }
+
+        SDL_Color rowValueColor = valueColor;
+        if (trendSampleCount >= 2) {
+            if (trendIncreasing) {
+                rowValueColor = valueColorInc;
+            } else if (trendDecreasing) {
+                rowValueColor = valueColorDec;
+            }
+        }
+
+        for (size_t colIndex = 0; colIndex < ui->frameCount; ++colIndex) {
+            memory_track_frame_data_t *frame = &ui->frames[colIndex];
+            size_t idx = ui->frameIndices[colIndex];
             if (idx < frame->entryCount && frame->entries[idx].address == address) {
                 char valText[16];
                 unsigned digits = (unsigned)(ui->accessSize * 2);
@@ -1705,7 +2124,7 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
                 snprintf(valText, sizeof(valText), "%0*X", (int)digits, frame->entries[idx].value);
                 int valW = 0;
                 int valH = 0;
-                SDL_Texture *valTex = e9ui_text_cache_getText(ctx->renderer, font, valText, valueColor,
+                SDL_Texture *valTex = e9ui_text_cache_getText(ctx->renderer, font, valText, rowValueColor,
                                                               &valW, &valH);
                 if (valTex) {
                     int colX = columnsX + (int)colIndex * (ui->columnWidth + ui->columnGap);
@@ -1824,6 +2243,8 @@ memory_track_ui_buildFrameRow(memory_track_ui_t *ui)
     e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->filterButtonWidth), ui->filterButtonWidth);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->filterButtonGap), ui->filterButtonGap);
+    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->trendWidth), ui->trendWidth);
+    e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
 
     if (ui->columnCount > (int)ui->frameInputsCap) {
         size_t newCap = ui->frameInputsCap ? ui->frameInputsCap : 4;
@@ -1905,6 +2326,25 @@ memory_track_ui_buildControlRow(memory_track_ui_t *ui)
         e9ui_hstack_addFixed(row, ui->filterBtn, ui->filterButtonWidth);
     }
     e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->filterButtonGap), ui->filterButtonGap);
+    ui->trendBtnAll = e9ui_button_make("All", memory_track_ui_setTrendAll, ui);
+    ui->trendBtnInc = e9ui_button_make("Inc", memory_track_ui_setTrendInc, ui);
+    ui->trendBtnDec = e9ui_button_make("Dec", memory_track_ui_setTrendDec, ui);
+    if (ui->trendBtnAll) {
+        e9ui_hstack_addFixed(row, ui->trendBtnAll, ui->trendButtonWidth);
+    }
+    if (ui->trendBtnInc || ui->trendBtnDec) {
+        e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->trendButtonGap), ui->trendButtonGap);
+    }
+    if (ui->trendBtnInc) {
+        e9ui_hstack_addFixed(row, ui->trendBtnInc, ui->trendButtonWidth);
+    }
+    if (ui->trendBtnDec) {
+        e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->trendButtonGap), ui->trendButtonGap);
+    }
+    if (ui->trendBtnDec) {
+        e9ui_hstack_addFixed(row, ui->trendBtnDec, ui->trendButtonWidth);
+    }
+    e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
     e9ui_component_t *btn_reset = e9ui_button_make("Reset", memory_track_ui_clearFrameMarkers, ui);
     if (btn_reset) {
         int resetW = e9ui_scale_px(&ui->ctx, 80);
@@ -1913,6 +2353,7 @@ memory_track_ui_buildControlRow(memory_track_ui_t *ui)
     e9ui_hstack_addFlex(row, e9ui_spacer_make(1));
     memory_track_ui_updateModeButtons(ui);
     memory_track_ui_updateFilterButton(ui);
+    memory_track_ui_updateTrendButtons(ui);
     return row;
 }
 
@@ -1933,6 +2374,8 @@ memory_track_ui_buildFilterRow(memory_track_ui_t *ui)
     e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->filterButtonWidth), ui->filterButtonWidth);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->filterButtonGap), ui->filterButtonGap);
+    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->trendWidth), ui->trendWidth);
+    e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
 
     if (ui->columnCount > (int)ui->filterInputsCap) {
         size_t newCap = ui->filterInputsCap ? ui->filterInputsCap : 4;
@@ -2105,6 +2548,7 @@ memory_track_ui_init(void)
     ui->needsRefresh = 1;
     ui->accessSize = 2;
     ui->requireAllColumns = 1;
+    ui->trendFilterMode = MEMORY_TRACK_UI_TREND_ALL;
     {
         int winW = 0;
         int winH = 0;
@@ -2174,6 +2618,9 @@ memory_track_ui_shutdown(void)
     ui->addressLinks = NULL;
     ui->addressLinksCap = 0;
     ui->addressLinksCount = 0;
+    alloc_free(ui->addressLinkProtectState);
+    ui->addressLinkProtectState = NULL;
+    ui->addressLinkProtectStateCap = 0;
     alloc_free(ui->addressSeen);
     ui->addressSeen = NULL;
     ui->addressSeenCap = 0;

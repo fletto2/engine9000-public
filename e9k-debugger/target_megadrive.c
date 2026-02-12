@@ -553,6 +553,20 @@ target_megadrive_memoryGetLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
 }
 
 static int
+target_megadrive_memoryTrackGetRanges(target_memory_range_t *outRanges, size_t cap, size_t *outCount)
+{
+    if (outCount) {
+        *outCount = 1;
+    }
+    if (!outRanges || cap == 0) {
+        return 1;
+    }
+    outRanges[0].baseAddr = 0x00ff0000u;
+    outRanges[0].size = 0x00010000u;
+    return 1;
+}
+
+static int
 target_megadrive_controllerMapButton(SDL_GameControllerButton button, unsigned *outId)
 {
     switch (button) {
@@ -611,6 +625,7 @@ static target_iface_t _target_megadrive = {
     .audioEnable = target_megadrive_audioEnable,
     .mousePort = -1,
     .memoryGetLimits = target_megadrive_memoryGetLimits,
+    .memoryTrackGetRanges = target_megadrive_memoryTrackGetRanges,
     .getBadgeTexture = target_megadrive_getBadgeTexture,
     .configControllerPorts = target_megadrive_configControllerPorts,
     .controllerMapButton = target_megadrive_controllerMapButton,

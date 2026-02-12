@@ -698,6 +698,22 @@ target_amiga_memoryGetLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
     return 0;
 }
 
+static int
+target_amiga_memoryTrackGetRanges(target_memory_range_t *outRanges, size_t cap, size_t *outCount)
+{
+    if (outCount) {
+        *outCount = 2;
+    }
+    if (!outRanges || cap < 2) {
+        return 1;
+    }
+    outRanges[0].baseAddr = 0x00C00000u;
+    outRanges[0].size = 0x00080000u;
+    outRanges[1].baseAddr = 0x00000000u;
+    outRanges[1].size = 0x00080000u;
+    return 1;
+}
+
 static target_iface_t _target_amiga = {
     .name = "AMIGA",
     .dasm = &dasm_ami_iface,
@@ -734,6 +750,7 @@ static target_iface_t _target_amiga = {
     .audioEnable = target_amiga_audioEnable,
     .mousePort = LIBRETRO_HOST_MAX_PORTS,
     .memoryGetLimits = target_amiga_memoryGetLimits,
+    .memoryTrackGetRanges = target_amiga_memoryTrackGetRanges,
     .getBadgeTexture = target_amiga_getBadgeTexture,
     .configControllerPorts = target_amiga_configControllerPorts,
     .controllerMapButton = target_amiga_controllerMapButton,

@@ -73,6 +73,9 @@ e9k_debug_set_vblank_callback(void (*cb)(void *), void *user);
 void
 e9k_vblank_notify(void);
 
+void
+e9k_debug_reapply_memhooks(void);
+
 // Optional host callback invoked when the target writes a new relocatable base.
 void
 e9k_debug_set_debug_base_callback(void (*cb)(uint32_t section, uint32_t base));
