@@ -533,15 +533,6 @@ prompt_keyHandler(e9ui_context_t *ctx, SDL_Keycode kc, SDL_Keymod km, void *user
         }
         return 1;
     }
-    if ((km & KMOD_CTRL) && kc == SDLK_a) {
-        prompt_setTextCursor(st, prompt_getText(st), 0);
-        return 1;
-    }
-    if ((km & KMOD_CTRL) && kc == SDLK_e) {
-        const char *text = prompt_getText(st);
-        prompt_setTextCursor(st, text, (int)strlen(text));
-        return 1;
-    }
     if (kc == SDLK_TAB) {
         const char *text = prompt_getText(st);
         int cursor = prompt_getCursor(st);

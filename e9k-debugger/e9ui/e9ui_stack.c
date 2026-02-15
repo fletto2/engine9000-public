@@ -56,6 +56,9 @@ e9ui_stack_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bound
     if (!child || !meta) {
       continue;
     }
+    if (e9ui_getHidden(child)) {
+      continue;
+    }
 
     if (meta->isFlex) {
       flexCount++;
@@ -88,6 +91,9 @@ e9ui_stack_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bound
     if (!child || !meta) {
       continue;
     }
+    if (e9ui_getHidden(child)) {
+      continue;
+    }
 
     int h = meta->isFlex ? eachFlex : meta->fixedH;
     if (h < 0) h = 0;
@@ -112,7 +118,7 @@ e9ui_stack_render(e9ui_component_t *self, e9ui_context_t *ctx)
   e9ui_child_iterator* p = e9ui_child_iterateChildren(self, &it);
   while (e9ui_child_interateNext(p)) {
     e9ui_component_t* child = p->child;
-    if (child && child->render) {
+    if (child && !e9ui_getHidden(child) && child->render) {
       child->render(child, ctx);
     }
   }

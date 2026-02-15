@@ -14,20 +14,37 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include <limits.h>
 
 #include "memory.h"
 #include "e9ui_context.h"
 #include "e9ui_stack.h"
+#include "e9ui_hstack.h"
 #include "e9ui_textbox.h"
 #include "e9ui_text_cache.h"
 #include "debugger.h"
 #include "libretro_host.h"
 
+#define MEMORY_SEARCH_MAX_PATTERN 128
+#define MEMORY_SEARCH_MAX_RANGES 64
+#define MEMORY_SEARCH_CHUNK 4096
+
+typedef struct memory_search_pattern {
+    uint8_t ascii[MEMORY_SEARCH_MAX_PATTERN];
+    int asciiLen;
+    uint8_t hex[MEMORY_SEARCH_MAX_PATTERN];
+    int hexLen;
+} memory_search_pattern_t;
+
 typedef struct memory_view_state {
     unsigned int   base;
     unsigned int   size;
     unsigned char *data;
-    e9ui_component_t *textbox;
+    e9ui_component_t *addressBox;
+    e9ui_component_t *searchBox;
+    uint32_t       searchMatchAddr;
+    int            searchMatchLen;
+    int            searchMatchValid;
     char           error[128];
 } memory_view_state_t;
 
@@ -35,6 +52,17 @@ static memory_view_state_t *g_memory_view_state = NULL;
 
 static void
 memory_fillFromram(memory_view_state_t *st, unsigned int base);
+
+static int
+memory_buildSearchPattern(const char *text, memory_search_pattern_t *outPattern);
+
+static int
+memory_findNextMatch(memory_view_state_t *st, const memory_search_pattern_t *pattern,
+                     uint32_t startAddr, uint32_t *outAddr, int *outLen);
+
+static int
+memory_findPrevMatch(memory_view_state_t *st, const memory_search_pattern_t *pattern,
+                     uint32_t startAddr, uint32_t *outAddr, int *outLen);
 
 static int
 memory_getAddressLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
@@ -54,12 +82,12 @@ memory_getAddressLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
 static void
 memory_syncTextboxFromBase(memory_view_state_t *st)
 {
-    if (!st || !st->textbox) {
+    if (!st || !st->addressBox) {
         return;
     }
     char addrText[32];
     snprintf(addrText, sizeof(addrText), "0x%06X", st->base & 0x00ffffffu);
-    e9ui_textbox_setText(st->textbox, addrText);
+    e9ui_textbox_setText(st->addressBox, addrText);
 }
 
 static uint32_t
@@ -143,10 +171,10 @@ memory_clearData(memory_view_state_t *panel)
 static int
 memory_parseAddress(memory_view_state_t *st, unsigned int *out_addr)
 {
-    if (!st || !st->textbox || !out_addr) {
+    if (!st || !st->addressBox || !out_addr) {
         return 0;
     }
-    const char *t = e9ui_textbox_getText(st->textbox);
+    const char *t = e9ui_textbox_getText(st->addressBox);
     if (!t || !*t) {
         memory_setError(st, "Invalid address: empty input");
         return 0;
@@ -221,7 +249,7 @@ memory_onAddressSubmit(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
     memory_view_state_t *st = (memory_view_state_t*)user;
-    if (!st || !st->textbox) {
+    if (!st || !st->addressBox) {
         return;
     }
     unsigned int addr = 0;
@@ -231,6 +259,426 @@ memory_onAddressSubmit(e9ui_context_t *ctx, void *user)
     st->base = memory_clampBaseForView(st, addr);
     memory_syncTextboxFromBase(st);
     memory_fillFromram(st, st->base);
+}
+
+static int
+memory_collectSearchRanges(target_memory_range_t *outRanges, size_t cap, size_t *outCount)
+{
+    if (!outRanges || cap == 0 || !outCount) {
+        return 0;
+    }
+    *outCount = 0;
+    if (target && target->memoryTrackGetRanges) {
+        size_t count = 0;
+        if (target->memoryTrackGetRanges(outRanges, cap, &count) && count > 0) {
+            size_t write = 0;
+            for (size_t i = 0; i < count && write < cap; ++i) {
+                if (outRanges[i].size == 0) {
+                    continue;
+                }
+                outRanges[write++] = outRanges[i];
+            }
+            if (write > 0) {
+                *outCount = write;
+                return 1;
+            }
+        }
+    }
+    uint32_t minAddr = 0;
+    uint32_t maxAddr = 0x00ffffffu;
+    if (!memory_getAddressLimits(&minAddr, &maxAddr)) {
+        minAddr = 0;
+        maxAddr = 0x00ffffffu;
+    }
+    if (maxAddr < minAddr) {
+        return 0;
+    }
+    outRanges[0].baseAddr = minAddr;
+    outRanges[0].size = (maxAddr - minAddr) + 1u;
+    *outCount = 1;
+    return 1;
+}
+
+static int
+memory_patternMatchesAt(const uint8_t *bytes, int avail, const memory_search_pattern_t *pattern, int *outLen)
+{
+    int bestLen = 0;
+    if (!bytes || !pattern || avail <= 0) {
+        return 0;
+    }
+    if (pattern->asciiLen > 0 && pattern->asciiLen <= avail) {
+        if (memcmp(bytes, pattern->ascii, (size_t)pattern->asciiLen) == 0) {
+            bestLen = pattern->asciiLen;
+        }
+    }
+    if (pattern->hexLen > 0 && pattern->hexLen <= avail) {
+        if (memcmp(bytes, pattern->hex, (size_t)pattern->hexLen) == 0) {
+            if (pattern->hexLen > bestLen) {
+                bestLen = pattern->hexLen;
+            }
+        }
+    }
+    if (bestLen <= 0) {
+        return 0;
+    }
+    if (outLen) {
+        *outLen = bestLen;
+    }
+    return 1;
+}
+
+static int
+memory_scanRangeForMatch(uint32_t scanStart, uint32_t scanEndInclusive,
+                         const memory_search_pattern_t *pattern,
+                         uint32_t *outAddr, int *outLen)
+{
+    if (!pattern || scanEndInclusive < scanStart) {
+        return 0;
+    }
+    int maxPatternLen = pattern->asciiLen > pattern->hexLen ? pattern->asciiLen : pattern->hexLen;
+    if (maxPatternLen <= 0) {
+        return 0;
+    }
+    uint8_t chunk[MEMORY_SEARCH_CHUNK];
+    uint32_t addr = scanStart;
+    while (addr <= scanEndInclusive) {
+        uint32_t remaining = scanEndInclusive - addr + 1u;
+        size_t want = remaining < MEMORY_SEARCH_CHUNK ? (size_t)remaining : (size_t)MEMORY_SEARCH_CHUNK;
+        if (want < (size_t)maxPatternLen && remaining >= (uint32_t)maxPatternLen) {
+            want = (size_t)maxPatternLen;
+        }
+        if (want > MEMORY_SEARCH_CHUNK) {
+            want = MEMORY_SEARCH_CHUNK;
+        }
+        if (!libretro_host_debugReadMemory(addr, chunk, want)) {
+            uint32_t step = (uint32_t)want;
+            if (step == 0) {
+                step = 1;
+            }
+            if (addr > scanEndInclusive - step + 1u) {
+                break;
+            }
+            addr += step;
+            continue;
+        }
+        for (int i = 0; i < (int)want; ++i) {
+            int matchLen = 0;
+            if (memory_patternMatchesAt(chunk + i, (int)want - i, pattern, &matchLen)) {
+                if (outAddr) {
+                    *outAddr = addr + (uint32_t)i;
+                }
+                if (outLen) {
+                    *outLen = matchLen;
+                }
+                return 1;
+            }
+        }
+        if (remaining <= (uint32_t)maxPatternLen) {
+            break;
+        }
+        uint32_t step = (uint32_t)want - (uint32_t)maxPatternLen + 1u;
+        if (step == 0) {
+            step = 1;
+        }
+        if (addr > scanEndInclusive - step + 1u) {
+            break;
+        }
+        addr += step;
+    }
+    return 0;
+}
+
+static int
+memory_scanRangeForLastMatch(uint32_t scanStart, uint32_t scanEndInclusive,
+                             const memory_search_pattern_t *pattern,
+                             uint32_t *outAddr, int *outLen)
+{
+    if (!pattern || scanEndInclusive < scanStart) {
+        return 0;
+    }
+    int maxPatternLen = pattern->asciiLen > pattern->hexLen ? pattern->asciiLen : pattern->hexLen;
+    if (maxPatternLen <= 0) {
+        return 0;
+    }
+    uint8_t chunk[MEMORY_SEARCH_CHUNK];
+    uint32_t addr = scanStart;
+    uint32_t lastAddr = 0;
+    int lastLen = 0;
+    int found = 0;
+    while (addr <= scanEndInclusive) {
+        uint32_t remaining = scanEndInclusive - addr + 1u;
+        size_t want = remaining < MEMORY_SEARCH_CHUNK ? (size_t)remaining : (size_t)MEMORY_SEARCH_CHUNK;
+        if (want < (size_t)maxPatternLen && remaining >= (uint32_t)maxPatternLen) {
+            want = (size_t)maxPatternLen;
+        }
+        if (want > MEMORY_SEARCH_CHUNK) {
+            want = MEMORY_SEARCH_CHUNK;
+        }
+        if (!libretro_host_debugReadMemory(addr, chunk, want)) {
+            uint32_t step = (uint32_t)want;
+            if (step == 0) {
+                step = 1;
+            }
+            if (addr > scanEndInclusive - step + 1u) {
+                break;
+            }
+            addr += step;
+            continue;
+        }
+        for (int i = 0; i < (int)want; ++i) {
+            int matchLen = 0;
+            if (memory_patternMatchesAt(chunk + i, (int)want - i, pattern, &matchLen)) {
+                lastAddr = addr + (uint32_t)i;
+                lastLen = matchLen;
+                found = 1;
+            }
+        }
+        if (remaining <= (uint32_t)maxPatternLen) {
+            break;
+        }
+        uint32_t step = (uint32_t)want - (uint32_t)maxPatternLen + 1u;
+        if (step == 0) {
+            step = 1;
+        }
+        if (addr > scanEndInclusive - step + 1u) {
+            break;
+        }
+        addr += step;
+    }
+    if (!found) {
+        return 0;
+    }
+    if (outAddr) {
+        *outAddr = lastAddr;
+    }
+    if (outLen) {
+        *outLen = lastLen;
+    }
+    return 1;
+}
+
+static int
+memory_findNextMatch(memory_view_state_t *st, const memory_search_pattern_t *pattern,
+                     uint32_t startAddr, uint32_t *outAddr, int *outLen)
+{
+    (void)st;
+    target_memory_range_t ranges[MEMORY_SEARCH_MAX_RANGES];
+    size_t rangeCount = 0;
+    if (!memory_collectSearchRanges(ranges, MEMORY_SEARCH_MAX_RANGES, &rangeCount) || rangeCount == 0) {
+        return 0;
+    }
+    for (int pass = 0; pass < 2; ++pass) {
+        for (size_t i = 0; i < rangeCount; ++i) {
+            uint32_t base = ranges[i].baseAddr & 0x00ffffffu;
+            uint32_t size = ranges[i].size;
+            if (size == 0) {
+                continue;
+            }
+            uint32_t end = base + size - 1u;
+            if (end < base) {
+                end = 0x00ffffffu;
+            }
+            uint32_t scanStart = base;
+            uint32_t scanEnd = end;
+            if (pass == 0) {
+                if (startAddr > end) {
+                    continue;
+                }
+                if (startAddr > base) {
+                    scanStart = startAddr;
+                }
+            } else {
+                if (startAddr <= base) {
+                    continue;
+                }
+                if (startAddr <= end) {
+                    scanEnd = startAddr - 1u;
+                }
+            }
+            if (scanEnd < scanStart) {
+                continue;
+            }
+            if (memory_scanRangeForMatch(scanStart, scanEnd, pattern, outAddr, outLen)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int
+memory_findPrevMatch(memory_view_state_t *st, const memory_search_pattern_t *pattern,
+                     uint32_t startAddr, uint32_t *outAddr, int *outLen)
+{
+    (void)st;
+    target_memory_range_t ranges[MEMORY_SEARCH_MAX_RANGES];
+    size_t rangeCount = 0;
+    if (!memory_collectSearchRanges(ranges, MEMORY_SEARCH_MAX_RANGES, &rangeCount) || rangeCount == 0) {
+        return 0;
+    }
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int i = (int)rangeCount - 1; i >= 0; --i) {
+            uint32_t base = ranges[i].baseAddr & 0x00ffffffu;
+            uint32_t size = ranges[i].size;
+            if (size == 0) {
+                continue;
+            }
+            uint32_t end = base + size - 1u;
+            if (end < base) {
+                end = 0x00ffffffu;
+            }
+            uint32_t scanStart = base;
+            uint32_t scanEnd = end;
+            if (pass == 0) {
+                if (startAddr < base) {
+                    continue;
+                }
+                if (startAddr < end) {
+                    scanEnd = startAddr;
+                }
+            } else {
+                if (startAddr >= end) {
+                    continue;
+                }
+                if (startAddr >= base) {
+                    scanStart = startAddr + 1u;
+                }
+            }
+            if (scanEnd < scanStart) {
+                continue;
+            }
+            if (memory_scanRangeForLastMatch(scanStart, scanEnd, pattern, outAddr, outLen)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int
+memory_buildSearchPattern(const char *text, memory_search_pattern_t *outPattern)
+{
+    if (!outPattern) {
+        return 0;
+    }
+    memset(outPattern, 0, sizeof(*outPattern));
+    if (!text) {
+        return 0;
+    }
+    int textLen = (int)strlen(text);
+    if (textLen <= 0) {
+        return 0;
+    }
+    int asciiLen = textLen;
+    if (asciiLen > MEMORY_SEARCH_MAX_PATTERN) {
+        asciiLen = MEMORY_SEARCH_MAX_PATTERN;
+    }
+    if (asciiLen > 0) {
+        memcpy(outPattern->ascii, text, (size_t)asciiLen);
+        outPattern->asciiLen = asciiLen;
+    }
+
+    char hexDigits[MEMORY_SEARCH_MAX_PATTERN * 2 + 1];
+    int hexCount = 0;
+    for (int i = 0; text[i] && hexCount < (int)sizeof(hexDigits) - 1; ++i) {
+        if (isxdigit((unsigned char)text[i])) {
+            hexDigits[hexCount++] = text[i];
+        }
+    }
+    if (hexCount >= 2 && (hexCount % 2) == 0) {
+        int bytes = hexCount / 2;
+        if (bytes > MEMORY_SEARCH_MAX_PATTERN) {
+            bytes = MEMORY_SEARCH_MAX_PATTERN;
+        }
+        for (int i = 0; i < bytes; ++i) {
+            char pair[3];
+            pair[0] = hexDigits[i * 2];
+            pair[1] = hexDigits[i * 2 + 1];
+            pair[2] = '\0';
+            outPattern->hex[i] = (uint8_t)strtoul(pair, NULL, 16);
+        }
+        outPattern->hexLen = bytes;
+    }
+    return outPattern->asciiLen > 0 || outPattern->hexLen > 0;
+}
+
+static void
+memory_runSearch(memory_view_state_t *st, int direction, int advance)
+{
+    if (!st || !st->searchBox) {
+        return;
+    }
+    const char *text = e9ui_textbox_getText(st->searchBox);
+    memory_search_pattern_t pattern;
+    if (!memory_buildSearchPattern(text, &pattern)) {
+        st->searchMatchValid = 0;
+        st->searchMatchAddr = 0;
+        st->searchMatchLen = 0;
+        return;
+    }
+    uint32_t startAddr = st->base & 0x00ffffffu;
+    if (advance && st->searchMatchValid) {
+        if (direction >= 0) {
+            startAddr = (st->searchMatchAddr + 1u) & 0x00ffffffu;
+        } else {
+            startAddr = (st->searchMatchAddr - 1u) & 0x00ffffffu;
+        }
+    }
+    uint32_t hitAddr = 0;
+    int hitLen = 0;
+    int found = 0;
+    if (direction >= 0) {
+        found = memory_findNextMatch(st, &pattern, startAddr, &hitAddr, &hitLen);
+    } else {
+        found = memory_findPrevMatch(st, &pattern, startAddr, &hitAddr, &hitLen);
+    }
+    if (!found) {
+        st->searchMatchValid = 0;
+        st->searchMatchAddr = 0;
+        st->searchMatchLen = 0;
+        return;
+    }
+    st->searchMatchValid = 1;
+    st->searchMatchAddr = hitAddr & 0x00ffffffu;
+    st->searchMatchLen = hitLen;
+
+    uint32_t wantBase = memory_clampBaseForView(st, hitAddr & ~0x0fu);
+    if (wantBase != st->base) {
+        st->base = wantBase;
+        memory_syncTextboxFromBase(st);
+    }
+    memory_fillFromram(st, st->base);
+}
+
+static void
+memory_onSearchChange(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    memory_view_state_t *st = (memory_view_state_t*)user;
+    memory_runSearch(st, 1, 0);
+}
+
+static void
+memory_onSearchSubmit(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    memory_view_state_t *st = (memory_view_state_t*)user;
+    memory_runSearch(st, 1, 1);
+}
+
+static int
+memory_onSearchKey(e9ui_context_t *ctx, SDL_Keycode key, SDL_Keymod mods, void *user)
+{
+    (void)ctx;
+    memory_view_state_t *st = (memory_view_state_t*)user;
+    if (!st) {
+        return 0;
+    }
+    if ((key == SDLK_RETURN || key == SDLK_KP_ENTER) && (mods & KMOD_SHIFT) != 0) {
+        memory_runSearch(st, -1, 1);
+        return 1;
+    }
+    return 0;
 }
 
 static int
@@ -292,6 +740,70 @@ memory_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
     self->bounds = bounds;
 }
 
+static int
+memory_measureSegment(TTF_Font *font, const char *line, int start, int len)
+{
+    if (!font || !line || len <= 0) {
+        return 0;
+    }
+    int lineLen = (int)strlen(line);
+    if (start < 0) {
+        start = 0;
+    }
+    if (start > lineLen) {
+        start = lineLen;
+    }
+    if (start + len > lineLen) {
+        len = lineLen - start;
+    }
+    if (len <= 0) {
+        return 0;
+    }
+    char tmp[512];
+    if (len >= (int)sizeof(tmp)) {
+        len = (int)sizeof(tmp) - 1;
+    }
+    memcpy(tmp, line + start, (size_t)len);
+    tmp[len] = '\0';
+    int w = 0;
+    (void)TTF_SizeText(font, tmp, &w, NULL);
+    return w;
+}
+
+static void
+memory_markVisibleMatches(memory_view_state_t *st, const memory_search_pattern_t *pattern,
+                          uint8_t *allMask, uint8_t *currentMask)
+{
+    if (!st || !pattern || !allMask || !currentMask) {
+        return;
+    }
+    memset(allMask, 0, st->size);
+    memset(currentMask, 0, st->size);
+    int maxLen = pattern->asciiLen > pattern->hexLen ? pattern->asciiLen : pattern->hexLen;
+    if (maxLen <= 0) {
+        return;
+    }
+    for (unsigned int i = 0; i < st->size; ++i) {
+        int matchLen = 0;
+        if (!memory_patternMatchesAt(st->data + i, (int)(st->size - i), pattern, &matchLen)) {
+            continue;
+        }
+        for (int j = 0; j < matchLen && i + (unsigned int)j < st->size; ++j) {
+            allMask[i + (unsigned int)j] = 1;
+        }
+    }
+    if (st->searchMatchValid && st->searchMatchLen > 0) {
+        uint32_t viewStart = st->base & 0x00ffffffu;
+        uint32_t viewEnd = viewStart + st->size - 1u;
+        if (st->searchMatchAddr >= viewStart && st->searchMatchAddr <= viewEnd) {
+            unsigned int start = (unsigned int)(st->searchMatchAddr - viewStart);
+            for (int i = 0; i < st->searchMatchLen && start + (unsigned int)i < st->size; ++i) {
+                currentMask[start + (unsigned int)i] = 1;
+            }
+        }
+    }
+}
+
 static void
 memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
 {
@@ -316,6 +828,17 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
     unsigned int addr = st->base;
     int pad = 8;
     int y = r.y + pad;
+    uint8_t allMask[16u * 32u];
+    uint8_t currentMask[16u * 32u];
+    memset(allMask, 0, sizeof(allMask));
+    memset(currentMask, 0, sizeof(currentMask));
+    if (st->searchBox) {
+        memory_search_pattern_t pattern;
+        const char *searchText = e9ui_textbox_getText(st->searchBox);
+        if (memory_buildSearchPattern(searchText, &pattern)) {
+            memory_markVisibleMatches(st, &pattern, allMask, currentMask);
+        }
+    }
     if (st->error[0]) {
         SDL_Color err = {220, 80, 80, 255};
         int tw = 0, th = 0;
@@ -342,6 +865,26 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
             line[n++] = (c >= 32 && c <= 126) ? (char)c : '.';
         }
         line[n] = '\0';
+        int baseX = r.x + pad;
+        for (unsigned int i = 0; i < 16 && off + i < st->size; ++i) {
+            unsigned int idx = off + i;
+            if (!allMask[idx]) {
+                continue;
+            }
+            int hexCol = 10 + (int)i * 3;
+            int asciiCol = 59 + (int)i;
+            int hexX = baseX + memory_measureSegment(font, line, 0, hexCol);
+            int asciiX = baseX + memory_measureSegment(font, line, 0, asciiCol);
+            int hexW = memory_measureSegment(font, line, hexCol, 2);
+            int asciiW = memory_measureSegment(font, line, asciiCol, 1);
+            SDL_Color hl = currentMask[idx] ? (SDL_Color){64, 112, 188, 220}
+                                            : (SDL_Color){120, 100, 48, 170};
+            SDL_SetRenderDrawColor(ctx->renderer, hl.r, hl.g, hl.b, hl.a);
+            SDL_Rect hexRect = { hexX, y - 1, hexW, lh + 2 };
+            SDL_Rect asciiRect = { asciiX, y - 1, asciiW, lh + 2 };
+            SDL_RenderFillRect(ctx->renderer, &hexRect);
+            SDL_RenderFillRect(ctx->renderer, &asciiRect);
+        }
         SDL_Color col = {200,220,200,255};
         int tw = 0, th = 0;
         SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, font, line, col, &tw, &th);
@@ -373,8 +916,10 @@ e9ui_component_t *
 memory_makeComponent(void)
 {
     e9ui_component_t *stack = e9ui_stack_makeVertical();
+    e9ui_component_t *row = e9ui_hstack_make();
     e9ui_component_t *c = (e9ui_component_t*)alloc_calloc(1, sizeof(*c));
-    if (!c) {
+    if (!c || !row) {
+        alloc_free(c);
         return NULL;
     }
     memory_view_state_t *st = (memory_view_state_t*)alloc_calloc(1, sizeof(*st));
@@ -404,13 +949,35 @@ memory_makeComponent(void)
     memory_clearData(st);
     memory_setError(st, NULL);
 
-    st->textbox = e9ui_textbox_make(32, memory_onAddressSubmit, NULL, st);
-    e9ui_setDisableVariable(st->textbox, machine_getRunningState(debugger.machine), 1);        
+    st->addressBox = e9ui_textbox_make(32, memory_onAddressSubmit, NULL, st);
+    st->searchBox = e9ui_textbox_make(128, memory_onSearchSubmit, memory_onSearchChange, st);
+    if (!st->addressBox || !st->searchBox) {
+        if (st->addressBox) {
+            e9ui_childDestroy(st->addressBox, NULL);
+            st->addressBox = NULL;
+        }
+        if (st->searchBox) {
+            e9ui_childDestroy(st->searchBox, NULL);
+            st->searchBox = NULL;
+        }
+        e9ui_childDestroy(row, NULL);
+        alloc_free(st->data);
+        alloc_free(st);
+        alloc_free(c);
+        return NULL;
+    }
+    e9ui_setDisableVariable(st->addressBox, machine_getRunningState(debugger.machine), 1);
+    e9ui_setDisableVariable(st->searchBox, machine_getRunningState(debugger.machine), 1);
+    e9ui_textbox_setKeyHandler(st->searchBox, memory_onSearchKey, st);
 
-    e9ui_textbox_setPlaceholder(st->textbox, "Base address (hex)");
+    e9ui_textbox_setPlaceholder(st->addressBox, "Base address (hex)");
+    e9ui_textbox_setPlaceholder(st->searchBox, "Search (hex/ascii)");
     memory_syncTextboxFromBase(st);
-    
-    e9ui_stack_addFixed(stack, st->textbox);
+
+    e9ui_hstack_addFlex(row, st->addressBox);
+    e9ui_hstack_addFlex(row, st->searchBox);
+
+    e9ui_stack_addFixed(stack, row);
 
     e9ui_stack_addFlex(stack, c);
 
@@ -429,6 +996,8 @@ memory_refreshOnBreak(void)
     if (!memory_parseAddress(g_memory_view_state, &addr)) {
         return;
     }
-    g_memory_view_state->base = addr;
+    g_memory_view_state->base = memory_clampBaseForView(g_memory_view_state, addr);
+    memory_syncTextboxFromBase(g_memory_view_state);
     memory_fillFromram(g_memory_view_state, g_memory_view_state->base);
+    memory_runSearch(g_memory_view_state, 1, 0);
 }

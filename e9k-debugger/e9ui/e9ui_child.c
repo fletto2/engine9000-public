@@ -11,6 +11,27 @@
 static void
 e9ui_child_destroyTree_(e9ui_component_t *self, e9ui_context_t *ctx);
 
+static int
+e9ui_child_containsComponent_(const e9ui_component_t *root, const e9ui_component_t *needle)
+{
+  if (!root || !needle) {
+    return 0;
+  }
+  if (root == needle) {
+    return 1;
+  }
+  for (list_t *ptr = root->children; ptr; ptr = ptr->next) {
+    e9ui_component_child_t *container = (e9ui_component_child_t*)ptr->data;
+    if (!container || !container->component) {
+      continue;
+    }
+    if (e9ui_child_containsComponent_(container->component, needle)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static void
 e9ui_child_containerDestroyAndFree_(e9ui_component_child_t *container, e9ui_context_t *ctx)
 {
@@ -71,6 +92,9 @@ void
 e9ui_childRemove(e9ui_component_t *self, e9ui_component_t *child,  e9ui_context_t *ctx)
 {
   if (!self || !child) return;
+  if (ctx && e9ui_getFocus(ctx) && e9ui_child_containsComponent_(child, e9ui_getFocus(ctx))) {
+    e9ui_setFocus(ctx, NULL);
+  }
 
   list_t *ptr = self->children;
   while (ptr && ptr->data) {

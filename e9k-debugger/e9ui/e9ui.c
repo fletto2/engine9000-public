@@ -565,8 +565,14 @@ e9ui_setHiddenVariable(e9ui_component_t *comp, const int *var, int hiddenWhenTru
 void
 e9ui_setFocus(e9ui_context_t *ctx, e9ui_component_t *comp)
 {
+  if (!ctx) {
+    return;
+  }
+  e9ui_component_t *prev = ctx->_focus;
+  if (prev && prev != comp && prev->name && strcmp(prev->name, "e9ui_textbox") == 0) {
+    e9ui_textbox_clearSelectionExternal(prev);
+  }
   ctx->_focus = comp;
-
 }
 
 void
@@ -1374,6 +1380,7 @@ e9ui_loadWindowConfig(const char* configPath)
 int
 e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cliWinH, int startHidden)
 {
+  ui_test_mode_t uiTestMode = ui_test_getMode();
   e9ui_theme_ctor();
   e9ui_loadWindowConfig(configPath);
 
@@ -1456,9 +1463,11 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     e9ui->ctx.dpiScale = e9ui_computeDpiScale();
     // Enable alpha blending for proper fade animations
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    // Apply saved window position if present
     if (e9ui->layout.winX >= 0 && e9ui->layout.winY >= 0) {
         SDL_SetWindowPosition(win, e9ui->layout.winX, e9ui->layout.winY);
+    }
+    if (uiTestMode != UI_TEST_MODE_NONE) {
+        SDL_SetWindowSize(win, wantW, wantH);
     }
     if (e9ui->glCompositeEnabled) {
       if (!gl_composite_init(win, ren)) {
@@ -1509,7 +1518,7 @@ e9ui_eventWindowId(const SDL_Event *ev)
         return 0;
     }
 }
- 
+
 int
 e9ui_processEvents(void)
 {
@@ -1520,7 +1529,7 @@ e9ui_processEvents(void)
         int hasEvent = 0;
         if (compareMode) {
 	  hasEvent = input_record_pollUiEvent(&ev);
-          SDL_Event dummy;	
+          SDL_Event dummy;
 	  SDL_PollEvent(&dummy);
         } else {
 	  hasEvent = SDL_PollEvent(&ev);

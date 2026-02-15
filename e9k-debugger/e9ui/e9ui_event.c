@@ -36,6 +36,9 @@ e9ui_event_assignFocusForMouse(e9ui_component_t *comp, e9ui_context_t *ctx)
     if (!ctx || !comp) {
         return;
     }
+    if (ctx->focusClickHandled) {
+        return;
+    }
     e9ui_component_t *target = comp->focusTarget ? comp->focusTarget : comp;
     if (target && target->focusable) {
         ctx->focusClickHandled = 1;
@@ -129,6 +132,9 @@ static int
 e9ui_event_processChildren(e9ui_component_t *comp, e9ui_context_t *ctx, const e9ui_event_t *ev)
 {
     if (!comp) {
+        return 0;
+    }
+    if (comp->collapsed) {
         return 0;
     }
     int allow_multiple = 0;

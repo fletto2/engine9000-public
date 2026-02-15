@@ -12,6 +12,7 @@
 #include "libretro_host.h"
 #include "debugger.h"
 #include "addr2line.h"
+#include "e9ui_scroll.h"
 
 typedef struct breakpoints_record {
     machine_breakpoint_t data;
@@ -570,8 +571,17 @@ breakpoints_listRebuild(breakpoints_list_state_t *st, e9ui_context_t *ctx)
 static int
 breakpoints_listPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
 {
-    (void)self; (void)ctx; (void)availW;
-    return 0;
+    breakpoints_list_state_t *st = self ? (breakpoints_list_state_t*)self->state : NULL;
+    if (!st || !st->entries) {
+        return 0;
+    }
+
+    breakpoints_listRebuild(st, ctx);
+
+    if (!st->entries->preferredHeight) {
+        return 0;
+    }
+    return st->entries->preferredHeight(st->entries, ctx, availW);
 }
 
 static void
@@ -733,6 +743,7 @@ e9ui_component_t *
 breakpoints_makeComponent(void)
 {
     e9ui_component_t *list = breakpoints_makeList();
+    e9ui_component_t *listScroll = list ? e9ui_scroll_make(list) : NULL;
 
     e9ui_component_t *toolbar = e9ui_flow_make();
     e9ui_flow_setPadding(toolbar, 0);
@@ -767,7 +778,9 @@ breakpoints_makeComponent(void)
 
     e9ui_component_t *stack = e9ui_stack_makeVertical();
     e9ui_stack_addFixed(stack, toolbar_box);
-    if (list) {
+    if (listScroll) {
+        e9ui_stack_addFlex(stack, listScroll);
+    } else if (list) {
         e9ui_stack_addFlex(stack, list);
     }
 

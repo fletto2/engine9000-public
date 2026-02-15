@@ -17,6 +17,38 @@
 #include "e9ui_scroll.h"
 #include "e9ui_text.h"
 
+typedef struct help_collapsible_state {
+    const char *label;
+    int collapsed;
+    int sectionHeight;
+    e9ui_component_t *section;
+    e9ui_component_t *title;
+} help_collapsible_state_t;
+
+typedef struct help_sections_state {
+    int leftHeight;
+    int rightExpandedHeight;
+    e9ui_component_t *scroll;
+    help_collapsible_state_t amiga;
+    help_collapsible_state_t megaDrive;
+    help_collapsible_state_t neoGeo;
+} help_sections_state_t;
+
+static help_sections_state_t help_sections = {0};
+static SDL_Cursor *help_cursorHand = NULL;
+static SDL_Cursor *help_cursorArrow = NULL;
+
+static void
+help_ensureCursors(void)
+{
+    if (!help_cursorHand) {
+        help_cursorHand = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND);
+    }
+    if (!help_cursorArrow) {
+        help_cursorArrow = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);
+    }
+}
+
 static const char *
 help_baseName(const char *path)
 {
@@ -39,6 +71,7 @@ help_closeModal(void)
     if (!e9ui->pendingRemove) {
         e9ui->pendingRemove = e9ui->helpModal;
     }
+    memset(&help_sections, 0, sizeof(help_sections));
     e9ui->helpModal = NULL;
 }
 
@@ -56,6 +89,165 @@ help_uiClose(e9ui_context_t *ctx, void *user)
     (void)ctx;
     (void)user;
     help_closeModal();
+}
+
+static void
+help_updateSectionTitle(help_collapsible_state_t *section)
+{
+    if (!section || !section->title || !section->label) {
+        return;
+    }
+    char title[96];
+    snprintf(title, sizeof(title), "%s  [%c]", section->label, section->collapsed ? '+' : '-');
+    e9ui_text_setText(section->title, title);
+    if (section->collapsed) {
+        e9ui_text_setColor(section->title, (SDL_Color){150, 150, 150, 255});
+    } else {
+        e9ui_text_setColor(section->title, (SDL_Color){235, 235, 235, 255});
+    }
+}
+
+static void
+help_refreshCollapsedContentHeight(void)
+{
+    if (!help_sections.scroll) {
+        return;
+    }
+    int rightH = help_sections.rightExpandedHeight;
+    help_collapsible_state_t *sections[] = {
+        &help_sections.amiga,
+        &help_sections.megaDrive,
+        &help_sections.neoGeo
+    };
+    for (int i = 0; i < 3; ++i) {
+        if (sections[i]->collapsed) {
+            rightH -= sections[i]->sectionHeight;
+        }
+    }
+    if (rightH < 0) {
+        rightH = 0;
+    }
+    int contentH = help_sections.leftHeight > rightH ? help_sections.leftHeight : rightH;
+    e9ui_scroll_setContentHeightPx(help_sections.scroll, contentH);
+}
+
+static void
+help_setSectionCollapsed(help_collapsible_state_t *section, int collapsed)
+{
+    if (!section) {
+        return;
+    }
+    section->collapsed = collapsed ? 1 : 0;
+    if (section->section) {
+        e9ui_setHidden(section->section, section->collapsed);
+    }
+    help_updateSectionTitle(section);
+}
+
+static void
+help_toggleSection(help_collapsible_state_t *section)
+{
+    if (!section) {
+        return;
+    }
+    help_setSectionCollapsed(section, !section->collapsed);
+    help_refreshCollapsedContentHeight();
+}
+
+static void
+help_amigaTitleClick(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mouse_event_t *mouse_ev)
+{
+    (void)self;
+    (void)ctx;
+    if (!mouse_ev || mouse_ev->button != E9UI_MOUSE_BUTTON_LEFT) {
+        return;
+    }
+    help_toggleSection(&help_sections.amiga);
+}
+
+static void
+help_megaDriveTitleClick(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mouse_event_t *mouse_ev)
+{
+    (void)self;
+    (void)ctx;
+    if (!mouse_ev || mouse_ev->button != E9UI_MOUSE_BUTTON_LEFT) {
+        return;
+    }
+    help_toggleSection(&help_sections.megaDrive);
+}
+
+static void
+help_neoGeoTitleClick(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mouse_event_t *mouse_ev)
+{
+    (void)self;
+    (void)ctx;
+    if (!mouse_ev || mouse_ev->button != E9UI_MOUSE_BUTTON_LEFT) {
+        return;
+    }
+    help_toggleSection(&help_sections.neoGeo);
+}
+
+static void
+help_sectionTitleHover(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mouse_event_t *mouse_ev)
+{
+    (void)self;
+    (void)mouse_ev;
+    help_ensureCursors();
+    if (help_cursorHand) {
+        SDL_SetCursor(help_cursorHand);
+        if (ctx) {
+            ctx->cursorOverride = 1;
+        }
+    }
+}
+
+static void
+help_sectionTitleMove(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mouse_event_t *mouse_ev)
+{
+    (void)self;
+    (void)mouse_ev;
+    help_ensureCursors();
+    if (help_cursorHand) {
+        SDL_SetCursor(help_cursorHand);
+        if (ctx) {
+            ctx->cursorOverride = 1;
+        }
+    }
+}
+
+static void
+help_sectionTitleLeave(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mouse_event_t *mouse_ev)
+{
+    (void)self;
+    (void)ctx;
+    (void)mouse_ev;
+    help_ensureCursors();
+    if (help_cursorArrow) {
+        SDL_SetCursor(help_cursorArrow);
+    }
+}
+
+static e9ui_component_t *
+help_makeCollapsibleHeading(e9ui_component_t *title,
+                            void (*onClick)(e9ui_component_t *, e9ui_context_t *, const e9ui_mouse_event_t *))
+{
+    if (!title) {
+        return NULL;
+    }
+    e9ui_component_t *row = e9ui_hstack_make();
+    if (!row) {
+        title->onClick = onClick;
+        title->onHover = help_sectionTitleHover;
+        title->onMouseMove = help_sectionTitleMove;
+        title->onLeave = help_sectionTitleLeave;
+        return title;
+    }
+    e9ui_hstack_addFlex(row, title);
+    row->onClick = onClick;
+    row->onHover = help_sectionTitleHover;
+    row->onMouseMove = help_sectionTitleMove;
+    row->onLeave = help_sectionTitleLeave;
+    return row;
 }
 
 static int
@@ -189,11 +381,11 @@ help_showModal(e9ui_context_t *ctx)
     e9ui_text_setFontSize(titleShortcuts, headingSize);
     e9ui_text_setColor(titleShortcuts, headingColor);
 
-    const char *shortcutKeys[] = { "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F11", "F12", "ESC", "TAB", "C", "P", "S", "N", "I", "b", "f", "g", "Ctrl/Gui+C", ",", ".", "/" };
+    const char *shortcutKeys[] = { "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F11", "F12", "ESC", "TAB", "C", "P", "S", "N", "I", "b", "f", "g", "Ctrl+C", ",", ".", "/" };
     const char *shortcutVals[] = { "Help",
                                    "Screenshot to clipboard",
                                    "Amiga <-> Neo Geo",
-                                   "Toggle rolling state record",
+                                   "Toggle record",
                                    "Warp",
                                    "Toggle audio",
                                    "Save state",
@@ -211,31 +403,99 @@ help_showModal(e9ui_context_t *ctx)
                                    "Frame step",
                                    "Frame continue",
                                    "Copy selection",
-                                   "Checkpoint profile toggle",
+                                   "Checkpoint profile",
                                    "Checkpoint reset",
                                    "Checkpoint dump" };
     int shortcutKeyW = help_measureKeyWidth(ctx, shortcutKeys, sizeof(shortcutKeys) / sizeof(shortcutKeys[0]));
 
-    e9ui_component_t *titleInputs = e9ui_text_make("NEO GEO SHORTCUTS");
-    e9ui_text_setBold(titleInputs, 1);
-    e9ui_text_setFontSize(titleInputs, headingSize);
-    e9ui_text_setColor(titleInputs, headingColor);
+    e9ui_component_t *titleSourcePane = e9ui_text_make("SOURCE PANE");
+    e9ui_text_setBold(titleSourcePane, 1);
+    e9ui_text_setFontSize(titleSourcePane, headingSize);
+    e9ui_text_setColor(titleSourcePane, headingColor);
+    const char *sourcePaneKeys[] = {
+        "Ctrl+S",
+        "Ctrl+R",
+        "Esc",
+        "Up/Down",
+        "Shift+Up/Down",
+        "Ctrl+Up/Down",
+        "Alt+Up/Down",
+        "PageUp/PageDown",
+        "Home/End"
+    };
+    const char *sourcePaneVals[] = {
+        "Search",
+        "Reverse search",
+        "Cancel search",
+        "Scroll 1 line",
+        "Scroll 4 lines",
+        "Scroll half page",
+        "Scroll 16 lines",
+        "Scroll one page",
+        "Jump to start/end"
+    };
+    int sourcePaneKeyW = help_measureKeyWidth(ctx, sourcePaneKeys,
+                                              sizeof(sourcePaneKeys) / sizeof(sourcePaneKeys[0]));
 
-    e9ui_component_t *titleKeyboard = e9ui_text_make("Keyboard");
-    e9ui_text_setBold(titleKeyboard, 1);
-    e9ui_text_setColor(titleKeyboard, headingColor);
+    e9ui_component_t *titleAmiga = e9ui_text_make("AMIGA SHORTCUTS");
+    e9ui_text_setBold(titleAmiga, 1);
+    e9ui_text_setFontSize(titleAmiga, headingSize);
+    e9ui_text_setColor(titleAmiga, headingColor);
+    e9ui_component_t *headingAmiga = help_makeCollapsibleHeading(titleAmiga, help_amigaTitleClick);
 
-    const char *kbKeys[] = { "Arrows", "L/R Alt", "L/R Ctrl", "L/R Shift", "Space", "1", "5" };
-    const char *kbVals[] = { "D-pad", "A", "B", "C", "D", "Start", "Select" };
-    int kbKeyW = help_measureKeyWidth(ctx, kbKeys, sizeof(kbKeys) / sizeof(kbKeys[0]));
+    e9ui_component_t *titleMegaDrive = e9ui_text_make("MEGA DRIVE SHORTCUTS");
+    e9ui_text_setBold(titleMegaDrive, 1);
+    e9ui_text_setFontSize(titleMegaDrive, headingSize);
+    e9ui_text_setColor(titleMegaDrive, headingColor);
+    e9ui_component_t *headingMegaDrive = help_makeCollapsibleHeading(titleMegaDrive, help_megaDriveTitleClick);
 
-    e9ui_component_t *titleController = e9ui_text_make("NEO GEO JOYSTICK CONTROLS");
-    e9ui_text_setBold(titleController, 1);
-    e9ui_text_setColor(titleController, headingColor);
+    e9ui_component_t *titleNeoGeo = e9ui_text_make("NEO GEO SHORTCUTS");
+    e9ui_text_setBold(titleNeoGeo, 1);
+    e9ui_text_setFontSize(titleNeoGeo, headingSize);
+    e9ui_text_setColor(titleNeoGeo, headingColor);
+    e9ui_component_t *headingNeoGeo = help_makeCollapsibleHeading(titleNeoGeo, help_neoGeoTitleClick);
 
-    const char *padKeys[] = { "Left stick / D-pad", "A", "B", "X", "Y", "LB", "RB", "Start", "Back" };
-    const char *padVals[] = { "Directions", "A", "B", "C", "D", "L", "R", "Start", "Select" };
-    int padKeyW = help_measureKeyWidth(ctx, padKeys, sizeof(padKeys) / sizeof(padKeys[0]));
+    e9ui_component_t *titleAmigaKeyboard = e9ui_text_make("AMIGA KEYBOARD");
+    e9ui_text_setBold(titleAmigaKeyboard, 1);
+    e9ui_text_setColor(titleAmigaKeyboard, headingColor);
+    const char *amigaKbKeys[] = { "Arrows", "L Alt", "L Ctrl" };
+    const char *amigaKbVals[] = { "D-pad", "Fire 1", "Fire 2" };
+    int amigaKbKeyW = help_measureKeyWidth(ctx, amigaKbKeys, sizeof(amigaKbKeys) / sizeof(amigaKbKeys[0]));
+
+    e9ui_component_t *titleAmigaController = e9ui_text_make("AMIGA JOYSTICK CONTROLS");
+    e9ui_text_setBold(titleAmigaController, 1);
+    e9ui_text_setColor(titleAmigaController, headingColor);
+    const char *amigaPadKeys[] = { "Left stick / D-pad", "A", "B" };
+    const char *amigaPadVals[] = { "Directions", "Fire 1", "Fire 2" };
+    int amigaPadKeyW = help_measureKeyWidth(ctx, amigaPadKeys, sizeof(amigaPadKeys) / sizeof(amigaPadKeys[0]));
+
+    e9ui_component_t *titleMegaDriveKeyboard = e9ui_text_make("MEGA DRIVE KEYBOARD");
+    e9ui_text_setBold(titleMegaDriveKeyboard, 1);
+    e9ui_text_setColor(titleMegaDriveKeyboard, headingColor);
+    const char *megaKbKeys[] = { "Arrows", "L/R Alt", "L/R Ctrl", "L/R Shift", "Space", "1", "5" };
+    const char *megaKbVals[] = { "D-pad", "A", "B", "C", "D", "Start", "Select" };
+    int megaKbKeyW = help_measureKeyWidth(ctx, megaKbKeys, sizeof(megaKbKeys) / sizeof(megaKbKeys[0]));
+
+    e9ui_component_t *titleMegaDriveController = e9ui_text_make("MEGA DRIVE JOYSTICK CONTROLS");
+    e9ui_text_setBold(titleMegaDriveController, 1);
+    e9ui_text_setColor(titleMegaDriveController, headingColor);
+    const char *megaPadKeys[] = { "Left stick / D-pad", "A", "B", "X", "Y", "LB", "RB", "Start", "Back" };
+    const char *megaPadVals[] = { "Directions", "A", "B", "C", "D", "L", "R", "Start", "Select" };
+    int megaPadKeyW = help_measureKeyWidth(ctx, megaPadKeys, sizeof(megaPadKeys) / sizeof(megaPadKeys[0]));
+
+    e9ui_component_t *titleNeoGeoKeyboard = e9ui_text_make("NEO GEO KEYBOARD");
+    e9ui_text_setBold(titleNeoGeoKeyboard, 1);
+    e9ui_text_setColor(titleNeoGeoKeyboard, headingColor);
+    const char *neoKbKeys[] = { "Arrows", "L/R Alt", "L/R Ctrl", "L/R Shift", "Space", "1", "5" };
+    const char *neoKbVals[] = { "D-pad", "A", "B", "C", "D", "Start", "Select" };
+    int neoKbKeyW = help_measureKeyWidth(ctx, neoKbKeys, sizeof(neoKbKeys) / sizeof(neoKbKeys[0]));
+
+    e9ui_component_t *titleNeoGeoController = e9ui_text_make("NEO GEO JOYSTICK CONTROLS");
+    e9ui_text_setBold(titleNeoGeoController, 1);
+    e9ui_text_setColor(titleNeoGeoController, headingColor);
+    const char *neoPadKeys[] = { "Left stick / D-pad", "A", "B", "X", "Y", "LB", "RB", "Start", "Back" };
+    const char *neoPadVals[] = { "Directions", "A", "B", "C", "D", "L", "R", "Start", "Select" };
+    int neoPadKeyW = help_measureKeyWidth(ctx, neoPadKeys, sizeof(neoPadKeys) / sizeof(neoPadKeys[0]));
 
     help_add(stackLeft, titleShortcuts, ctx, colW, &contentHLeft);
     help_addSpacer(stackLeft, gapSmall, ctx, colW, &contentHLeft);
@@ -244,22 +504,79 @@ help_showModal(e9ui_context_t *ctx)
         help_add(stackLeft, row, ctx, colW, &contentHLeft);
     }
 
-    help_add(stackRight, titleInputs, ctx, colW, &contentHRight);
+    help_add(stackRight, titleSourcePane, ctx, colW, &contentHRight);
     help_addSpacer(stackRight, gapSmall, ctx, colW, &contentHRight);
-    help_add(stackRight, titleKeyboard, ctx, colW, &contentHRight);
-    help_addSpacer(stackRight, gapSmall, ctx, colW, &contentHRight);
-    for (size_t i = 0; i < sizeof(kbKeys) / sizeof(kbKeys[0]); ++i) {
-        e9ui_component_t *row = help_makeRow(kbKeys[i], kbVals[i], kbKeyW, colGap, bodyColor, bodyColor);
+    for (size_t i = 0; i < sizeof(sourcePaneKeys) / sizeof(sourcePaneKeys[0]); ++i) {
+        e9ui_component_t *row = help_makeRow(sourcePaneKeys[i], sourcePaneVals[i], sourcePaneKeyW, colGap,
+                                             bodyColor, bodyColor);
         help_add(stackRight, row, ctx, colW, &contentHRight);
     }
 
-    help_addSpacer(stackRight, gap, ctx, colW, &contentHRight);
-    help_add(stackRight, titleController, ctx, colW, &contentHRight);
-    help_addSpacer(stackRight, gapSmall, ctx, colW, &contentHRight);
-    for (size_t i = 0; i < sizeof(padKeys) / sizeof(padKeys[0]); ++i) {
-        e9ui_component_t *row = help_makeRow(padKeys[i], padVals[i], padKeyW, colGap, bodyColor, bodyColor);
-        help_add(stackRight, row, ctx, colW, &contentHRight);
+    e9ui_component_t *amigaSection = e9ui_stack_makeVertical();
+    int amigaHeight = 0;
+    help_addSpacer(amigaSection, gapSmall, ctx, colW, &amigaHeight);
+    help_add(amigaSection, titleAmigaKeyboard, ctx, colW, &amigaHeight);
+    help_addSpacer(amigaSection, gapSmall, ctx, colW, &amigaHeight);
+    for (size_t i = 0; i < sizeof(amigaKbKeys) / sizeof(amigaKbKeys[0]); ++i) {
+        e9ui_component_t *row = help_makeRow(amigaKbKeys[i], amigaKbVals[i], amigaKbKeyW, colGap, bodyColor, bodyColor);
+        help_add(amigaSection, row, ctx, colW, &amigaHeight);
     }
+    help_addSpacer(amigaSection, gap, ctx, colW, &amigaHeight);
+    help_add(amigaSection, titleAmigaController, ctx, colW, &amigaHeight);
+    help_addSpacer(amigaSection, gapSmall, ctx, colW, &amigaHeight);
+    for (size_t i = 0; i < sizeof(amigaPadKeys) / sizeof(amigaPadKeys[0]); ++i) {
+        e9ui_component_t *row = help_makeRow(amigaPadKeys[i], amigaPadVals[i], amigaPadKeyW, colGap, bodyColor, bodyColor);
+        help_add(amigaSection, row, ctx, colW, &amigaHeight);
+    }
+
+    e9ui_component_t *megaDriveSection = e9ui_stack_makeVertical();
+    int megaDriveHeight = 0;
+    help_addSpacer(megaDriveSection, gapSmall, ctx, colW, &megaDriveHeight);
+    help_add(megaDriveSection, titleMegaDriveKeyboard, ctx, colW, &megaDriveHeight);
+    help_addSpacer(megaDriveSection, gapSmall, ctx, colW, &megaDriveHeight);
+    for (size_t i = 0; i < sizeof(megaKbKeys) / sizeof(megaKbKeys[0]); ++i) {
+        e9ui_component_t *row = help_makeRow(megaKbKeys[i], megaKbVals[i], megaKbKeyW, colGap, bodyColor, bodyColor);
+        help_add(megaDriveSection, row, ctx, colW, &megaDriveHeight);
+    }
+    help_addSpacer(megaDriveSection, gap, ctx, colW, &megaDriveHeight);
+    help_add(megaDriveSection, titleMegaDriveController, ctx, colW, &megaDriveHeight);
+    help_addSpacer(megaDriveSection, gapSmall, ctx, colW, &megaDriveHeight);
+    for (size_t i = 0; i < sizeof(megaPadKeys) / sizeof(megaPadKeys[0]); ++i) {
+        e9ui_component_t *row = help_makeRow(megaPadKeys[i], megaPadVals[i], megaPadKeyW, colGap, bodyColor, bodyColor);
+        help_add(megaDriveSection, row, ctx, colW, &megaDriveHeight);
+    }
+
+    e9ui_component_t *neoGeoSection = e9ui_stack_makeVertical();
+    int neoGeoHeight = 0;
+    help_addSpacer(neoGeoSection, gapSmall, ctx, colW, &neoGeoHeight);
+    help_add(neoGeoSection, titleNeoGeoKeyboard, ctx, colW, &neoGeoHeight);
+    help_addSpacer(neoGeoSection, gapSmall, ctx, colW, &neoGeoHeight);
+    for (size_t i = 0; i < sizeof(neoKbKeys) / sizeof(neoKbKeys[0]); ++i) {
+        e9ui_component_t *row = help_makeRow(neoKbKeys[i], neoKbVals[i], neoKbKeyW, colGap, bodyColor, bodyColor);
+        help_add(neoGeoSection, row, ctx, colW, &neoGeoHeight);
+    }
+    help_addSpacer(neoGeoSection, gap, ctx, colW, &neoGeoHeight);
+    help_add(neoGeoSection, titleNeoGeoController, ctx, colW, &neoGeoHeight);
+    help_addSpacer(neoGeoSection, gapSmall, ctx, colW, &neoGeoHeight);
+    for (size_t i = 0; i < sizeof(neoPadKeys) / sizeof(neoPadKeys[0]); ++i) {
+        e9ui_component_t *row = help_makeRow(neoPadKeys[i], neoPadVals[i], neoPadKeyW, colGap, bodyColor, bodyColor);
+        help_add(neoGeoSection, row, ctx, colW, &neoGeoHeight);
+    }
+
+    help_addSpacer(stackRight, gap, ctx, colW, &contentHRight);
+    help_add(stackRight, headingAmiga, ctx, colW, &contentHRight);
+    help_addSpacer(stackRight, gapSmall, ctx, colW, &contentHRight);
+    help_add(stackRight, amigaSection, ctx, colW, &contentHRight);
+
+    help_addSpacer(stackRight, gap, ctx, colW, &contentHRight);
+    help_add(stackRight, headingMegaDrive, ctx, colW, &contentHRight);
+    help_addSpacer(stackRight, gapSmall, ctx, colW, &contentHRight);
+    help_add(stackRight, megaDriveSection, ctx, colW, &contentHRight);
+
+    help_addSpacer(stackRight, gap, ctx, colW, &contentHRight);
+    help_add(stackRight, headingNeoGeo, ctx, colW, &contentHRight);
+    help_addSpacer(stackRight, gapSmall, ctx, colW, &contentHRight);
+    help_add(stackRight, neoGeoSection, ctx, colW, &contentHRight);
 
     e9ui_component_t *titleCli = e9ui_text_make("COMMAND LINE");
     e9ui_text_setBold(titleCli, 1);
@@ -303,6 +620,30 @@ help_showModal(e9ui_context_t *ctx)
     }
     e9ui_component_t *scroll = e9ui_scroll_make(columns ? columns : stackLeft);
     e9ui_scroll_setContentHeightPx(scroll, contentH);
+    memset(&help_sections, 0, sizeof(help_sections));
+    help_sections.leftHeight = contentHLeft;
+    help_sections.rightExpandedHeight = contentHRight;
+    help_sections.scroll = scroll;
+
+    help_sections.amiga.label = "AMIGA SHORTCUTS";
+    help_sections.amiga.section = amigaSection;
+    help_sections.amiga.title = titleAmiga;
+    help_sections.amiga.sectionHeight = amigaHeight;
+
+    help_sections.megaDrive.label = "MEGA DRIVE SHORTCUTS";
+    help_sections.megaDrive.section = megaDriveSection;
+    help_sections.megaDrive.title = titleMegaDrive;
+    help_sections.megaDrive.sectionHeight = megaDriveHeight;
+
+    help_sections.neoGeo.label = "NEO GEO SHORTCUTS";
+    help_sections.neoGeo.section = neoGeoSection;
+    help_sections.neoGeo.title = titleNeoGeo;
+    help_sections.neoGeo.sectionHeight = neoGeoHeight;
+
+    help_setSectionCollapsed(&help_sections.amiga, 1);
+    help_setSectionCollapsed(&help_sections.megaDrive, 1);
+    help_setSectionCollapsed(&help_sections.neoGeo, 1);
+    help_refreshCollapsedContentHeight();
     e9ui_component_t *center = e9ui_center_make(scroll);
     int centerW = e9ui_unscale_px(ctx, colW * 2 + columnGap);
     e9ui_center_setSize(center, centerW, 0);

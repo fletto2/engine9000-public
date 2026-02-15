@@ -24,8 +24,128 @@
 #include "prompt.h"
 #include "input_record.h"
 #include "config.h"
+#include "source_pane.h"
+#include "hex_convert.h"
 
 static int hotkeys_enabled = 1;
+
+static int
+hotkeys_componentContains(e9ui_component_t *root, e9ui_component_t *target)
+{
+    if (!root || !target) {
+        return 0;
+    }
+    if (root == target) {
+        return 1;
+    }
+    for (list_t *ptr = root->children; ptr; ptr = ptr->next) {
+        e9ui_component_child_t *container = (e9ui_component_child_t*)ptr->data;
+        if (!container || !container->component) {
+            continue;
+        }
+        if (hotkeys_componentContains(container->component, target)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static e9ui_component_t *
+hotkeys_findTopModal(void)
+{
+    if (!e9ui || !e9ui->root) {
+        return NULL;
+    }
+    e9ui_child_reverse_iterator iter;
+    if (!e9ui_child_iterateChildrenReverse(e9ui->root, &iter)) {
+        return NULL;
+    }
+    for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+         it;
+         it = e9ui_child_iteratePrev(&iter)) {
+        e9ui_component_t *child = it->child;
+        if (!child || e9ui_getHidden(child) || !child->name) {
+            continue;
+        }
+        if (strcmp(child->name, "e9ui_modal") == 0) {
+            return child;
+        }
+    }
+    return NULL;
+}
+
+static void
+hotkeys_collectTextboxes(e9ui_component_t *root, e9ui_component_t ***list, int *count, int *cap)
+{
+    if (!root || !list || !count || !cap) {
+        return;
+    }
+    if (root->name && strcmp(root->name, "e9ui_textbox") == 0) {
+        if (*count >= *cap) {
+            int nextCap = (*cap > 0) ? (*cap * 2) : 16;
+            e9ui_component_t **next = (e9ui_component_t**)alloc_realloc(*list, (size_t)nextCap * sizeof(*next));
+            if (!next) {
+                return;
+            }
+            *list = next;
+            *cap = nextCap;
+        }
+        (*list)[*count] = root;
+        (*count)++;
+    }
+    for (list_t *ptr = root->children; ptr; ptr = ptr->next) {
+        e9ui_component_child_t *container = (e9ui_component_child_t*)ptr->data;
+        if (!container || !container->component || e9ui_getHidden(container->component)) {
+            continue;
+        }
+        hotkeys_collectTextboxes(container->component, list, count, cap);
+    }
+}
+
+static int
+hotkeys_modalCycleTextboxFocus(e9ui_context_t *ctx, int reverse)
+{
+    if (!ctx) {
+        return 0;
+    }
+    e9ui_component_t *modal = hotkeys_findTopModal();
+    if (!modal) {
+        return 0;
+    }
+    e9ui_component_t **textboxes = NULL;
+    int count = 0;
+    int cap = 0;
+    hotkeys_collectTextboxes(modal, &textboxes, &count, &cap);
+    if (count <= 0) {
+        if (textboxes) {
+            alloc_free(textboxes);
+        }
+        return 0;
+    }
+    e9ui_component_t *focus = e9ui_getFocus(ctx);
+    int start = 0;
+    if (focus && hotkeys_componentContains(modal, focus)) {
+        for (int i = 0; i < count; ++i) {
+            if (textboxes[i] == focus) {
+                start = reverse ? (i - 1) : (i + 1);
+                break;
+            }
+        }
+    }
+    if (count > 0) {
+        while (start < 0) {
+            start += count;
+        }
+        while (start >= count) {
+            start -= count;
+        }
+        e9ui_setFocus(ctx, textboxes[start]);
+    }
+    if (textboxes) {
+        alloc_free(textboxes);
+    }
+    return 1;
+}
 
 static void
 hotkeys_toggleCoreSystemAndRestart(void)
@@ -106,6 +226,16 @@ hotkeys_dispatchHotkey(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
         focusIsTextbox = 1;
     }
     int allowPrintableHotkey = (mods == 0 && (key == SDLK_f || key == SDLK_b || key == SDLK_g) && !focusIsTextbox) ? 1 : 0;
+    if ((mods & (KMOD_CTRL | KMOD_GUI)) != 0 && (key == SDLK_s || key == SDLK_r)) {
+        if (focus && focus->name && strcmp(focus->name, "source_pane") == 0) {
+            if (source_pane_getMode(focus) == source_pane_mode_c) {
+                return 0;
+            }
+        }
+        if (focusIsTextbox) {
+            return 0;
+        }
+    }
     if (focus) {
         SDL_Keymod noShiftMods = (SDL_Keymod)(mods & (KMOD_CTRL|KMOD_ALT|KMOD_GUI));
         int printable = (key >= 32 && key <= 126);
@@ -131,6 +261,12 @@ hotkeys_dispatchHotkey(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
             continue;
         }
         if ((SDL_Keycode)e->key == key) {
+            if (e->mask == 0 && e->value == 0) {
+                SDL_Keymod disallowMods = (SDL_Keymod)(mods & (KMOD_CTRL | KMOD_ALT));
+                if (disallowMods != 0) {
+                    continue;
+                }
+            }
             if ((mods & (SDL_Keymod)e->mask) == (SDL_Keymod)e->value) {
                 if (e->cb) {
                     e->cb(ctx, e->user);
@@ -149,6 +285,31 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
         return 0;
     }
     SDL_Keycode key = kev->keysym.sym;
+    SDL_Keymod mods = kev->keysym.mod;
+    if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+        int reverse = (mods & KMOD_SHIFT) ? 1 : 0;
+        if (hotkeys_modalCycleTextboxFocus(ctx, reverse)) {
+            return 1;
+        }
+    }
+    SDL_Keymod ctrlMods = (SDL_Keymod)(kev->keysym.mod & (KMOD_CTRL | KMOD_GUI));
+    SDL_Keymod blockedMods = (SDL_Keymod)(kev->keysym.mod & KMOD_ALT);
+    if (key == SDLK_i && ctrlMods != 0 && blockedMods == 0) {
+        SDL_Keymod extraMods = (SDL_Keymod)(kev->keysym.mod & KMOD_SHIFT);
+        if (extraMods == 0 && kev->repeat == 0) {
+            hex_convert_toggle(ctx);
+            return 1;
+        }
+    }
+    if (key == SDLK_c && ctrlMods != 0 && blockedMods == 0) {
+        if (e9ui_text_select_hasSelection()) {
+            e9ui_component_t *focus = e9ui_getFocus(ctx);
+            if (!focus || !focus->name || strcmp(focus->name, "e9ui_textbox") != 0) {
+                e9ui_text_select_copyToClipboard();
+                return 1;
+            }
+        }
+    }
     if (key == SDLK_F11 && kev->repeat == 0) {
         hotkeys_enabled = hotkeys_enabled ? 0 : 1;
         e9ui_showTransientMessage(hotkeys_enabled ? "HOTKEYS ON" : "HOTKEYS OFF");
@@ -158,6 +319,10 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
         return 0;
     }
     if (key == SDLK_ESCAPE) {
+        if (hex_convert_isOpen()) {
+            hex_convert_close();
+            return 1;
+        }
         if (sprite_debug_is_window_id(kev->windowID)) {
             if (sprite_debug_is_open()) {
                 sprite_debug_toggle();
@@ -181,6 +346,15 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
         if (e9ui->settingsModal) {
             debugger_cancelSettingsModal();
             return 1;
+        }
+        e9ui_component_t *focus = e9ui_getFocus(ctx);
+        if (focus && focus->name && strcmp(focus->name, "source_pane") == 0) {
+            if (source_pane_getMode(focus) == source_pane_mode_c) {
+                return 0;
+            }
+        }
+        if (focus && focus->name && strcmp(focus->name, "e9ui_textbox") == 0) {
+            return 0;
         }
         return 1;
     }
@@ -234,16 +408,6 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
         }
       
         return 1;
-    }
-    if (key == SDLK_c) {
-        SDL_Keymod mods = (SDL_Keymod)(kev->keysym.mod & (KMOD_CTRL|KMOD_GUI));
-        if (mods != 0 && e9ui_text_select_hasSelection()) {
-            e9ui_component_t *focus = e9ui_getFocus(ctx);
-            if (!focus || !focus->name || strcmp(focus->name, "e9ui_textbox") != 0) {
-                e9ui_text_select_copyToClipboard();
-                return 1;
-            }
-        }
     }
     if (key == SDLK_COMMA || key == SDLK_PERIOD || key == SDLK_SLASH) {
         SDL_Keymod mods = (SDL_Keymod)(kev->keysym.mod & (KMOD_CTRL|KMOD_ALT|KMOD_GUI|KMOD_SHIFT));

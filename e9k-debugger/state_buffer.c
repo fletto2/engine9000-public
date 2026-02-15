@@ -15,6 +15,8 @@
 #include "state_buffer.h"
 #include "libretro_host.h"
 #include "state_wrap.h"
+#include "ui_test.h"
+#include "smoke_test.h"
 
 #define STATE_BUFFER_LEVEL_COUNT 6
 #define STATE_BUFFER_DIFF_BLOCK_SIZE 64u
@@ -1226,6 +1228,13 @@ state_buffer_setSaveKeyframe(const uint8_t *state, size_t state_size, uint64_t f
 int
 state_buffer_saveSnapshotFile(const char *path, uint64_t rom_checksum)
 {
+      ui_test_mode_t uiTestMode = ui_test_getMode();
+    if (uiTestMode == UI_TEST_MODE_COMPARE || uiTestMode == UI_TEST_MODE_REMAKE ||
+	debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+      return 0;
+    }
+    
+
     if (!path || !*path) {
         return 0;
     }

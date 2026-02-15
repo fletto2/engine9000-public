@@ -602,6 +602,61 @@ text_select_findClosestRun(e9ui_text_select_state_t *st, int y, void *bucket, in
     return best;
 }
 
+static int
+text_select_pointInComponent(const e9ui_component_t *comp, int x, int y)
+{
+    if (!comp) {
+        return 0;
+    }
+    return x >= comp->bounds.x && x < comp->bounds.x + comp->bounds.w &&
+           y >= comp->bounds.y && y < comp->bounds.y + comp->bounds.h;
+}
+
+static int
+text_select_componentContains(const e9ui_component_t *root, const e9ui_component_t *target)
+{
+    if (!root || !target) {
+        return 0;
+    }
+    if (root == target) {
+        return 1;
+    }
+    for (list_t *ptr = root->children; ptr; ptr = ptr->next) {
+        e9ui_component_child_t *container = (e9ui_component_child_t*)ptr->data;
+        if (!container || !container->component) {
+            continue;
+        }
+        if (text_select_componentContains(container->component, target)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static e9ui_component_t *
+text_select_topModal(void)
+{
+    if (!e9ui || !e9ui->root) {
+        return NULL;
+    }
+    e9ui_child_reverse_iterator iter;
+    if (!e9ui_child_iterateChildrenReverse(e9ui->root, &iter)) {
+        return NULL;
+    }
+    for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+         it;
+         it = e9ui_child_iteratePrev(&iter)) {
+        e9ui_component_t *child = it->child;
+        if (!child || e9ui_getHidden(child) || !child->name) {
+            continue;
+        }
+        if (strcmp(child->name, "e9ui_modal") == 0) {
+            return child;
+        }
+    }
+    return NULL;
+}
+
 void
 e9ui_text_select_beginFrame(e9ui_context_t *ctx)
 {
@@ -655,6 +710,7 @@ e9ui_text_select_handleEvent(e9ui_context_t *ctx, const e9ui_event_t *ev)
     if (!ev) {
         return 0;
     }
+    e9ui_component_t *modal = text_select_topModal();
     if (text_select_state.runCount <= 0) {
         if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT) {
             text_select_resetSelection(&text_select_state);
@@ -669,6 +725,12 @@ e9ui_text_select_handleEvent(e9ui_context_t *ctx, const e9ui_event_t *ev)
         int my = ev->button.y;
         int index = 0;
         int runIndex = text_select_findRunAt(&text_select_state, mx, my, NULL, &index);
+        if (modal && runIndex >= 0) {
+            e9ui_component_t *owner = text_select_state.runs[runIndex].owner;
+            if (!text_select_componentContains(modal, owner)) {
+                runIndex = -1;
+            }
+        }
         void *bucket = NULL;
         if (runIndex >= 0) {
             bucket = text_select_state.runs[runIndex].bucket;
@@ -688,6 +750,12 @@ e9ui_text_select_handleEvent(e9ui_context_t *ctx, const e9ui_event_t *ev)
         text_select_state.lastClickX = mx;
         text_select_state.lastClickY = my;
         text_select_state.lastClickBucket = bucket;
+        if (modal && runIndex < 0 && text_select_pointInComponent(modal, mx, my)) {
+            text_select_state.pendingRun = -1;
+            text_select_state.pendingBucket = NULL;
+            text_select_state.pendingAny = 0;
+            return 0;
+        }
         if (isDouble && runIndex >= 0) {
             if (text_select_selectWord(&text_select_state, runIndex, index)) {
                 text_select_clearPending(&text_select_state);
@@ -718,6 +786,12 @@ e9ui_text_select_handleEvent(e9ui_context_t *ctx, const e9ui_event_t *ev)
             if (dx * dx + dy * dy >= slop * slop) {
                 int index = 0;
                 int runIndex = text_select_findRunAt(&text_select_state, mx, my, NULL, &index);
+                if (modal && runIndex >= 0) {
+                    e9ui_component_t *owner = text_select_state.runs[runIndex].owner;
+                    if (!text_select_componentContains(modal, owner)) {
+                        runIndex = -1;
+                    }
+                }
                 if (runIndex < 0) {
                     return 0;
                 }
@@ -729,6 +803,12 @@ e9ui_text_select_handleEvent(e9ui_context_t *ctx, const e9ui_event_t *ev)
         if (text_select_state.selecting) {
             int index = 0;
             int runIndex = text_select_findRunAt(&text_select_state, mx, my, NULL, &index);
+            if (modal && runIndex >= 0) {
+                e9ui_component_t *owner = text_select_state.runs[runIndex].owner;
+                if (!text_select_componentContains(modal, owner)) {
+                    runIndex = -1;
+                }
+            }
             void *bucket = text_select_state.activeBucket;
             if (runIndex >= 0) {
                 bucket = text_select_state.runs[runIndex].bucket;
@@ -902,6 +982,108 @@ e9ui_text_select_copyToClipboard(void)
     }
     SDL_SetClipboardText(buf);
     alloc_free(buf);
+}
+
+int
+e9ui_text_select_getSelectionText(char *dst, int dstLen)
+{
+    if (dst && dstLen > 0) {
+        dst[0] = '\0';
+    }
+    if (!text_select_hasSelection(&text_select_state)) {
+        return 0;
+    }
+    int startIndex = 0;
+    int endIndex = 0;
+    int startPos = 0;
+    int endPos = 0;
+    if (!text_select_normalizeSelection(&text_select_state, &startIndex,
+                                        &endIndex, &startPos, &endPos)) {
+        return 0;
+    }
+    int total = 0;
+    for (int i = 0; i < text_select_state.runCount; ++i) {
+        e9ui_text_select_run_t *run = &text_select_state.runs[i];
+        int runPos = text_select_bucketPosForRun(&text_select_state, i,
+                                                 text_select_state.activeBucket);
+        if (text_select_state.activeBucket && run->bucket != text_select_state.activeBucket) {
+            continue;
+        }
+        if (runPos < startPos || runPos > endPos) {
+            continue;
+        }
+        int a = 0;
+        int b = run->textLen;
+        if (runPos == startPos) {
+            a = startIndex;
+        }
+        if (runPos == endPos) {
+            b = endIndex;
+        }
+        if (a < 0) {
+            a = 0;
+        }
+        if (b > run->textLen) {
+            b = run->textLen;
+        }
+        if (b < a) {
+            int tmp = a;
+            a = b;
+            b = tmp;
+        }
+        total += (b - a);
+        if (runPos != endPos) {
+            total += 1;
+        }
+    }
+    if (!dst || dstLen <= 0) {
+        return total;
+    }
+    int pos = 0;
+    for (int i = 0; i < text_select_state.runCount; ++i) {
+        e9ui_text_select_run_t *run = &text_select_state.runs[i];
+        int runPos = text_select_bucketPosForRun(&text_select_state, i,
+                                                 text_select_state.activeBucket);
+        if (text_select_state.activeBucket && run->bucket != text_select_state.activeBucket) {
+            continue;
+        }
+        if (runPos < startPos || runPos > endPos) {
+            continue;
+        }
+        int a = 0;
+        int b = run->textLen;
+        if (runPos == startPos) {
+            a = startIndex;
+        }
+        if (runPos == endPos) {
+            b = endIndex;
+        }
+        if (a < 0) {
+            a = 0;
+        }
+        if (b > run->textLen) {
+            b = run->textLen;
+        }
+        if (b < a) {
+            int tmp = a;
+            a = b;
+            b = tmp;
+        }
+        int len = b - a;
+        if (len > 0 && pos < dstLen - 1) {
+            int copyLen = len;
+            if (copyLen > dstLen - 1 - pos) {
+                copyLen = dstLen - 1 - pos;
+            }
+            memcpy(&dst[pos], &run->text[a], (size_t)copyLen);
+            pos += copyLen;
+        }
+        if (runPos != endPos && pos < dstLen - 1) {
+            dst[pos++] = '\n';
+        }
+    }
+    dst[pos] = '\0';
+    return pos;
 }
 
 void

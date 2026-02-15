@@ -29,6 +29,9 @@ e9ui_text_select_isSelecting(void);
 void
 e9ui_text_select_copyToClipboard(void);
 
+int
+e9ui_text_select_getSelectionText(char *dst, int dstLen);
+
 void
 e9ui_text_select_clear(void);
 

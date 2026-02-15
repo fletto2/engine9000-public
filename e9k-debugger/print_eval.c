@@ -1907,6 +1907,21 @@ print_eval_parseNumber(const char **cursor, uint64_t *out)
         return 0;
     }
     const char *p = *cursor;
+    if (*p == '$') {
+        ++p;
+        if (!isxdigit((unsigned char)*p)) {
+            return 0;
+        }
+        errno = 0;
+        char *end = NULL;
+        uint64_t val = strtoull(p, &end, 16);
+        if (errno != 0 || !end || end == p) {
+            return 0;
+        }
+        *out = val;
+        *cursor = end;
+        return 1;
+    }
     if (!isdigit((unsigned char)*p)) {
         return 0;
     }
@@ -1984,6 +1999,47 @@ print_eval_freeTempTypes(print_temp_type_t *list)
 
 static int
 print_eval_parseExpression(const char **cursor, print_index_t *index, print_value_t *out, print_temp_type_t **tempTypes, int typeOnly);
+
+static int
+print_eval_valueToImmediate(const print_value_t *value, int typeOnly, uint64_t *outImm)
+{
+    if (!value || !outImm) {
+        return 0;
+    }
+    if (typeOnly) {
+        *outImm = 0;
+        return 1;
+    }
+    if (value->hasImmediate) {
+        *outImm = value->immediate;
+        return 1;
+    }
+    if (!value->hasAddress) {
+        return 0;
+    }
+    print_type_t *resolved = print_eval_resolveType(value->type);
+    if (resolved && resolved->kind == print_type_pointer) {
+        uint32_t ptrAddr = 0;
+        print_value_t ptrValue = *value;
+        ptrValue.type = resolved;
+        if (!print_eval_readPointerValue(&ptrValue, &ptrAddr)) {
+            return 0;
+        }
+        *outImm = (uint64_t)ptrAddr;
+        return 1;
+    }
+    size_t size = 4;
+    if (resolved && resolved->byteSize > 0) {
+        size = resolved->byteSize;
+    }
+    int ok = 0;
+    uint64_t imm = print_eval_readUnsigned(value->address, size, &ok);
+    if (!ok) {
+        return 0;
+    }
+    *outImm = imm;
+    return 1;
+}
 
 static int
 print_eval_parsePrimary(const char **cursor, print_index_t *index, print_value_t *out, int typeOnly)
@@ -2090,6 +2146,20 @@ static int
 print_eval_parseUnary(const char **cursor, print_index_t *index, print_value_t *out, print_temp_type_t **tempTypes, int typeOnly)
 {
     print_eval_skipSpace(cursor);
+    if (**cursor == '~') {
+        ++(*cursor);
+        print_value_t inner;
+        if (!print_eval_parseUnary(cursor, index, &inner, tempTypes, typeOnly)) {
+            return 0;
+        }
+        uint64_t innerImm = 0;
+        if (!print_eval_valueToImmediate(&inner, typeOnly, &innerImm)) {
+            return 0;
+        }
+        uint32_t v = (uint32_t)innerImm;
+        *out = print_eval_makeImmediateValue(print_eval_defaultU32(index), (uint64_t)(~v));
+        return 1;
+    }
     if (**cursor == '&') {
         ++(*cursor);
         print_value_t inner;
@@ -2257,9 +2327,173 @@ print_eval_parsePostfix(const char **cursor, print_index_t *index, print_value_t
 }
 
 static int
+print_eval_parseMultiplicative(const char **cursor, print_index_t *index, print_value_t *out, print_temp_type_t **tempTypes, int typeOnly)
+{
+    if (!print_eval_parsePostfix(cursor, index, out, tempTypes, typeOnly)) {
+        return 0;
+    }
+    for (;;) {
+        print_eval_skipSpace(cursor);
+        char op = **cursor;
+        if (op != '*' && op != '/' && op != '%') {
+            break;
+        }
+        ++(*cursor);
+        print_value_t rhs;
+        if (!print_eval_parsePostfix(cursor, index, &rhs, tempTypes, typeOnly)) {
+            return 0;
+        }
+        uint64_t lhsImm = 0;
+        uint64_t rhsImm = 0;
+        if (!print_eval_valueToImmediate(out, typeOnly, &lhsImm) ||
+            !print_eval_valueToImmediate(&rhs, typeOnly, &rhsImm)) {
+            return 0;
+        }
+        uint64_t result = 0;
+        if (op == '*') {
+            result = lhsImm * rhsImm;
+        } else if (op == '/') {
+            if (rhsImm == 0) {
+                return 0;
+            }
+            result = lhsImm / rhsImm;
+        } else {
+            if (rhsImm == 0) {
+                return 0;
+            }
+            result = lhsImm % rhsImm;
+        }
+        *out = print_eval_makeImmediateValue(print_eval_defaultU32(index), result);
+    }
+    return 1;
+}
+
+static int
+print_eval_parseAdditive(const char **cursor, print_index_t *index, print_value_t *out, print_temp_type_t **tempTypes, int typeOnly)
+{
+    if (!print_eval_parseMultiplicative(cursor, index, out, tempTypes, typeOnly)) {
+        return 0;
+    }
+    for (;;) {
+        print_eval_skipSpace(cursor);
+        char op = **cursor;
+        if (op != '+' && op != '-') {
+            break;
+        }
+        ++(*cursor);
+        print_value_t rhs;
+        if (!print_eval_parseMultiplicative(cursor, index, &rhs, tempTypes, typeOnly)) {
+            return 0;
+        }
+        uint64_t lhsImm = 0;
+        uint64_t rhsImm = 0;
+        if (!print_eval_valueToImmediate(out, typeOnly, &lhsImm) ||
+            !print_eval_valueToImmediate(&rhs, typeOnly, &rhsImm)) {
+            return 0;
+        }
+        uint64_t result = (op == '+') ? (lhsImm + rhsImm) : (lhsImm - rhsImm);
+        *out = print_eval_makeImmediateValue(print_eval_defaultU32(index), result);
+    }
+    return 1;
+}
+
+static int
+print_eval_parseBitwiseAnd(const char **cursor, print_index_t *index, print_value_t *out, print_temp_type_t **tempTypes, int typeOnly)
+{
+    if (!print_eval_parseAdditive(cursor, index, out, tempTypes, typeOnly)) {
+        return 0;
+    }
+    for (;;) {
+        print_eval_skipSpace(cursor);
+        if (**cursor != '&') {
+            break;
+        }
+        if ((*cursor)[1] == '&') {
+            break;
+        }
+        ++(*cursor);
+        print_value_t rhs;
+        if (!print_eval_parseAdditive(cursor, index, &rhs, tempTypes, typeOnly)) {
+            return 0;
+        }
+        uint64_t lhsImm = 0;
+        uint64_t rhsImm = 0;
+        if (!print_eval_valueToImmediate(out, typeOnly, &lhsImm) ||
+            !print_eval_valueToImmediate(&rhs, typeOnly, &rhsImm)) {
+            return 0;
+        }
+        uint32_t lhs32 = (uint32_t)lhsImm;
+        uint32_t rhs32 = (uint32_t)rhsImm;
+        *out = print_eval_makeImmediateValue(print_eval_defaultU32(index), (uint64_t)(lhs32 & rhs32));
+    }
+    return 1;
+}
+
+static int
+print_eval_parseBitwiseXor(const char **cursor, print_index_t *index, print_value_t *out, print_temp_type_t **tempTypes, int typeOnly)
+{
+    if (!print_eval_parseBitwiseAnd(cursor, index, out, tempTypes, typeOnly)) {
+        return 0;
+    }
+    for (;;) {
+        print_eval_skipSpace(cursor);
+        if (**cursor != '^') {
+            break;
+        }
+        ++(*cursor);
+        print_value_t rhs;
+        if (!print_eval_parseBitwiseAnd(cursor, index, &rhs, tempTypes, typeOnly)) {
+            return 0;
+        }
+        uint64_t lhsImm = 0;
+        uint64_t rhsImm = 0;
+        if (!print_eval_valueToImmediate(out, typeOnly, &lhsImm) ||
+            !print_eval_valueToImmediate(&rhs, typeOnly, &rhsImm)) {
+            return 0;
+        }
+        uint32_t lhs32 = (uint32_t)lhsImm;
+        uint32_t rhs32 = (uint32_t)rhsImm;
+        *out = print_eval_makeImmediateValue(print_eval_defaultU32(index), (uint64_t)(lhs32 ^ rhs32));
+    }
+    return 1;
+}
+
+static int
+print_eval_parseBitwiseOr(const char **cursor, print_index_t *index, print_value_t *out, print_temp_type_t **tempTypes, int typeOnly)
+{
+    if (!print_eval_parseBitwiseXor(cursor, index, out, tempTypes, typeOnly)) {
+        return 0;
+    }
+    for (;;) {
+        print_eval_skipSpace(cursor);
+        if (**cursor != '|') {
+            break;
+        }
+        if ((*cursor)[1] == '|') {
+            break;
+        }
+        ++(*cursor);
+        print_value_t rhs;
+        if (!print_eval_parseBitwiseXor(cursor, index, &rhs, tempTypes, typeOnly)) {
+            return 0;
+        }
+        uint64_t lhsImm = 0;
+        uint64_t rhsImm = 0;
+        if (!print_eval_valueToImmediate(out, typeOnly, &lhsImm) ||
+            !print_eval_valueToImmediate(&rhs, typeOnly, &rhsImm)) {
+            return 0;
+        }
+        uint32_t lhs32 = (uint32_t)lhsImm;
+        uint32_t rhs32 = (uint32_t)rhsImm;
+        *out = print_eval_makeImmediateValue(print_eval_defaultU32(index), (uint64_t)(lhs32 | rhs32));
+    }
+    return 1;
+}
+
+static int
 print_eval_parseExpression(const char **cursor, print_index_t *index, print_value_t *out, print_temp_type_t **tempTypes, int typeOnly)
 {
-    return print_eval_parsePostfix(cursor, index, out, tempTypes, typeOnly);
+    return print_eval_parseBitwiseOr(cursor, index, out, tempTypes, typeOnly);
 }
 
 static int
@@ -2509,6 +2743,11 @@ print_eval_resolveAddress(const char *expr, uint32_t *outAddr, size_t *outSize)
         print_eval_freeTempTypes(tempTypes);
         return 0;
     }
+    print_eval_skipSpace(&cursor);
+    if (*cursor != '\0') {
+        print_eval_freeTempTypes(tempTypes);
+        return 0;
+    }
     if (!value.hasAddress) {
         print_eval_freeTempTypes(tempTypes);
         return 0;
@@ -2542,6 +2781,12 @@ print_eval_print(const char *expr)
     print_value_t value;
     const char *cursor = expr;
     if (!print_eval_parseExpression(&cursor, &print_eval_index, &value, &tempTypes, 0)) {
+        print_eval_freeTempTypes(tempTypes);
+        debug_error("print: failed to parse '%s'", expr);
+        return 0;
+    }
+    print_eval_skipSpace(&cursor);
+    if (*cursor != '\0') {
         print_eval_freeTempTypes(tempTypes);
         debug_error("print: failed to parse '%s'", expr);
         return 0;
@@ -2587,6 +2832,11 @@ print_eval_eval(const char *expr, char *out, size_t cap)
     print_value_t value;
     const char *cursor = expr;
     if (!print_eval_parseExpression(&cursor, &print_eval_index, &value, &tempTypes, 0)) {
+        print_eval_freeTempTypes(tempTypes);
+        return 0;
+    }
+    print_eval_skipSpace(&cursor);
+    if (*cursor != '\0') {
         print_eval_freeTempTypes(tempTypes);
         return 0;
     }

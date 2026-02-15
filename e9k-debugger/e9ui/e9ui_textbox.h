@@ -88,6 +88,15 @@ void
 e9ui_textbox_setTextColor(e9ui_component_t *comp, int enabled, SDL_Color color);
 
 void
+e9ui_textbox_clearSelectionExternal(e9ui_component_t *comp);
+
+int
+e9ui_textbox_getSelectedText(const e9ui_component_t *comp, char *dst, int dstLen);
+
+void
+e9ui_textbox_selectAllExternal(e9ui_component_t *comp);
+
+void
 e9ui_textbox_setCompletionMode(e9ui_component_t *comp, e9ui_textbox_completion_mode_t mode);
 
 e9ui_textbox_completion_mode_t

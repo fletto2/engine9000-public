@@ -8,8 +8,12 @@
 
 #include "e9ui.h"
 #include "debugger.h"
+#include "print_eval.h"
 #include <ctype.h>
+#include <errno.h>
+#include <inttypes.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 
 typedef struct textbox_state {
@@ -19,8 +23,11 @@ typedef struct textbox_state {
     int                sel_start;
     int                sel_end;
     int                selecting;
+    int                markActive;
+    int                markPos;
     Uint32             last_click_ms;
-    int                double_click_active;
+    int                click_streak;
+    int                last_click_x;
     list_t            *undo;
     list_t            *redo;
     int                maxLen;
@@ -51,6 +58,12 @@ typedef struct textbox_state {
     int                completionPrefixLen;
     char               *completionPrefix;
     char               *completionRest;
+    int                convertValid;
+    SDL_Keycode        convertKey;
+    char               *convertBefore;
+    char               *convertAfter;
+    int                convertApplying;
+    int                suppressNextTextInput;
 } textbox_state_t;
 
 typedef struct textbox_snapshot {
@@ -246,6 +259,15 @@ textbox_select_applyDisplay(textbox_state_t *st, const char *display)
     textbox_completionClear(st);
     textbox_history_clear(&st->undo);
     textbox_history_clear(&st->redo);
+    if (st->convertBefore) {
+        alloc_free(st->convertBefore);
+        st->convertBefore = NULL;
+    }
+    if (st->convertAfter) {
+        alloc_free(st->convertAfter);
+        st->convertAfter = NULL;
+    }
+    st->convertValid = 0;
 }
 
 static void
@@ -302,6 +324,17 @@ textbox_updateScroll(textbox_state_t *st, TTF_Font *font, int viewW)
 static void
 textbox_notifyChange(textbox_state_t *st, e9ui_context_t *ctx)
 {
+    if (st && !st->convertApplying) {
+        if (st->convertBefore) {
+            alloc_free(st->convertBefore);
+            st->convertBefore = NULL;
+        }
+        if (st->convertAfter) {
+            alloc_free(st->convertAfter);
+            st->convertAfter = NULL;
+        }
+        st->convertValid = 0;
+    }
     if (!st || !st->change) {
         return;
     }
@@ -315,6 +348,41 @@ textbox_hasSelection(const textbox_state_t *st)
         return 0;
     }
     return st->sel_start != st->sel_end;
+}
+
+static void
+textbox_markClear(textbox_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+    st->markActive = 0;
+}
+
+static void
+textbox_markSet(textbox_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+    st->markActive = 1;
+    st->markPos = st->cursor;
+    st->sel_start = st->cursor;
+    st->sel_end = st->cursor;
+}
+
+static void
+textbox_postMoveSelection(textbox_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+    if (st->markActive) {
+        st->sel_start = st->markPos;
+        st->sel_end = st->cursor;
+    } else {
+        textbox_clearSelection(st);
+    }
 }
 
 static void
@@ -370,6 +438,449 @@ textbox_deleteSelection(textbox_state_t *st)
     st->cursor = a;
     textbox_clearSelection(st);
     return 1;
+}
+
+static int
+textbox_parseUnsignedFromSelection(const char *text, uint64_t *outValue)
+{
+    if (!text || !outValue) {
+        return 0;
+    }
+    const char *p = text;
+    while (*p && isspace((unsigned char)*p)) {
+        p++;
+    }
+    if (!*p) {
+        return 0;
+    }
+    int base = 0;
+    if (*p == '$') {
+        base = 16;
+        p++;
+    } else if (strchr(p, 'x') || strchr(p, 'X')) {
+        base = 0;
+    } else {
+        int allDigits = 1;
+        int allHexDigits = 1;
+        int hasHexAlpha = 0;
+        for (const char *q = p; *q && !isspace((unsigned char)*q); ++q) {
+            unsigned char ch = (unsigned char)*q;
+            if (!isdigit(ch)) {
+                allDigits = 0;
+            }
+            if (!isxdigit(ch)) {
+                allHexDigits = 0;
+            }
+            if ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+                hasHexAlpha = 1;
+            }
+        }
+        if (allHexDigits && hasHexAlpha && !allDigits) {
+            base = 16;
+        } else {
+            base = 10;
+        }
+    }
+    errno = 0;
+    char *end = NULL;
+    unsigned long long value = strtoull(p, &end, base);
+    if (errno != 0 || end == p) {
+        return 0;
+    }
+    while (*end && isspace((unsigned char)*end)) {
+        end++;
+    }
+    if (*end != '\0') {
+        return 0;
+    }
+    *outValue = (uint64_t)value;
+    return 1;
+}
+
+static int
+textbox_selectionLooksHex(const char *text)
+{
+    if (!text) {
+        return 0;
+    }
+    const char *p = text;
+    while (*p && isspace((unsigned char)*p)) {
+        p++;
+    }
+    if (!*p) {
+        return 0;
+    }
+    if (*p == '$') {
+        return 1;
+    }
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        return 1;
+    }
+    for (const char *q = p; *q && !isspace((unsigned char)*q); ++q) {
+        unsigned char ch = (unsigned char)*q;
+        if ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+textbox_replaceSelection(textbox_state_t *st,
+                         e9ui_context_t *ctx,
+                         e9ui_component_t *self,
+                         TTF_Font *font,
+                         int viewW,
+                         const char *replacement,
+                         int keepSelected)
+{
+    if (!st || !replacement || !textbox_hasSelection(st)) {
+        return 0;
+    }
+    int a = 0;
+    int b = 0;
+    textbox_normalizeSelection(st, &a, &b);
+    if (a < 0) {
+        a = 0;
+    }
+    if (b > st->len) {
+        b = st->len;
+    }
+    if (b <= a) {
+        return 0;
+    }
+    int oldLen = b - a;
+    int repLen = (int)strlen(replacement);
+    int maxRepLen = st->maxLen - (st->len - oldLen);
+    if (maxRepLen < 0) {
+        maxRepLen = 0;
+    }
+    if (repLen > maxRepLen) {
+        repLen = maxRepLen;
+    }
+    textbox_recordUndo(st);
+    memmove(&st->text[a + repLen], &st->text[b], (size_t)(st->len - b + 1));
+    if (repLen > 0) {
+        memcpy(&st->text[a], replacement, (size_t)repLen);
+    }
+    st->len = st->len - oldLen + repLen;
+    st->cursor = a + repLen;
+    if (keepSelected) {
+        st->sel_start = a;
+        st->sel_end = a + repLen;
+        st->selecting = 0;
+    } else {
+        textbox_clearSelection(st);
+    }
+    st->convertApplying = 1;
+    textbox_notifyChange(st, ctx);
+    st->convertApplying = 0;
+    textbox_selectOverlay_openForTyping(ctx, self);
+    textbox_updateScroll(st, font, viewW);
+    return 1;
+}
+
+static int
+textbox_convertSelectionBase(textbox_state_t *st,
+                             e9ui_context_t *ctx,
+                             e9ui_component_t *self,
+                             TTF_Font *font,
+                             int viewW,
+                             SDL_Keycode triggerKey)
+{
+    if (!st || !textbox_hasSelection(st)) {
+        return 0;
+    }
+    int a = 0;
+    int b = 0;
+    textbox_normalizeSelection(st, &a, &b);
+    if (a < 0) {
+        a = 0;
+    }
+    if (b > st->len) {
+        b = st->len;
+    }
+    if (b <= a) {
+        return 0;
+    }
+    int selLen = b - a;
+    char *selection = (char*)alloc_calloc((size_t)selLen + 1, 1);
+    if (!selection) {
+        return 0;
+    }
+    memcpy(selection, &st->text[a], (size_t)selLen);
+    if (st->convertValid && st->convertKey == triggerKey &&
+        st->convertAfter && st->convertBefore &&
+        strcmp(selection, st->convertAfter) == 0) {
+        int replaced = textbox_replaceSelection(st, ctx, self, font, viewW,
+                                                st->convertBefore, 1);
+        if (replaced) {
+            char *tmp = st->convertBefore;
+            st->convertBefore = st->convertAfter;
+            st->convertAfter = tmp;
+        }
+        alloc_free(selection);
+        return replaced;
+    }
+    uint64_t value = 0;
+    int parsed = textbox_parseUnsignedFromSelection(selection, &value);
+    if (!parsed) {
+        alloc_free(selection);
+        return 0;
+    }
+    int toHex = textbox_selectionLooksHex(selection) ? 0 : 1;
+    char converted[64];
+    if (toHex) {
+        snprintf(converted, sizeof(converted), "0x%" PRIX64, value);
+    } else {
+        snprintf(converted, sizeof(converted), "%" PRIu64, value);
+    }
+    int replaced = textbox_replaceSelection(st, ctx, self, font, viewW, converted, 1);
+    if (replaced) {
+        if (st->convertBefore) {
+            alloc_free(st->convertBefore);
+            st->convertBefore = NULL;
+        }
+        if (st->convertAfter) {
+            alloc_free(st->convertAfter);
+            st->convertAfter = NULL;
+        }
+        st->convertBefore = alloc_strdup(selection);
+        st->convertAfter = alloc_strdup(converted);
+        st->convertKey = triggerKey;
+        st->convertValid = (st->convertBefore && st->convertAfter) ? 1 : 0;
+    }
+    alloc_free(selection);
+    return replaced;
+}
+
+static void
+textbox_trimSpan(const char **start, const char **end)
+{
+    if (!start || !end || !*start || !*end) {
+        return;
+    }
+    while (*start < *end && isspace((unsigned char)**start)) {
+        (*start)++;
+    }
+    while (*end > *start && isspace((unsigned char)*((*end) - 1))) {
+        (*end)--;
+    }
+}
+
+static int
+textbox_exprPreferHexOutput(const char *expr)
+{
+    if (!expr || !*expr) {
+        return 1;
+    }
+
+    int hasHexLiteral = 0;
+    int hasDecimalLiteral = 0;
+    int hasIdentifier = 0;
+
+    const char *p = expr;
+    while (*p) {
+        if (isspace((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+
+        if ((*p == '0' && (p[1] == 'x' || p[1] == 'X')) || *p == '$') {
+            hasHexLiteral = 1;
+            if (*p == '$') {
+                p++;
+            } else {
+                p += 2;
+            }
+            while (isxdigit((unsigned char)*p)) {
+                p++;
+            }
+            continue;
+        }
+
+        if (isdigit((unsigned char)*p)) {
+            hasDecimalLiteral = 1;
+            while (isdigit((unsigned char)*p)) {
+                p++;
+            }
+            continue;
+        }
+
+        if (isalpha((unsigned char)*p) || *p == '_') {
+            hasIdentifier = 1;
+            while (isalnum((unsigned char)*p) || *p == '_') {
+                p++;
+            }
+            continue;
+        }
+
+        p++;
+    }
+
+    if (hasHexLiteral) {
+        return 1;
+    }
+    if (hasDecimalLiteral && !hasIdentifier) {
+        return 0;
+    }
+    if (hasIdentifier && !hasDecimalLiteral && !hasHexLiteral) {
+        return 1;
+    }
+    return 1;
+}
+
+static int
+textbox_evalExtractReplacement(const char *expr, const char *evalOut, char *replacement, size_t cap)
+{
+    if (!expr || !evalOut || !replacement || cap == 0) {
+        return 0;
+    }
+    replacement[0] = '\0';
+    int preferHex = textbox_exprPreferHexOutput(expr);
+
+    const char *lineEnd = strchr(evalOut, '\n');
+    if (!lineEnd) {
+        lineEnd = evalOut + strlen(evalOut);
+    }
+    const char *colon = strchr(evalOut, ':');
+    if (!colon || colon >= lineEnd) {
+        return 0;
+    }
+    const char *valueStart = colon + 1;
+    const char *valueEnd = lineEnd;
+    textbox_trimSpan(&valueStart, &valueEnd);
+    if (valueEnd <= valueStart) {
+        return 0;
+    }
+
+    const char *openParen = NULL;
+    const char *closeParen = NULL;
+    for (const char *p = valueStart; p < valueEnd; ++p) {
+        if (*p == '(') {
+            openParen = p;
+            break;
+        }
+    }
+    if (openParen) {
+        for (const char *p = openParen + 1; p < valueEnd; ++p) {
+            if (*p == ')') {
+                closeParen = p;
+                break;
+            }
+        }
+    }
+    if (preferHex && openParen && closeParen && closeParen > openParen + 1) {
+        const char *hexStart = openParen + 1;
+        const char *hexEnd = closeParen;
+        textbox_trimSpan(&hexStart, &hexEnd);
+        if (hexEnd > hexStart + 2 &&
+            hexStart[0] == '0' &&
+            (hexStart[1] == 'x' || hexStart[1] == 'X')) {
+            size_t outLen = (size_t)(hexEnd - hexStart);
+            if (outLen >= cap) {
+                outLen = cap - 1;
+            }
+            memcpy(replacement, hexStart, outLen);
+            replacement[outLen] = '\0';
+            return replacement[0] != '\0';
+        }
+    }
+
+    if (openParen) {
+        const char *trimEnd = openParen;
+        textbox_trimSpan(&valueStart, &trimEnd);
+        if (trimEnd > valueStart) {
+            valueEnd = trimEnd;
+        }
+    }
+    if (valueEnd <= valueStart) {
+        return 0;
+    }
+
+    size_t outLen = (size_t)(valueEnd - valueStart);
+    if (outLen >= cap) {
+        outLen = cap - 1;
+    }
+    memcpy(replacement, valueStart, outLen);
+    replacement[outLen] = '\0';
+    return replacement[0] != '\0';
+}
+
+static int
+textbox_convertSelectionExpression(textbox_state_t *st,
+                                   e9ui_context_t *ctx,
+                                   e9ui_component_t *self,
+                                   TTF_Font *font,
+                                   int viewW,
+                                   SDL_Keycode triggerKey)
+{
+    if (!st || !textbox_hasSelection(st)) {
+        return 0;
+    }
+
+    int a = 0;
+    int b = 0;
+    textbox_normalizeSelection(st, &a, &b);
+    if (a < 0) {
+        a = 0;
+    }
+    if (b > st->len) {
+        b = st->len;
+    }
+    if (b <= a) {
+        return 0;
+    }
+
+    int selLen = b - a;
+    char *selection = (char*)alloc_calloc((size_t)selLen + 1, 1);
+    if (!selection) {
+        return 0;
+    }
+    memcpy(selection, &st->text[a], (size_t)selLen);
+
+    if (st->convertValid && st->convertKey == triggerKey &&
+        st->convertAfter && st->convertBefore &&
+        strcmp(selection, st->convertAfter) == 0) {
+        int replaced = textbox_replaceSelection(st, ctx, self, font, viewW,
+                                                st->convertBefore, 1);
+        if (replaced) {
+            char *tmp = st->convertBefore;
+            st->convertBefore = st->convertAfter;
+            st->convertAfter = tmp;
+        }
+        alloc_free(selection);
+        return replaced;
+    }
+
+    char evalOut[1024];
+    char replacement[256];
+    evalOut[0] = '\0';
+    replacement[0] = '\0';
+    int ok = print_eval_eval(selection, evalOut, sizeof(evalOut));
+    if (!ok || !textbox_evalExtractReplacement(selection, evalOut, replacement, sizeof(replacement))) {
+        alloc_free(selection);
+        return 0;
+    }
+
+    int replaced = textbox_replaceSelection(st, ctx, self, font, viewW, replacement, 1);
+    if (replaced) {
+        if (st->convertBefore) {
+            alloc_free(st->convertBefore);
+            st->convertBefore = NULL;
+        }
+        if (st->convertAfter) {
+            alloc_free(st->convertAfter);
+            st->convertAfter = NULL;
+        }
+        st->convertBefore = alloc_strdup(selection);
+        st->convertAfter = alloc_strdup(replacement);
+        st->convertKey = triggerKey;
+        st->convertValid = (st->convertBefore && st->convertAfter) ? 1 : 0;
+    }
+
+    alloc_free(selection);
+    return replaced;
 }
 
 static void
@@ -1115,7 +1626,7 @@ textbox_renderComp(e9ui_component_t *self, e9ui_context_t *ctx)
         } else {
             textbox_updateScroll(st, font, viewW);
         }
-        if (textbox_hasSelection(st)) {
+        if (e9ui_getFocus(ctx) == self && textbox_hasSelection(st)) {
             int a = 0;
             int b = 0;
             textbox_normalizeSelection(st, &a, &b);
@@ -1225,6 +1736,111 @@ textbox_repositionCursor(textbox_state_t *st, e9ui_component_t *self, TTF_Font *
     textbox_updateScroll(st, font, viewW);
 }
 
+static int
+textbox_charClass(char ch)
+{
+    unsigned char uch = (unsigned char)ch;
+    if (isalnum(uch) || ch == '_') {
+        return 2;
+    }
+    if (isspace(uch)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
+textbox_isWordChar(char ch)
+{
+    return textbox_charClass(ch) == 2;
+}
+
+static void
+textbox_moveForwardWord(textbox_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+
+    int i = st->cursor;
+    if (i < 0) {
+        i = 0;
+    }
+
+    while (i < st->len && !textbox_isWordChar(st->text[i])) {
+        i++;
+    }
+    while (i < st->len && textbox_isWordChar(st->text[i])) {
+        i++;
+    }
+    st->cursor = i;
+}
+
+static void
+textbox_moveBackwardWord(textbox_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+
+    int i = st->cursor;
+    if (i > st->len) {
+        i = st->len;
+    }
+
+    while (i > 0 && !textbox_isWordChar(st->text[i - 1])) {
+        i--;
+    }
+    while (i > 0 && textbox_isWordChar(st->text[i - 1])) {
+        i--;
+    }
+    st->cursor = i;
+}
+
+static void
+textbox_selectWordAtCursor(textbox_state_t *st)
+{
+    if (!st || st->len <= 0) {
+        return;
+    }
+
+    int idx = st->cursor;
+    if (idx >= st->len) {
+        idx = st->len - 1;
+    }
+    if (idx < 0) {
+        idx = 0;
+    }
+
+    int cls = textbox_charClass(st->text[idx]);
+    int start = idx;
+    int end = idx + 1;
+
+    while (start > 0 && textbox_charClass(st->text[start - 1]) == cls) {
+        start--;
+    }
+    while (end < st->len && textbox_charClass(st->text[end]) == cls) {
+        end++;
+    }
+
+    st->sel_start = start;
+    st->sel_end = end;
+    st->cursor = end;
+    st->selecting = 0;
+}
+
+static void
+textbox_selectLine(textbox_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+    st->sel_start = 0;
+    st->sel_end = st->len;
+    st->cursor = st->len;
+    st->selecting = 0;
+}
+
 static void
 textbox_onMouseDown(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mouse_event_t *ev)
 {
@@ -1241,27 +1857,29 @@ textbox_onMouseDown(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mous
     if (ev->button != E9UI_MOUSE_BUTTON_LEFT) {
         return;
     }
+    textbox_markClear(st);
     TTF_Font *font = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : ctx->font;
     Uint32 now = debugger_uiTicks();
-    if (st->double_click_active) {
-        if (now - st->last_click_ms <= 350) {
-            st->last_click_ms = now;
-            return;
-        }
-        st->double_click_active = 0;
+    if ((now - st->last_click_ms) <= 350 && abs(ev->x - st->last_click_x) <= 4) {
+        st->click_streak++;
+    } else {
+        st->click_streak = 1;
     }
-    if (now - st->last_click_ms <= 350) {
-        st->sel_start = 0;
-        st->sel_end = st->len;
-        st->cursor = st->len;
-        st->selecting = 0;
-        st->last_click_ms = now;
-        st->double_click_active = 1;
+    st->last_click_ms = now;
+    st->last_click_x = ev->x;
+
+    textbox_repositionCursor(st, self, font, ev->x);
+    if (st->click_streak == 2) {
+        textbox_selectWordAtCursor(st);
         textbox_updateScroll(st, font, self->bounds.w - 8 * 2);
         return;
     }
-    st->last_click_ms = now;
-    textbox_repositionCursor(st, self, font, ev->x);
+    if (st->click_streak >= 3) {
+        textbox_selectLine(st);
+        st->click_streak = 0;
+        textbox_updateScroll(st, font, self->bounds.w - 8 * 2);
+        return;
+    }
     st->sel_start = st->cursor;
     st->sel_end = st->cursor;
     st->selecting = 1;
@@ -1333,6 +1951,11 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
     TTF_Font *font = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : ctx->font;
     int viewW = self->bounds.w - 8 * 2;
     if (ev->type == SDL_TEXTINPUT) {
+        if (st->suppressNextTextInput) {
+            st->suppressNextTextInput = 0;
+            return 1;
+        }
+        textbox_markClear(st);
         textbox_completionClear(st);
         if (!font) {
             return 1;
@@ -1372,12 +1995,16 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
     if (ev->type != SDL_KEYDOWN) {
         return 0;
     }
+    // If a previous shortcut armed suppression but no TEXTINPUT arrived for it,
+    // clear stale suppression so we don't swallow the next real typed character.
+    st->suppressNextTextInput = 0;
     SDL_Keycode kc = ev->key.keysym.sym;
     SDL_Keymod mods = ev->key.keysym.mod;
     if (kc != SDLK_TAB) {
         textbox_completionClear(st);
     }
     int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+    int alt = (mods & KMOD_ALT) ? 1 : 0;
     int shift = (mods & KMOD_SHIFT);
     if (st->key_cb && st->key_cb(ctx, kc, mods, st->key_user)) {
         return 1;
@@ -1395,30 +2022,83 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
     }
     if (accel && kc == SDLK_a) {
         st->cursor = 0;
+        textbox_postMoveSelection(st);
+        textbox_updateScroll(st, font, viewW);
+        return 1;
+    }
+    if (alt && kc == SDLK_a) {
+        st->suppressNextTextInput = 1;
+        st->cursor = 0;
+        textbox_markClear(st);
         textbox_clearSelection(st);
+        st->sel_start = 0;
+        st->sel_end = st->len;
+        st->cursor = st->len;
+        textbox_updateScroll(st, font, viewW);
+        return 1;
+    }
+    if ((accel || alt) && kc == SDLK_h) {
+        if (textbox_convertSelectionBase(st, ctx, self, font, viewW, SDLK_h)) {
+            textbox_markClear(st);
+            return 1;
+        }
+        if (alt) {
+            return 1;
+        }
+    }
+    if (accel && kc == SDLK_p) {
+        if (textbox_convertSelectionExpression(st, ctx, self, font, viewW, SDLK_p)) {
+            textbox_markClear(st);
+            return 1;
+        }
+    }
+    if (accel && kc == SDLK_g) {
+        textbox_markClear(st);
+        textbox_clearSelection(st);
+        st->selecting = 0;
         textbox_updateScroll(st, font, viewW);
         return 1;
     }
     if (accel && kc == SDLK_e) {
         st->cursor = st->len;
-        textbox_clearSelection(st);
+        textbox_postMoveSelection(st);
+        textbox_updateScroll(st, font, viewW);
+        return 1;
+    }
+    if (accel && kc == SDLK_SPACE) {
+        st->suppressNextTextInput = 1;
+        textbox_markSet(st);
+        textbox_updateScroll(st, font, viewW);
+        return 1;
+    }
+    if (alt && kc == SDLK_b) {
+        st->suppressNextTextInput = 1;
+        textbox_moveBackwardWord(st);
+        textbox_postMoveSelection(st);
+        textbox_updateScroll(st, font, viewW);
+        return 1;
+    }
+    if (alt && kc == SDLK_f) {
+        st->suppressNextTextInput = 1;
+        textbox_moveForwardWord(st);
+        textbox_postMoveSelection(st);
         textbox_updateScroll(st, font, viewW);
         return 1;
     }
     if (accel && kc == SDLK_b) {
         if (st->cursor > 0) {
             st->cursor--;
-            textbox_clearSelection(st);
-            textbox_updateScroll(st, font, viewW);
         }
+        textbox_postMoveSelection(st);
+        textbox_updateScroll(st, font, viewW);
         return 1;
     }
     if (accel && kc == SDLK_f) {
         if (st->cursor < st->len) {
             st->cursor++;
-            textbox_clearSelection(st);
-            textbox_updateScroll(st, font, viewW);
         }
+        textbox_postMoveSelection(st);
+        textbox_updateScroll(st, font, viewW);
         return 1;
     }
     if (accel && kc == SDLK_d) {
@@ -1441,6 +2121,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         return 1;
     }
     if (accel && kc == SDLK_k) {
+        textbox_markClear(st);
         if (st->cursor < st->len) {
             size_t rem = (size_t)(st->len - st->cursor);
             char *buf = (char*)alloc_calloc(rem + 1, 1);
@@ -1460,6 +2141,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         return 1;
     }
     if (accel && kc == SDLK_y) {
+        textbox_markClear(st);
         if (SDL_HasClipboardText()) {
             char *clip = SDL_GetClipboardText();
             if (clip && *clip) {
@@ -1495,6 +2177,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         return 1;
     }
     if (accel && kc == SDLK_x) {
+        textbox_markClear(st);
         if (textbox_hasSelection(st)) {
             textbox_recordUndo(st);
             int a = 0;
@@ -1517,6 +2200,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         return 1;
     }
     if (accel && kc == SDLK_v) {
+        textbox_markClear(st);
         if (SDL_HasClipboardText()) {
             char *clip = SDL_GetClipboardText();
             if (clip && *clip) {
@@ -1544,7 +2228,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         }
         return 1;
     case SDLK_LEFT:
-        if (textbox_hasSelection(st)) {
+        if (!st->markActive && textbox_hasSelection(st)) {
             int a = 0;
             int b = 0;
             textbox_normalizeSelection(st, &a, &b);
@@ -1555,11 +2239,12 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         }
         if (st->cursor > 0) {
             st->cursor--;
-            textbox_updateScroll(st, font, viewW);
         }
+        textbox_postMoveSelection(st);
+        textbox_updateScroll(st, font, viewW);
         return 1;
     case SDLK_RIGHT:
-        if (textbox_hasSelection(st)) {
+        if (!st->markActive && textbox_hasSelection(st)) {
             int a = 0;
             int b = 0;
             textbox_normalizeSelection(st, &a, &b);
@@ -1570,20 +2255,22 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         }
         if (st->cursor < st->len) {
             st->cursor++;
-            textbox_updateScroll(st, font, viewW);
         }
+        textbox_postMoveSelection(st);
+        textbox_updateScroll(st, font, viewW);
         return 1;
     case SDLK_HOME:
         st->cursor = 0;
-        textbox_clearSelection(st);
+        textbox_postMoveSelection(st);
         textbox_updateScroll(st, font, viewW);
         return 1;
     case SDLK_END:
         st->cursor = st->len;
-        textbox_clearSelection(st);
+        textbox_postMoveSelection(st);
         textbox_updateScroll(st, font, viewW);
         return 1;
     case SDLK_BACKSPACE:
+        textbox_markClear(st);
         if (textbox_hasSelection(st)) {
             textbox_recordUndo(st);
             textbox_deleteSelection(st);
@@ -1603,6 +2290,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         }
         return 1;
     case SDLK_DELETE:
+        textbox_markClear(st);
         if (textbox_hasSelection(st)) {
             textbox_recordUndo(st);
             textbox_deleteSelection(st);
@@ -1643,6 +2331,8 @@ textbox_dtor(e9ui_component_t *self, e9ui_context_t *ctx)
     alloc_free(st->select_options);
     alloc_free(st->completionPrefix);
     alloc_free(st->completionRest);
+    alloc_free(st->convertBefore);
+    alloc_free(st->convertAfter);
   }
 }
 
@@ -1672,7 +2362,8 @@ e9ui_textbox_make(int maxLen, e9ui_textbox_submit_cb_t onSubmit, e9ui_textbox_ch
     st->sel_end = 0;
     st->selecting = 0;
     st->last_click_ms = 0;
-    st->double_click_active = 0;
+    st->click_streak = 0;
+    st->last_click_x = 0;
     st->submit = onSubmit;
     st->change = onChange;
     st->user = user;
@@ -1990,6 +2681,69 @@ e9ui_textbox_setTextColor(e9ui_component_t *comp, int enabled, SDL_Color color)
     textbox_state_t *st = (textbox_state_t*)comp->state;
     st->textColorOverride = enabled ? 1 : 0;
     st->textColor = color;
+}
+
+void
+e9ui_textbox_clearSelectionExternal(e9ui_component_t *comp)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    textbox_state_t *st = (textbox_state_t*)comp->state;
+    textbox_clearSelection(st);
+}
+
+int
+e9ui_textbox_getSelectedText(const e9ui_component_t *comp, char *dst, int dstLen)
+{
+    if (dst && dstLen > 0) {
+        dst[0] = '\0';
+    }
+    if (!comp || !comp->state) {
+        return 0;
+    }
+    const textbox_state_t *st = (const textbox_state_t*)comp->state;
+    if (!st->text || !textbox_hasSelection(st)) {
+        return 0;
+    }
+    int a = 0;
+    int b = 0;
+    textbox_normalizeSelection(st, &a, &b);
+    if (a < 0) {
+        a = 0;
+    }
+    if (b > st->len) {
+        b = st->len;
+    }
+    if (b <= a) {
+        return 0;
+    }
+    int len = b - a;
+    if (dst && dstLen > 0) {
+        int copyLen = len;
+        if (copyLen >= dstLen) {
+            copyLen = dstLen - 1;
+        }
+        if (copyLen > 0) {
+            memcpy(dst, &st->text[a], (size_t)copyLen);
+        }
+        dst[copyLen] = '\0';
+        return copyLen;
+    }
+    return len;
+}
+
+void
+e9ui_textbox_selectAllExternal(e9ui_component_t *comp)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    textbox_state_t *st = (textbox_state_t*)comp->state;
+    st->sel_start = 0;
+    st->sel_end = st->len;
+    st->cursor = st->len;
+    st->selecting = 0;
 }
 
 typedef struct textbox_select_overlay_state {
@@ -2313,12 +3067,30 @@ e9ui_textbox_selectOverlayHandleEvent(e9ui_context_t *ctx, const e9ui_event_t *e
 
     if (ev->type == SDL_MOUSEWHEEL) {
         if (filteredCount > visibleCount) {
+            int hoverFilteredIdx = textbox_select_filteredOptionToNthIndex(
+                st, filter, textbox_select_overlay.hoverOptionIndex);
+            if (hoverFilteredIdx < 0) {
+                hoverFilteredIdx = textbox_select_overlay.scrollIndex;
+            }
             if (ev->wheel.y > 0) {
                 textbox_select_overlay.scrollIndex -= 1;
+                hoverFilteredIdx -= 1;
             } else if (ev->wheel.y < 0) {
                 textbox_select_overlay.scrollIndex += 1;
+                hoverFilteredIdx += 1;
             }
             textbox_selectOverlay_clampScroll(st, visibleCount, filter);
+            if (hoverFilteredIdx < textbox_select_overlay.scrollIndex) {
+                hoverFilteredIdx = textbox_select_overlay.scrollIndex;
+            }
+            int lastVisible = textbox_select_overlay.scrollIndex + visibleCount - 1;
+            if (hoverFilteredIdx > lastVisible) {
+                hoverFilteredIdx = lastVisible;
+            }
+            int optionIdx = textbox_select_filteredNthToOptionIndex(st, filter, hoverFilteredIdx);
+            if (optionIdx >= 0) {
+                textbox_select_overlay.hoverOptionIndex = optionIdx;
+            }
         }
         return 1;
     }

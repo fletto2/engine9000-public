@@ -17,6 +17,7 @@
 #include "debugger.h"
 #include "libretro_host.h"
 #include "state_buffer.h"
+#include "ui_test.h"
 
 static const char *
 snapshot_basename(const char *path)

@@ -23,6 +23,7 @@
 #include "protect.h"
 #include "trainer.h"
 #include "ui_test.h"
+#include "smoke_test.h"
 
 typedef struct rom_config_bp_entry {
     uint32_t addr;
@@ -1037,6 +1038,10 @@ rom_config_loadRuntimeStateOnBoot(void)
 void
 rom_config_saveOnExit(void)
 {
+    if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+      return;
+    }
+    
     if (ui_test_getMode() != UI_TEST_MODE_NONE) {
         return;
     }
