@@ -397,8 +397,14 @@ PrintSegList(BPTR seglist, const SegType *types, ULONG typeCount, int breakEnabl
 
     ULONG t = (types && idx < typeCount) ? types[idx].type : 0;
 
-    if (breakEnabled && !haveBreak) {
-      if (t == HUNK_CODE || (idx == 0 && t == 0)) {
+    {
+      int isEntrySeg = (t == HUNK_CODE || (idx == 0 && t == 0));
+      if (!haveText && isEntrySeg) {
+        printf("engine9000: setting .text base=%08x\n", (ULONG)base);
+        *ENGINE_9000_DEBUG_BASE_TEXT = (ULONG)base;
+        haveText = 1;
+      }
+      if (breakEnabled && !haveBreak && isEntrySeg) {
         ULONG breakAddr = (ULONG)base;
         ULONG breakAddr2 = ((ULONG)base) + 2;
         printf("engine9000: setting entry breakpoint=%08x\n", (ULONG)breakAddr);
@@ -410,13 +416,6 @@ PrintSegList(BPTR seglist, const SegType *types, ULONG typeCount, int breakEnabl
     }
 
     switch (t) {
-    case HUNK_CODE:
-      if (!haveText) {
-        printf("engine9000: setting .text base=%08x\n", (ULONG)base);
-        *ENGINE_9000_DEBUG_BASE_TEXT = (ULONG)base;
-        haveText = 1;
-      }
-      break;
     case HUNK_DATA:
       if (!haveData) {
         printf("engine9000: setting .data base=%08x\n", (ULONG)base);      
