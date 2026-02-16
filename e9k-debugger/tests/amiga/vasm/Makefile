@@ -5,17 +5,14 @@ OBJS=build/vasm.o
 
 all: $(ADF)
 
-build/%.o: %.s Makefile
+vasm: vasm.s Makefile
 	@mkdir -p build
-	vasmm68k_mot -Fhunk $< -o $@
-
-vasm: $(OBJS)
-	/usr/local/amiga/vgcc/bin/vlink $(OBJS) -o vasm
+	vasmm68k_mot -Fhunkexe -linedebug $< -o $@
 
 clean:
 	rm -rf build/* vasm $(ADF)
 
-$(ADF): vasm
+$(ADF): vasm Startup-Sequence $(LOAD9000) $(ADF9000)
 	$(ADF9000) $(ADF) create --label TEST
 	$(ADF9000) $(ADF) mkdir /S
 	$(ADF9000) $(ADF) mkdir /C

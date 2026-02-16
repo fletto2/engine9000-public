@@ -17,6 +17,9 @@ void
 rom_config_loadRuntimeStateOnBoot(void);
 
 void
+rom_config_syncActiveFromCurrentSystem(void);
+
+void
 rom_config_saveOnExit(void);
 
 void

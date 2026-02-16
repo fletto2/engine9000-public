@@ -20,11 +20,15 @@
 #include "linebuf.h"
 #include "sprite_debug.h"
 #include "machine.h"
+#include "base_map.h"
 #include "source.h"
 #include "syntax_highlight.h"
 #include "dasm.h"
 #include "addr2line.h"
+#include "print_eval.h"
+#include "hunk_fileline_cache.h"
 #include "state_buffer.h"
+#include "state_wrap.h"
 #include "snapshot.h"
 #include "rom_config.h"
 #include "debugger_signal.h"
@@ -60,6 +64,8 @@ static int debugger_testRestartCount = 0;
 
 static int debugger_pathExistsFile(const char *path);
 static void debugger_syncCoreBreakpointsForTextBaseChange(uint32_t oldBaseAddr, uint32_t newBaseAddr);
+static void debugger_prepareBreakpointsForBaseMapChange(const machine_breakpoint_t **outBps, int *outCount);
+static void debugger_finishBreakpointsForBaseMapChange(const machine_breakpoint_t *bps, int count);
 
 void
 debugger_setLoadTestTempConfig(int enabled)
@@ -88,26 +94,53 @@ debugger_getTestRestartCount(void)
 void
 debugger_onSetDebugBaseFromCore(uint32_t section, uint32_t base)
 {
-    const char *name = "unknown";
-    switch (section) {
-    case 0u:
+    if (base_map_getMode() == BASE_MAP_MODE_STACK) {
+        return;
+    }
+    base_map_section_t mappedSection = BASE_MAP_SECTION_TEXT;
+    if (!base_map_sectionFromIndex(section, &mappedSection)) {
+        mappedSection = BASE_MAP_SECTION_TEXT;
+    }
+    switch (mappedSection) {
+    case BASE_MAP_SECTION_TEXT:
         debugger_setTextBaseAddress(base);
-        name = "text";
         break;
-    case 1u:
-        debugger.machine.dataBaseAddr = base;
-        name = "data";
+    case BASE_MAP_SECTION_DATA:
+        debugger_setDataBaseAddress(base);
         break;
-    case 2u:
-        debugger.machine.bssBaseAddr = base;
-        name = "bss";
+    case BASE_MAP_SECTION_BSS:
+        debugger_setBssBaseAddress(base);
         break;
     default:
-        debugger.machine.textBaseAddr = base;
-        name = "text";
+        debugger_setTextBaseAddress(base);
         break;
     }
-    debug_printf("base: set %s to 0x%08X (from core)\n", name, (unsigned)base);
+}
+
+void
+debugger_onPushDebugBaseFromCore(uint32_t section, uint32_t base, uint32_t size)
+{
+    base_map_section_t mappedSection = BASE_MAP_SECTION_TEXT;
+    if (!base_map_sectionFromIndex(section, &mappedSection)) {
+        return;
+    }
+    uint32_t base24 = base & 0x00ffffffu;
+    if (!base_map_push(mappedSection, base24, size)) {
+        return;
+    }
+    if (mappedSection == BASE_MAP_SECTION_TEXT) {
+        debugger.machine.textBaseAddr = base24;
+    } else if (mappedSection == BASE_MAP_SECTION_DATA) {
+        debugger.machine.dataBaseAddr = base24;
+    } else if (mappedSection == BASE_MAP_SECTION_BSS) {
+        debugger.machine.bssBaseAddr = base24;
+    }
+
+    // Stack bases can arrive after initial symbol/index setup; force all
+    // hunk-dependent resolvers to rebuild against the latest map.
+    print_eval_invalidateCache();
+    hunk_fileline_cache_clear();
+    addr2line_stop();
 }
 
 static void
@@ -117,6 +150,7 @@ debugger_syncCoreBreakpointsForTextBaseChange(uint32_t oldBaseAddr, uint32_t new
     int count = 0;
     if (!machine_getBreakpoints(&debugger.machine, &bps, &count) || !bps || count <= 0) {
         debugger.machine.textBaseAddr = newBaseAddr;
+        base_map_setBasicBase(BASE_MAP_SECTION_TEXT, newBaseAddr);
         return;
     }
 
@@ -130,6 +164,7 @@ debugger_syncCoreBreakpointsForTextBaseChange(uint32_t oldBaseAddr, uint32_t new
 
     machine_rebaseTextBreakpoints(&debugger.machine, oldBaseAddr, newBaseAddr);
     debugger.machine.textBaseAddr = newBaseAddr;
+    base_map_setBasicBase(BASE_MAP_SECTION_TEXT, newBaseAddr);
 
     for (int i = 0; i < count; ++i) {
         machine_breakpoint_t *bp = (machine_breakpoint_t*)&bps[i];
@@ -144,16 +179,162 @@ debugger_syncCoreBreakpointsForTextBaseChange(uint32_t oldBaseAddr, uint32_t new
     breakpoints_markDirty();
 }
 
+static void
+debugger_prepareBreakpointsForBaseMapChange(const machine_breakpoint_t **outBps, int *outCount)
+{
+    if (outBps) {
+        *outBps = NULL;
+    }
+    if (outCount) {
+        *outCount = 0;
+    }
+
+    const machine_breakpoint_t *bps = NULL;
+    int count = 0;
+    if (!machine_getBreakpoints(&debugger.machine, &bps, &count) || !bps || count <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        const machine_breakpoint_t *bp = &bps[i];
+        if (!bp->enabled) {
+            continue;
+        }
+        uint32_t oldAddr = (uint32_t)(bp->addr & 0x00ffffffu);
+        libretro_host_debugRemoveBreakpoint(oldAddr);
+    }
+
+    for (int i = 0; i < count; ++i) {
+        machine_breakpoint_t *bp = (machine_breakpoint_t*)&bps[i];
+        uint32_t oldAddr = (uint32_t)(bp->addr & 0x00ffffffu);
+        uint32_t debugAddr = oldAddr;
+        (void)base_map_runtimeToDebug(BASE_MAP_SECTION_TEXT, oldAddr, &debugAddr);
+        bp->addr = debugAddr;
+        snprintf(bp->addr_text, sizeof(bp->addr_text), "0x%06X", (unsigned)debugAddr);
+        bp->file[0] = '\0';
+        bp->func[0] = '\0';
+        bp->line = 0;
+    }
+
+    if (outBps) {
+        *outBps = bps;
+    }
+    if (outCount) {
+        *outCount = count;
+    }
+}
+
+static void
+debugger_finishBreakpointsForBaseMapChange(const machine_breakpoint_t *bps, int count)
+{
+    if (!bps || count <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        machine_breakpoint_t *bp = (machine_breakpoint_t*)&bps[i];
+        uint32_t debugAddr = (uint32_t)(bp->addr & 0x00ffffffu);
+        uint32_t runtimeAddr = debugAddr;
+        (void)base_map_debugToRuntime(BASE_MAP_SECTION_TEXT, debugAddr, &runtimeAddr);
+        bp->addr = runtimeAddr;
+        snprintf(bp->addr_text, sizeof(bp->addr_text), "0x%06X", (unsigned)runtimeAddr);
+        if (bp->enabled) {
+            libretro_host_debugAddBreakpoint(runtimeAddr);
+        }
+        breakpoints_resolveLocation(bp);
+    }
+    breakpoints_markDirty();
+}
+
 void
 debugger_setTextBaseAddress(uint32_t base)
 {
     uint32_t newBaseAddr = base & 0x00ffffffu;
-    uint32_t oldBaseAddr = debugger.machine.textBaseAddr & 0x00ffffffu;
+    uint32_t oldBaseAddr = base_map_getBasicBase(BASE_MAP_SECTION_TEXT) & 0x00ffffffu;
     if (oldBaseAddr == newBaseAddr) {
         debugger.machine.textBaseAddr = newBaseAddr;
+        base_map_setBasicBase(BASE_MAP_SECTION_TEXT, newBaseAddr);
         return;
     }
     debugger_syncCoreBreakpointsForTextBaseChange(oldBaseAddr, newBaseAddr);
+}
+
+void
+debugger_setDataBaseAddress(uint32_t base)
+{
+    uint32_t newBaseAddr = base & 0x00ffffffu;
+    debugger.machine.dataBaseAddr = newBaseAddr;
+    base_map_setBasicBase(BASE_MAP_SECTION_DATA, newBaseAddr);
+}
+
+void
+debugger_setBssBaseAddress(uint32_t base)
+{
+    uint32_t newBaseAddr = base & 0x00ffffffu;
+    debugger.machine.bssBaseAddr = newBaseAddr;
+    base_map_setBasicBase(BASE_MAP_SECTION_BSS, newBaseAddr);
+}
+
+void
+debugger_applyStateWrapBases(const state_wrap_info_t *info)
+{
+    if (!info) {
+        return;
+    }
+
+    const machine_breakpoint_t *bps = NULL;
+    int bpCount = 0;
+    debugger_prepareBreakpointsForBaseMapChange(&bps, &bpCount);
+
+    int appliedStack = 0;
+    if (info->mode == BASE_MAP_MODE_STACK && info->baseMapStackCount > 0) {
+        base_map_reset();
+        debugger.machine.textBaseAddr = info->textBaseAddr & 0x00ffffffu;
+        debugger.machine.dataBaseAddr = info->dataBaseAddr & 0x00ffffffu;
+        debugger.machine.bssBaseAddr = info->bssBaseAddr & 0x00ffffffu;
+        size_t pushed = 0;
+        for (size_t i = 0; i < info->baseMapStackCount; ++i) {
+            state_wrap_base_entry_t entry;
+            if (!state_wrap_getBaseMapStackEntry(info, i, &entry)) {
+                continue;
+            }
+            base_map_section_t section = BASE_MAP_SECTION_TEXT;
+            if (!base_map_sectionFromIndex(entry.section, &section)) {
+                continue;
+            }
+            uint32_t base24 = entry.base & 0x00ffffffu;
+            if (!base_map_push(section, base24, entry.size)) {
+                continue;
+            }
+            if (section == BASE_MAP_SECTION_TEXT) {
+                debugger.machine.textBaseAddr = base24;
+            } else if (section == BASE_MAP_SECTION_DATA) {
+                debugger.machine.dataBaseAddr = base24;
+            } else if (section == BASE_MAP_SECTION_BSS) {
+                debugger.machine.bssBaseAddr = base24;
+            }
+            pushed++;
+        }
+        if (pushed > 0) {
+            appliedStack = 1;
+        }
+    }
+
+    if (!appliedStack) {
+        uint32_t textBase = info->textBaseAddr & 0x00ffffffu;
+        uint32_t dataBase = info->dataBaseAddr & 0x00ffffffu;
+        uint32_t bssBase = info->bssBaseAddr & 0x00ffffffu;
+        base_map_reset();
+        debugger.machine.textBaseAddr = textBase;
+        debugger.machine.dataBaseAddr = dataBase;
+        debugger.machine.bssBaseAddr = bssBase;
+        base_map_setBasicBases(textBase, dataBase, bssBase);
+    }
+
+    print_eval_invalidateCache();
+    hunk_fileline_cache_clear();
+    addr2line_stop();
+    debugger_finishBreakpointsForBaseMapChange(bps, bpCount);
 }
 
 void
@@ -350,6 +531,30 @@ debugger_toolchainBuildBinary(char *out, size_t cap, const char *tool)
     return debugger_platform_finalizeToolBinary(out, cap);
 }
 
+int
+debugger_toolchainUsesHunkAddr2line(void)
+{
+    char addr2line[PATH_MAX];
+    if (!debugger_toolchainBuildBinary(addr2line, sizeof(addr2line), "addr2line")) {
+        return 0;
+    }
+
+    const char *name = addr2line;
+    const char *slash = strrchr(name, '/');
+    if (slash && slash[1]) {
+        name = slash + 1;
+    }
+    const char *backslash = strrchr(name, '\\');
+    if (backslash && backslash[1]) {
+        name = backslash + 1;
+    }
+
+    if (strstr(name, "hunk-addr2line") || strstr(name, "hunk_addr2line")) {
+        return 1;
+    }
+    return 0;
+}
+
 void
 debugger_refreshElfValid(void)
 {
@@ -468,6 +673,7 @@ debugger_ctor(void)
   debugger.cliWindowH = 0;
   debugger.cliDisableRollingRecord = 0;
   debugger.cliStartFullscreen = 0;
+  debugger.cliDisableGlComposite = 0;
   debugger.cliHeadless = 0;
   debugger.cliWarp = 0;
   debugger.cliAudioVolume = -1;
@@ -488,6 +694,7 @@ debugger_ctor(void)
   e9ui->layout.memTrackWinW = 0;
   e9ui->layout.memTrackWinH = 0;
   machine_init(&debugger.machine);
+  base_map_reset();
   size_t buf_bytes = 512 * 1024 * 1024;
   const char *env_buf = getenv("E9K_STATE_BUFFER_BYTES");
   if (env_buf && *env_buf) {
@@ -529,6 +736,10 @@ debugger_main(int argc, char **argv)
       debug_printf("reset-cfg: deleted '%s'", path);
     }
     return 2;
+  }
+  if (debugger.cliDisableGlComposite) {
+    e9ui->glCompositeEnabled = 0;
+    debug_printf("gl-composite: disabled via command line");
   }
   if (debugger.cliCoreSystemOverride) {
     target_setTargetIndex(debugger.cliTargetIndex);

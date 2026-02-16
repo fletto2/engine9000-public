@@ -582,6 +582,7 @@ e9ui_setTooltip(e9ui_component_t *comp, const char *tooltip)
         return;
     }
     comp->tooltip = tooltip;
+    comp->tooltipSerial += 1u;
 }
 
 void
@@ -926,11 +927,63 @@ e9ui_drawTooltip(const e9ui_context_t *ctx, const char *text, int baseX, int bas
     if (!ctx || !ctx->renderer || !ctx->font || !text || !*text) {
         return;
     }
-    int textW = 0;
-    int textH = 0;
-    if (TTF_SizeText(ctx->font, text, &textW, &textH) != 0 || textW <= 0 || textH <= 0) {
+
+    const int maxLines = 32;
+    const char *lineStarts[maxLines];
+    int lineLens[maxLines];
+    int lineCount = 0;
+    const char *lineStart = text;
+    for (const char *p = text;; ++p) {
+        if (*p == '\n' || *p == '\0') {
+            if (lineCount < maxLines) {
+                lineStarts[lineCount] = lineStart;
+                lineLens[lineCount] = (int)(p - lineStart);
+                lineCount++;
+            }
+            if (*p == '\0') {
+                break;
+            }
+            lineStart = p + 1;
+        }
+    }
+    if (lineCount <= 0) {
         return;
     }
+
+    int lineHeight = TTF_FontLineSkip(ctx->font);
+    if (lineHeight <= 0) {
+        lineHeight = TTF_FontHeight(ctx->font);
+    }
+    if (lineHeight <= 0) {
+        return;
+    }
+
+    int textW = 0;
+    char lineBuf[1024];
+    for (int i = 0; i < lineCount; ++i) {
+        int len = lineLens[i];
+        while (len > 0 && lineStarts[i][len - 1] == '\r') {
+            len--;
+        }
+        if (len <= 0) {
+            continue;
+        }
+        if (len >= (int)sizeof(lineBuf)) {
+            len = (int)sizeof(lineBuf) - 1;
+        }
+        memcpy(lineBuf, lineStarts[i], (size_t)len);
+        lineBuf[len] = '\0';
+        int lineW = 0;
+        int lineH = 0;
+        if (TTF_SizeText(ctx->font, lineBuf, &lineW, &lineH) == 0 && lineW > textW) {
+            textW = lineW;
+        }
+    }
+    if (textW <= 0) {
+        textW = e9ui_scale_px(ctx, 8);
+    }
+    int textH = lineHeight * lineCount;
+
     int pad = e9ui_scale_px(ctx, 6);
     int offset = e9ui_scale_px(ctx, 8);
     int bgW = textW + pad * 2;
@@ -963,12 +1016,30 @@ e9ui_drawTooltip(const e9ui_context_t *ctx, const char *text, int baseX, int bas
     SDL_SetRenderDrawColor(ctx->renderer, border.r, border.g, border.b, border.a);
     SDL_RenderDrawRect(ctx->renderer, &bg);
     SDL_Color textColor = { 235, 235, 235, 255 };
-    int tw = 0;
-    int th = 0;
-    SDL_Texture *tex = e9ui_text_cache_getText(ctx->renderer, ctx->font, text, textColor, &tw, &th);
-    if (tex) {
-        SDL_Rect textRect = { x + pad, y + pad, tw, th };
-        SDL_RenderCopy(ctx->renderer, tex, NULL, &textRect);
+    for (int i = 0; i < lineCount; ++i) {
+        int len = lineLens[i];
+        while (len > 0 && lineStarts[i][len - 1] == '\r') {
+            len--;
+        }
+        if (len < 0) {
+            len = 0;
+        }
+        if (len >= (int)sizeof(lineBuf)) {
+            len = (int)sizeof(lineBuf) - 1;
+        }
+        memcpy(lineBuf, lineStarts[i], (size_t)len);
+        lineBuf[len] = '\0';
+        if (lineBuf[0] == '\0') {
+            continue;
+        }
+        int tw = 0;
+        int th = 0;
+        SDL_Texture *tex = e9ui_text_cache_getText(ctx->renderer, ctx->font, lineBuf, textColor, &tw, &th);
+        if (tex) {
+            int lineY = y + pad + i * lineHeight + ((lineHeight - th) / 2);
+            SDL_Rect textRect = { x + pad, lineY, tw, th };
+            SDL_RenderCopy(ctx->renderer, tex, NULL, &textRect);
+        }
     }
 }
 
@@ -982,6 +1053,7 @@ e9ui_renderTooltipOverlay(void)
     static struct {
         const char *text;
         const e9ui_component_t *comp;
+        unsigned serial;
         int x;
         int y;
         int active;
@@ -993,13 +1065,18 @@ e9ui_renderTooltipOverlay(void)
         tooltip_state.active = 0;
         tooltip_state.text = NULL;
         tooltip_state.comp = NULL;
+        tooltip_state.serial = 0u;
         return;
     }
 
-    if (!tooltip_state.active || tooltip_state.comp != tooltip.comp || tooltip_state.text != tooltip.text) {
+    if (!tooltip_state.active ||
+        tooltip_state.comp != tooltip.comp ||
+        tooltip_state.text != tooltip.text ||
+        tooltip_state.serial != tooltip.comp->tooltipSerial) {
         tooltip_state.active = 1;
         tooltip_state.comp = tooltip.comp;
         tooltip_state.text = tooltip.text;
+        tooltip_state.serial = tooltip.comp->tooltipSerial;
         tooltip_state.x = e9ui->ctx.mouseX;
         tooltip_state.y = e9ui->ctx.mouseY;
     }

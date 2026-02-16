@@ -21,6 +21,11 @@ typedef struct breakpoints_record {
 
 typedef struct breakpoints_entry_state {
     char               primary[768];
+    char               prefix[64];
+    char               filePath[PATH_MAX];
+    char               suffix[512];
+    char               overflowTooltip[PATH_MAX];
+    int                hasFilePath;
     char               condition[768];
     int                hasCondition;
     e9ui_component_t  *checkbox;   // child component (owned via e9ui_addChild)
@@ -41,13 +46,154 @@ struct breakpoints_list_state {
 static void breakpoints_listMarkDirty(breakpoints_list_state_t *st);
 static void breakpoints_listRefreshAndMarkDirty(breakpoints_list_state_t *st);
 
+static void
+breakpoints_setTooltipIfChanged(e9ui_component_t *comp, const char *tooltip)
+{
+    if (!comp) {
+        return;
+    }
+    if (comp->tooltip == tooltip) {
+        return;
+    }
+    e9ui_setTooltip(comp, tooltip);
+}
+
+static int
+breakpoints_measureTextWidth(TTF_Font *font, const char *text)
+{
+    if (!font || !text || !text[0]) {
+        return 0;
+    }
+    int textW = 0;
+    if (TTF_SizeText(font, text, &textW, NULL) != 0) {
+        return 0;
+    }
+    return textW;
+}
+
+static void
+breakpoints_leftEllipsizeText(TTF_Font *font,
+                              const char *text,
+                              int maxWidth,
+                              char *out,
+                              size_t outCap,
+                              int *outTruncated)
+{
+    if (outTruncated) {
+        *outTruncated = 0;
+    }
+    if (!out || outCap == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!text || !text[0]) {
+        return;
+    }
+    if (!font || maxWidth <= 0) {
+        return;
+    }
+
+    int fullWidth = breakpoints_measureTextWidth(font, text);
+    if (fullWidth <= maxWidth) {
+        snprintf(out, outCap, "%s", text);
+        return;
+    }
+
+    const char *ellipsis = "...";
+    int ellipsisWidth = breakpoints_measureTextWidth(font, ellipsis);
+    if (ellipsisWidth >= maxWidth) {
+        return;
+    }
+
+    size_t textLen = strlen(text);
+    size_t lo = 0;
+    size_t hi = textLen;
+    size_t bestStart = textLen;
+    while (lo <= hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int written = snprintf(out, outCap, "%s%s", ellipsis, text + mid);
+        if (written < 0 || (size_t)written >= outCap) {
+            lo = mid + 1;
+            continue;
+        }
+        int width = breakpoints_measureTextWidth(font, out);
+        if (width <= maxWidth) {
+            bestStart = mid;
+            if (mid == 0) {
+                break;
+            }
+            hi = mid - 1;
+        } else {
+            lo = mid + 1;
+        }
+    }
+
+    if (bestStart >= textLen) {
+        out[0] = '\0';
+        return;
+    }
+
+    snprintf(out, outCap, "%s%s", ellipsis, text + bestStart);
+    if (outTruncated) {
+        *outTruncated = 1;
+    }
+}
+
+static void
+breakpoints_formatPrimaryText(const breakpoints_entry_state_t *st,
+                              TTF_Font *font,
+                              int maxWidth,
+                              char *out,
+                              size_t outCap,
+                              int *outTruncated)
+{
+    if (outTruncated) {
+        *outTruncated = 0;
+    }
+    if (!out || outCap == 0 || !st) {
+        return;
+    }
+    out[0] = '\0';
+
+    if (!st->hasFilePath) {
+        snprintf(out, outCap, "%s", st->primary);
+        return;
+    }
+
+    int prefixWidth = breakpoints_measureTextWidth(font, st->prefix);
+    int suffixWidth = breakpoints_measureTextWidth(font, st->suffix);
+    int fileWidthBudget = maxWidth - prefixWidth - suffixWidth;
+    if (fileWidthBudget < 0) {
+        fileWidthBudget = 0;
+    }
+
+    char fileDisplay[PATH_MAX];
+    int wasTruncated = 0;
+    breakpoints_leftEllipsizeText(font,
+                                  st->filePath,
+                                  fileWidthBudget,
+                                  fileDisplay,
+                                  sizeof(fileDisplay),
+                                  &wasTruncated);
+
+    if (!fileDisplay[0]) {
+        snprintf(out, outCap, "%s%s", st->prefix, st->suffix);
+    } else {
+        snprintf(out, outCap, "%s%s%s", st->prefix, fileDisplay, st->suffix);
+    }
+
+    if (outTruncated) {
+        *outTruncated = wasTruncated;
+    }
+}
+
 static breakpoints_list_state_t *breakpoints_listState = NULL;
 
 
 void
 breakpoints_resolveLocation(machine_breakpoint_t *bp)
 {
-    if (!bp || (bp->file[0] && bp->line > 0)) {
+    if (!bp || (bp->file[0] && bp->line > 0 && bp->func[0])) {
         return;
     }
     const char *elf = debugger.libretro.exePath;
@@ -59,10 +205,23 @@ breakpoints_resolveLocation(machine_breakpoint_t *bp)
     }
     char path[PATH_MAX];
     int line = 0;
-    if (addr2line_resolve((uint64_t)bp->addr, path, sizeof(path), &line)) {
-        strncpy(bp->file, path, sizeof(bp->file) - 1);
-        bp->file[sizeof(bp->file) - 1] = '\0';
-        bp->line = line;
+    char functionName[512];
+    functionName[0] = '\0';
+    if (addr2line_resolveDetailed((uint64_t)bp->addr,
+                                  path,
+                                  sizeof(path),
+                                  &line,
+                                  functionName,
+                                  sizeof(functionName))) {
+        if (path[0] && line > 0) {
+            strncpy(bp->file, path, sizeof(bp->file) - 1);
+            bp->file[sizeof(bp->file) - 1] = '\0';
+            bp->line = line;
+        }
+        if (functionName[0] && strcmp(functionName, "??") != 0) {
+            strncpy(bp->func, functionName, sizeof(bp->func) - 1);
+            bp->func[sizeof(bp->func) - 1] = '\0';
+        }
     }
 }
 
@@ -85,6 +244,43 @@ breakpoints_stripCliSrcPrefix(const char *path)
 }
 
 static void
+breakpoints_formatAddrAnnotation(const machine_breakpoint_t *bp, char *dst, size_t cap)
+{
+    if (!dst || cap == 0) {
+        return;
+    }
+    dst[0] = '\0';
+    if (!bp) {
+        return;
+    }
+    const char *symbol = NULL;
+    if (bp->func[0] && strcmp(bp->func, "??") != 0) {
+        symbol = bp->func;
+    }
+    const char *addrText = bp->addr_text[0] ? bp->addr_text : NULL;
+    if (symbol && addrText) {
+        snprintf(dst, cap, " (%s, %s)", symbol, addrText);
+        return;
+    }
+    if (symbol && bp->addr != 0) {
+        snprintf(dst, cap, " (%s, 0x%llX)", symbol, (unsigned long long)bp->addr);
+        return;
+    }
+    if (symbol) {
+        snprintf(dst, cap, " (%s)", symbol);
+        return;
+    }
+    if (addrText) {
+        snprintf(dst, cap, " (%s)", addrText);
+        return;
+    }
+    if (bp->addr != 0) {
+        snprintf(dst, cap, " (0x%llX)", (unsigned long long)bp->addr);
+        return;
+    }
+}
+
+static void
 breakpoints_formatLocation(const machine_breakpoint_t *bp, char *dst, size_t cap)
 {
     if (!dst || cap == 0) return;
@@ -97,18 +293,15 @@ breakpoints_formatLocation(const machine_breakpoint_t *bp, char *dst, size_t cap
 
     const char *file = breakpoints_stripCliSrcPrefix(bp->file);
     if (file && file[0] && bp->line > 0) {
-        const char *addrText = bp->addr_text[0] ? bp->addr_text : NULL;
-        if (addrText) {
-            snprintf(dst, cap, "%s:%d (%s)", file, bp->line, addrText);
-        } else if (bp->addr != 0) {
-            snprintf(dst, cap, "%s:%d (0x%llX)", file, bp->line, (unsigned long long)bp->addr);
-        } else {
-            snprintf(dst, cap, "%s:%d", file, bp->line);
-        }
+        char addrAnnotation[192];
+        breakpoints_formatAddrAnnotation(bp, addrAnnotation, sizeof(addrAnnotation));
+        snprintf(dst, cap, "%s:%d%s", file, bp->line, addrAnnotation);
         return;
     }
-    if (bp->func[0]) {
-        snprintf(dst, cap, "%s()", bp->func);
+    if (bp->func[0] && strcmp(bp->func, "??") != 0) {
+        char addrAnnotation[192];
+        breakpoints_formatAddrAnnotation(bp, addrAnnotation, sizeof(addrAnnotation));
+        snprintf(dst, cap, "%s%s", bp->func, addrAnnotation);
         return;
     }
     if (bp->addr_text[0]) {
@@ -130,16 +323,20 @@ breakpoints_formatState(const machine_breakpoint_t *bp, char *dst, size_t cap)
     if (!bp) return;
 
     size_t pos = 0;
-    int written = snprintf(dst + pos, cap - pos, bp->enabled ? "enabled" : "disabled");
-    if (written < 0) return;
-    pos += (size_t)written;
+    if (!bp->enabled) {
+        int written = snprintf(dst + pos, cap - pos, "disabled");
+        if (written < 0) {
+            return;
+        }
+        pos += (size_t)written;
+    }
 
     if (bp->disp[0] && strcmp(bp->disp, "keep") != 0 && pos + 2 < cap) {
-        written = snprintf(dst + pos, cap - pos, "%s%s", pos ? ", " : "", bp->disp);
+        int written = snprintf(dst + pos, cap - pos, "%s%s", pos ? ", " : "", bp->disp);
         if (written > 0) pos += (size_t)written;
     }
     if (bp->type[0] && strcmp(bp->type, "breakpoint") != 0 && pos + 2 < cap) {
-        written = snprintf(dst + pos, cap - pos, "%s%s", pos ? ", " : "", bp->type);
+        int written = snprintf(dst + pos, cap - pos, "%s%s", pos ? ", " : "", bp->type);
         if (written > 0) pos += (size_t)written;
     }
 }
@@ -281,9 +478,36 @@ breakpoints_entryRender(e9ui_component_t *self, e9ui_context_t *ctx)
 
     int curY = self->bounds.y + padY;
     int textX = self->bounds.x + padX + cbLeft + cbSize + cbGap;
+    int textRight = self->bounds.x + self->bounds.w - padX;
+    int maxPrimaryWidth = textRight - textX;
+    if (maxPrimaryWidth < 0) {
+        maxPrimaryWidth = 0;
+    }
 
-    int tw = 0, th = 0;
-    SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, font, st->primary, primary, &tw, &th);
+    char primaryLine[768];
+    int wasTruncated = 0;
+    breakpoints_formatPrimaryText(st,
+                                  font,
+                                  maxPrimaryWidth,
+                                  primaryLine,
+                                  sizeof(primaryLine),
+                                  &wasTruncated);
+    int mouseOverCheckbox = 0;
+    if (st->checkbox) {
+        const e9ui_rect_t cb = st->checkbox->bounds;
+        if (ctx->mouseX >= cb.x &&
+            ctx->mouseX < (cb.x + cb.w) &&
+            ctx->mouseY >= cb.y &&
+            ctx->mouseY < (cb.y + cb.h)) {
+            mouseOverCheckbox = 1;
+        }
+    }
+    breakpoints_setTooltipIfChanged(self,
+                                    (wasTruncated && !mouseOverCheckbox) ? st->overflowTooltip : NULL);
+
+    int tw = 0;
+    int th = 0;
+    SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, font, primaryLine, primary, &tw, &th);
     if (t) {
         SDL_Rect tr = { textX, curY, tw, th };
         SDL_RenderCopy(ctx->renderer, t, NULL, &tr);
@@ -319,6 +543,7 @@ breakpoints_entryMake(breakpoints_record_t *rec, breakpoints_list_state_t *list)
     c->state = st;
 
     const machine_breakpoint_t *bp = &rec->data;
+    const char *file = breakpoints_stripCliSrcPrefix(bp->file);
 
     st->hasCondition = bp->cond[0] != '\0';
     st->record = rec;
@@ -342,7 +567,30 @@ breakpoints_entryMake(breakpoints_record_t *rec, breakpoints_list_state_t *list)
     breakpoints_formatLocation(bp, location, sizeof(location));
     breakpoints_formatState(bp, state, sizeof(state));
 
-    if (state[0]) {
+    st->hasFilePath = 0;
+    st->prefix[0] = '\0';
+    st->filePath[0] = '\0';
+    st->suffix[0] = '\0';
+    st->overflowTooltip[0] = '\0';
+
+    if (file && file[0] && bp->line > 0) {
+        st->hasFilePath = 1;
+        snprintf(st->prefix, sizeof(st->prefix), "#%d ", bp->number);
+        snprintf(st->filePath, sizeof(st->filePath), "%s", file);
+        snprintf(st->overflowTooltip, sizeof(st->overflowTooltip), "%s", file);
+
+        char addrPart[192];
+        breakpoints_formatAddrAnnotation(bp, addrPart, sizeof(addrPart));
+        if (state[0]) {
+            snprintf(st->suffix, sizeof(st->suffix), ":%d%s (%s)", bp->line, addrPart, state);
+        } else {
+            snprintf(st->suffix, sizeof(st->suffix), ":%d%s", bp->line, addrPart);
+        }
+    }
+
+    if (st->hasFilePath) {
+        snprintf(st->primary, sizeof(st->primary), "%s%s%s", st->prefix, st->filePath, st->suffix);
+    } else if (state[0]) {
         snprintf(st->primary, sizeof(st->primary), "#%d %s (%s)", bp->number, location, state);
     } else {
         snprintf(st->primary, sizeof(st->primary), "#%d %s", bp->number, location);
@@ -505,6 +753,13 @@ breakpoints_updateRecords(breakpoints_list_state_t *st, const machine_breakpoint
         } else {
             if (memcmp(&rec->data, bp, sizeof(rec->data)) != 0) {
                 memcpy(&rec->data, bp, sizeof(rec->data));
+                changed = 1;
+            }
+        }
+        if (!rec->data.func[0] || (!rec->data.file[0] && rec->data.line <= 0)) {
+            machine_breakpoint_t before = rec->data;
+            breakpoints_resolveLocation(&rec->data);
+            if (memcmp(&before, &rec->data, sizeof(rec->data)) != 0) {
                 changed = 1;
             }
         }

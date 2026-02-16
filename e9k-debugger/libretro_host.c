@@ -78,6 +78,7 @@ typedef int (*e9k_debug_profiler_is_enabled_fn_t)(void);
 typedef size_t (*e9k_debug_profiler_stream_next_fn_t)(char *out, size_t cap);
 typedef size_t (*e9k_debug_text_read_fn_t)(char *out, size_t cap);
 typedef void (*e9k_debug_set_base_callback_fn_t)(void (*cb)(uint32_t section, uint32_t base));
+typedef void (*e9k_debug_set_base_stack_callback_fn_t)(void (*cb)(uint32_t section, uint32_t base, uint32_t size));
 typedef size_t (*e9k_debug_neogeo_get_sprite_state_fn_t)(e9k_debug_sprite_state_t *out, size_t cap);
 typedef size_t (*e9k_debug_neogeo_get_p1_rom_fn_t)(e9k_debug_rom_region_t *out, size_t cap);
 typedef size_t (*e9k_debug_mega_get_sprite_state_fn_t)(e9k_debug_mega_sprite_state_t *out, size_t cap);
@@ -189,6 +190,7 @@ typedef struct  {
     e9k_debug_profiler_stream_next_fn_t debugProfilerStreamNext;
     e9k_debug_text_read_fn_t debugTextRead;
     e9k_debug_set_base_callback_fn_t setDebugBaseCallback;
+    e9k_debug_set_base_stack_callback_fn_t setDebugBaseStackCallback;
     e9k_debug_set_breakpoint_callback_fn_t setDebugBreakpointCallback;
     e9k_debug_set_source_location_resolver_fn_t debugSetSourceLocationResolver;
     e9k_debug_set_debug_option_fn_t debugSetDebugOption;
@@ -1326,6 +1328,7 @@ libretro_host_start(const char *corePath, const char *romPath,
     libretro_host.debugProfilerStreamNext = (e9k_debug_profiler_stream_next_fn_t)libretro_host_loadSymbol("e9k_debug_profiler_stream_next");
     libretro_host.debugTextRead = (e9k_debug_text_read_fn_t)libretro_host_loadSymbol("e9k_debug_text_read");
     libretro_host.setDebugBaseCallback = (e9k_debug_set_base_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_base_callback");
+    libretro_host.setDebugBaseStackCallback = (e9k_debug_set_base_stack_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_base_stack_callback");
     libretro_host.setDebugBreakpointCallback = (e9k_debug_set_breakpoint_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_breakpoint_callback");
     libretro_host.debugSetSourceLocationResolver = (e9k_debug_set_source_location_resolver_fn_t)libretro_host_loadSymbol("e9k_debug_set_source_location_resolver");
     libretro_host.debugSetDebugOption = (e9k_debug_set_debug_option_fn_t)libretro_host_loadSymbol("e9k_debug_set_debug_option");
@@ -2317,6 +2320,16 @@ libretro_host_setDebugBaseCallback(void (*cb)(uint32_t section, uint32_t base))
 }
 
 bool
+libretro_host_setDebugBaseStackCallback(void (*cb)(uint32_t section, uint32_t base, uint32_t size))
+{
+    if (!libretro_host.setDebugBaseStackCallback) {
+        return false;
+    }
+    libretro_host.setDebugBaseStackCallback(cb);
+    return true;
+}
+
+bool
 libretro_host_setDebugBreakpointCallback(void (*cb)(uint32_t addr))
 {
     if (!libretro_host.setDebugBreakpointCallback) {
@@ -2472,9 +2485,7 @@ libretro_host_restoreState(size_t *out_size)
     if (!state_wrap_parse((const uint8_t *)libretro_host.stateData, libretro_host.stateSize, &info)) {
         return false;
     }
-    debugger_setTextBaseAddress(info.textBaseAddr);
-    debugger.machine.dataBaseAddr = info.dataBaseAddr;
-    debugger.machine.bssBaseAddr = info.bssBaseAddr;
+    debugger_applyStateWrapBases(&info);
     if (!libretro_host.unserialize(info.payload, info.payloadSize)) {
         return false;
     }

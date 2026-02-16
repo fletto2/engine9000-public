@@ -12,12 +12,22 @@
 #include <stdint.h>
 
 #include "machine.h"
+#include "base_map.h"
+
+typedef struct state_wrap_base_entry {
+    uint32_t section;
+    uint32_t base;
+    uint32_t size;
+} state_wrap_base_entry_t;
 
 typedef struct state_wrap_info {
     uint32_t version;
     uint32_t textBaseAddr;
     uint32_t dataBaseAddr;
     uint32_t bssBaseAddr;
+    base_map_mode_t mode;
+    size_t baseMapStackCount;
+    const uint8_t *baseMapStackData;
     const uint8_t *payload;
     size_t payloadSize;
 } state_wrap_info_t;
@@ -36,3 +46,6 @@ state_wrap_wrap(uint8_t *dst, size_t dstCap, const uint8_t *payload, size_t payl
 
 int
 state_wrap_parse(const uint8_t *buf, size_t bufSize, state_wrap_info_t *out);
+
+int
+state_wrap_getBaseMapStackEntry(const state_wrap_info_t *info, size_t index, state_wrap_base_entry_t *outEntry);

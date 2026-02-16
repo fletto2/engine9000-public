@@ -15,10 +15,12 @@
 #include "libretro_host.h"
 #include "transition.h"
 #include "machine.h"
+#include "base_map.h"
 #include "print_eval.h"
 #include "train.h"
 #include "state_buffer.h"
 #include "protect.h"
+#include "hunk_fileline_cache.h"
 
 
 typedef int (*console_cmd_handler_t)(int argc, char **argv);
@@ -63,7 +65,7 @@ static const console_cmd_entry_t console_cmd[] = {
     { "continue", "c", "continue", "Continue execution and defocus the prompt.", console_cmd_continue, NULL },
     { "diff", NULL, "diff <fromFrame> <toFrame> [size=8|16|32]", "Show RAM addresses that differ between two recorded frames.", console_cmd_diff, NULL },    
     { "loop", NULL, "loop <from> <to>\nloop\nloop clear", "Loop between two recorded frame numbers (decimal).", console_cmd_loop, NULL },
-    { "print", "p", "print <expr>", "Print an expression using DWARF + symbol info.", console_cmd_print, console_cmd_completePrint },   
+    { "print", "p", "print <expr>\nprint addr <expr>", "Print an expression using DWARF + symbol info. Use 'print addr <expr>' to show the resolved runtime address.", console_cmd_print, console_cmd_completePrint },   
     { "protect", NULL, "protect\nprotect clear\nprotect del <addr> [size=8|16|32]\nprotect <addr> block [size=8|16|32]\nprotect <addr> set=0x... [size=8|16|32]", "Protect addresses by blocking writes or forcing a value (core-side).", console_cmd_protect, NULL },    
     { "next", "n", "next", "Step over the next line.", console_cmd_next, NULL },    
     { "finish", "f", "finish", "Step out of the current function.", console_cmd_finish, NULL },
@@ -530,6 +532,9 @@ console_cmd_resolveFileLine(const char *elf, const char *file, int line_no, uint
     if (!elf || !*elf || !file || !*file || line_no <= 0 || !out_addr) {
         return 0;
     }
+    if (debugger_toolchainUsesHunkAddr2line()) {
+        return hunk_fileline_cache_resolveFileLine(elf, file, line_no, out_addr);
+    }
     char cmd[PATH_MAX * 2];
     char objdump[PATH_MAX];
     if (!debugger_toolchainBuildBinary(objdump, sizeof(objdump), "objdump")) {
@@ -621,46 +626,52 @@ console_cmd_help(int argc, char **argv)
 static int
 console_cmd_base(int argc, char **argv)
 {
+    uint32_t textBase = 0;
+    uint32_t dataBase = 0;
+    uint32_t bssBase = 0;
+    base_map_getBasicBases(&textBase, &dataBase, &bssBase);
     if (argc < 2) {
         debug_printf("base: text=0x%08X data=0x%08X bss=0x%08X\n",
-                     (unsigned)debugger.machine.textBaseAddr,
-                     (unsigned)debugger.machine.dataBaseAddr,
-                     (unsigned)debugger.machine.bssBaseAddr);
+                     (unsigned)textBase,
+                     (unsigned)dataBase,
+                     (unsigned)bssBase);
         return 1;
     }
-    uint32_t *dest = &debugger.machine.textBaseAddr;
+    base_map_section_t section = BASE_MAP_SECTION_TEXT;
     const char *sectionName = "text";
     int argIndex = 1;
 
     if (strcasecmp(argv[1], "text") == 0) {
-        dest = &debugger.machine.textBaseAddr;
+        section = BASE_MAP_SECTION_TEXT;
         sectionName = "text";
         argIndex = 2;
     } else if (strcasecmp(argv[1], "data") == 0) {
-        dest = &debugger.machine.dataBaseAddr;
+        section = BASE_MAP_SECTION_DATA;
         sectionName = "data";
         argIndex = 2;
     } else if (strcasecmp(argv[1], "bss") == 0) {
-        dest = &debugger.machine.bssBaseAddr;
+        section = BASE_MAP_SECTION_BSS;
         sectionName = "bss";
         argIndex = 2;
     } else if (strcasecmp(argv[1], "clear") == 0) {
         debugger_setTextBaseAddress(0);
-        debugger.machine.dataBaseAddr = 0;
-        debugger.machine.bssBaseAddr = 0;
+        debugger_setDataBaseAddress(0);
+        debugger_setBssBaseAddress(0);
         debug_printf("base: cleared\n");
         return 1;
     }
 
     if (argc <= argIndex) {
-        debug_printf("base: %s=0x%08X\n", sectionName, (unsigned)*dest);
+        debug_printf("base: %s=0x%08X\n", sectionName, (unsigned)base_map_getBasicBase(section));
         return 1;
     }
     if (strcasecmp(argv[argIndex], "clear") == 0) {
-        if (dest == &debugger.machine.textBaseAddr) {
+        if (section == BASE_MAP_SECTION_TEXT) {
             debugger_setTextBaseAddress(0);
+        } else if (section == BASE_MAP_SECTION_DATA) {
+            debugger_setDataBaseAddress(0);
         } else {
-            *dest = 0;
+            debugger_setBssBaseAddress(0);
         }
         debug_printf("base: cleared %s\n", sectionName);
         return 1;
@@ -670,12 +681,14 @@ console_cmd_base(int argc, char **argv)
         debug_error("base: invalid address '%s' (use decimal or 0x...)", argv[argIndex]);
         return 0;
     }
-    if (dest == &debugger.machine.textBaseAddr) {
+    if (section == BASE_MAP_SECTION_TEXT) {
         debugger_setTextBaseAddress(addr);
+    } else if (section == BASE_MAP_SECTION_DATA) {
+        debugger_setDataBaseAddress(addr);
     } else {
-        *dest = addr;
+        debugger_setBssBaseAddress(addr);
     }
-    debug_printf("base: set %s to 0x%08X\n", sectionName, (unsigned)*dest);
+    debug_printf("base: set %s to 0x%08X\n", sectionName, (unsigned)base_map_getBasicBase(section));
     return 1;
 }
 
@@ -705,7 +718,7 @@ console_cmd_break(int argc, char **argv)
                 }
                 ok = console_cmd_resolveFileLine(elf, file_buf, line_no, &addr);
                 if (ok) {
-                    addr = (uint32_t)(((uint64_t)addr + (uint64_t)debugger.machine.textBaseAddr) & 0x00ffffffu);
+                    (void)base_map_debugToRuntime(BASE_MAP_SECTION_TEXT, addr, &addr);
                 }
             }
         }
@@ -736,7 +749,7 @@ console_cmd_break(int argc, char **argv)
         debug_error("break: failed to resolve '%s'", arg);
         return 0;
     }
-    addr = (uint32_t)(((uint64_t)addr + (uint64_t)debugger.machine.textBaseAddr) & 0x00ffffffu);
+    (void)base_map_debugToRuntime(BASE_MAP_SECTION_TEXT, addr, &addr);
     machine_breakpoint_t *bp = machine_addBreakpoint(&debugger.machine, addr, 1);
     if (!bp) {
         debug_error("break: failed to add breakpoint");
@@ -1385,7 +1398,43 @@ console_cmd_print(int argc, char **argv)
 {
     if (argc < 2) {
         debug_printf("Usage: print <expr>\n");
+        debug_printf("       print addr <expr>\n");
         return 0;
+    }
+    if (argc >= 3 && strcasecmp(argv[1], "addr") == 0) {
+        char addrExpr[512];
+        addrExpr[0] = '\0';
+        size_t addrUsed = 0;
+        for (int i = 2; i < argc; ++i) {
+            const char *arg = argv[i];
+            if (!arg) {
+                continue;
+            }
+            size_t len = strlen(arg);
+            if (addrUsed > 0 && addrUsed < sizeof(addrExpr) - 1) {
+                addrExpr[addrUsed++] = ' ';
+                addrExpr[addrUsed] = '\0';
+            }
+            if (addrUsed + len >= sizeof(addrExpr)) {
+                len = sizeof(addrExpr) - 1 - addrUsed;
+            }
+            memcpy(addrExpr + addrUsed, arg, len);
+            addrUsed += len;
+            addrExpr[addrUsed] = '\0';
+        }
+        if (addrExpr[0] == '\0') {
+            debug_printf("Usage: print addr <expr>\n");
+            return 0;
+        }
+        uint32_t addr = 0;
+        size_t size = 0;
+        if (!print_eval_resolveAddress(addrExpr, &addr, &size)) {
+            debug_error("print: failed to resolve address '%s'", addrExpr);
+            return 0;
+        }
+        (void)size;
+        debug_printf("%s: 0x%06X\n", addrExpr, (unsigned)(addr & 0x00ffffffu));
+        return 1;
     }
     char expr[512];
     expr[0] = '\0';
@@ -1409,6 +1458,7 @@ console_cmd_print(int argc, char **argv)
     }
     if (expr[0] == '\0') {
         debug_printf("Usage: print <expr>\n");
+        debug_printf("       print addr <expr>\n");
         return 0;
     }
 
@@ -1483,30 +1533,29 @@ console_cmd_print(int argc, char **argv)
 }
 
 static int
-console_cmd_completeBreak(const char *prefix, char ***out_list, int *out_count)
+console_cmd_completeBreakFromObjdump(const char *prefix,
+                                     const char *elf,
+                                     const char *objdumpExe,
+                                     const char *objdumpArgs,
+                                     char ***out_list,
+                                     int *out_count)
 {
-    if (out_list) {
-        *out_list = NULL;
-    }
-    if (out_count) {
-        *out_count = 0;
-    }
-    const char *elf = debugger.libretro.exePath;
-    if (!elf || !*elf || !out_list || !out_count) {
+    if (!elf || !*elf || !objdumpExe || !*objdumpExe || !objdumpArgs || !*objdumpArgs || !out_list || !out_count) {
         return 0;
     }
+    const char *matchPrefix = prefix ? prefix : "";
+    size_t matchPrefixLen = strlen(matchPrefix);
+
     char cmd[PATH_MAX * 2];
-    char objdump[PATH_MAX];
-    if (!debugger_toolchainBuildBinary(objdump, sizeof(objdump), "objdump")) {
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdumpExe, objdumpArgs, elf, 0)) {
         return 0;
     }
-    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump, "--syms", elf, 0)) {
-        return 0;
-    }
+
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return 0;
     }
+
     console_completion_t list = {0};
     char line[1024];
     while (fgets(line, sizeof(line), fp)) {
@@ -1532,21 +1581,66 @@ console_cmd_completeBreak(const char *prefix, char ***out_list, int *out_count)
             continue;
         }
         const char *name = tokens[count - 1];
-        if (prefix && *prefix) {
-            if (strncmp(name, prefix, strlen(prefix)) != 0) {
-                continue;
-            }
+        if (matchPrefixLen > 0 && strncmp(name, matchPrefix, matchPrefixLen) != 0) {
+            continue;
         }
         console_cmd_completionAdd(&list, name);
     }
     pclose(fp);
+
     if (list.count == 0) {
         alloc_free(list.items);
         return 0;
     }
+
     *out_list = list.items;
     *out_count = list.count;
     return 1;
+}
+
+static int
+console_cmd_completeBreak(const char *prefix, char ***out_list, int *out_count)
+{
+    if (out_list) {
+        *out_list = NULL;
+    }
+    if (out_count) {
+        *out_count = 0;
+    }
+    if (!out_list || !out_count) {
+        return 0;
+    }
+    const char *completionPrefix = prefix ? prefix : "";
+
+    if (print_eval_complete(completionPrefix, out_list, out_count)) {
+        if (*out_count > 0) {
+            return 1;
+        }
+        print_eval_freeCompletions(*out_list, *out_count);
+        *out_list = NULL;
+        *out_count = 0;
+    }
+
+    const char *elf = debugger.libretro.exePath;
+    if (!elf || !*elf) {
+        return 0;
+    }
+
+    char objdumpBin[PATH_MAX];
+    if (!debugger_toolchainBuildBinary(objdumpBin, sizeof(objdumpBin), "objdump")) {
+        return 0;
+    }
+
+    char objdumpExe[PATH_MAX];
+    if (!file_findInPath(objdumpBin, objdumpExe, sizeof(objdumpExe))) {
+        return 0;
+    }
+
+    if (console_cmd_completeBreakFromObjdump(completionPrefix, elf, objdumpExe, "--syms", out_list, out_count)) {
+        return 1;
+    }
+
+    return console_cmd_completeBreakFromObjdump(completionPrefix, elf, objdumpExe, "-t", out_list, out_count);
 }
 
 static int

@@ -1,1 +1,1 @@
-load9000 vasm
+load9000 --break vasm

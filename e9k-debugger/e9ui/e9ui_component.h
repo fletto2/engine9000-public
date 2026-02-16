@@ -48,6 +48,7 @@ typedef struct e9ui_component {
   e9ui_rect_t bounds;
   const char *persist_id;
   const char *tooltip;
+  unsigned tooltipSerial;
   int focusable;
   
   list_t* children;
@@ -90,7 +91,6 @@ typedef struct {
   e9ui_component_t* component;
   void* meta;
 } e9ui_component_child_t;
-
 
 
 

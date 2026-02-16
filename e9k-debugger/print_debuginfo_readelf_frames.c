@@ -157,6 +157,9 @@ print_debuginfo_readelf_loadFrames(const char *elfPath, print_index_t *index)
     if (!elfPath || !*elfPath || !index) {
         return 0;
     }
+    if (debugger_toolchainUsesHunkAddr2line()) {
+        return 0;
+    }
     char readelf[PATH_MAX];
     if (!debugger_toolchainBuildBinary(readelf, sizeof(readelf), "readelf")) {
         return 0;

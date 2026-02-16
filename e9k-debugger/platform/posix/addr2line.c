@@ -8,6 +8,7 @@
 
 #include "addr2line.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -20,6 +21,7 @@
 #include <unistd.h>
 
 #include "debugger.h"
+#include "base_map.h"
 #include "file.h"
 
 typedef struct {
@@ -32,6 +34,7 @@ typedef struct {
   size_t bufLen;
   int expectFunc;
   int expectFile;
+  int useHunkQuery;
 } addr2line_t;
 
 static addr2line_t addr2line = {
@@ -55,25 +58,136 @@ addr2line_clearPending(void)
 }
 
 static int
-addr2line_isAddressLine(const char *line)
+addr2line_parseHexComponent(const char *line, const char **outEnd, uint64_t *outValue)
 {
-    if (!line || line[0] != '0' || (line[1] != 'x' && line[1] != 'X')) {
+    if (outEnd) {
+        *outEnd = NULL;
+    }
+    if (outValue) {
+        *outValue = 0;
+    }
+    if (!line || !outEnd || !outValue) {
         return 0;
     }
-    const char *p = line + 2;
-    if (!*p) {
+    const char *p = line;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+    }
+    if (!isxdigit((unsigned char)*p)) {
         return 0;
     }
-    while (*p) {
-        if ((*p >= '0' && *p <= '9') ||
-            (*p >= 'a' && *p <= 'f') ||
-            (*p >= 'A' && *p <= 'F')) {
-            p++;
-            continue;
+    const char *end = p;
+    while (isxdigit((unsigned char)*end)) {
+        ++end;
+    }
+    if (end <= p) {
+        return 0;
+    }
+    size_t len = (size_t)(end - p);
+    if (len >= 24u) {
+        return 0;
+    }
+    char buf[24];
+    memcpy(buf, p, len);
+    buf[len] = '\0';
+    errno = 0;
+    unsigned long long value = strtoull(buf, NULL, 16);
+    if (errno != 0) {
+        return 0;
+    }
+    *outEnd = end;
+    *outValue = (uint64_t)value;
+    return 1;
+}
+
+static int
+addr2line_parseAddressLine(const char *line, uint64_t *outAddr, size_t *outIndex, int *outHasIndex)
+{
+    if (outAddr) {
+        *outAddr = 0;
+    }
+    if (outIndex) {
+        *outIndex = 0;
+    }
+    if (outHasIndex) {
+        *outHasIndex = 0;
+    }
+    if (!line) {
+        return 0;
+    }
+
+    const char *p = line;
+    while (*p && isspace((unsigned char)*p)) {
+        ++p;
+    }
+
+    const char *end = NULL;
+    uint64_t first = 0;
+    if (!addr2line_parseHexComponent(p, &end, &first)) {
+        return 0;
+    }
+    p = end;
+    if (*p == ':') {
+        ++p;
+        uint64_t second = 0;
+        if (!addr2line_parseHexComponent(p, &end, &second)) {
+            return 0;
         }
+        p = end;
+        while (*p && isspace((unsigned char)*p)) {
+            ++p;
+        }
+        if (*p != '\0') {
+            return 0;
+        }
+        if (outHasIndex) {
+            *outHasIndex = 1;
+        }
+        if (outIndex) {
+            *outIndex = (size_t)first;
+        }
+        if (outAddr) {
+            *outAddr = second;
+        }
+        return 1;
+    }
+
+    while (*p && isspace((unsigned char)*p)) {
+        ++p;
+    }
+    if (*p != '\0') {
         return 0;
+    }
+    if (outAddr) {
+        *outAddr = first;
     }
     return 1;
+}
+
+static int
+addr2line_isAddressLine(const char *line)
+{
+    return addr2line_parseAddressLine(line, NULL, NULL, NULL);
+}
+
+static int
+addr2line_isHunkTool(const char *toolPath)
+{
+    if (!toolPath || !*toolPath) {
+        return 0;
+    }
+    const char *name = toolPath;
+    const char *slash = strrchr(toolPath, '/');
+    if (slash && slash[1]) {
+        name = slash + 1;
+    }
+    if (strstr(name, "hunk-addr2line")) {
+        return 1;
+    }
+    if (strstr(name, "hunk_addr2line")) {
+        return 1;
+    }
+    return 0;
 }
 
 static int
@@ -166,13 +280,14 @@ addr2line_processIsAlive(void)
         addr2line.bufLen = 0;
         addr2line.expectFunc = 0;
         addr2line.expectFile = 0;
+        addr2line.useHunkQuery = 0;
         return 0;
     }
     return 1;
 }
 
 static int
-addr2line_writeQuery(uint64_t addr)
+addr2line_writeQuery(uint64_t addr, size_t index)
 {
     if (!addr2line.in) {
         return 0;
@@ -187,9 +302,14 @@ addr2line_writeQuery(uint64_t addr)
 
     errno = 0;
     int ok = 1;
-    if (fprintf(addr2line.in, "0x%llx\n", (unsigned long long)addr) < 0) {
+    if (addr2line.useHunkQuery) {
+        if (fprintf(addr2line.in, "%zu:%llx\n", index, (unsigned long long)addr) < 0) {
+            ok = 0;
+        }
+    } else if (fprintf(addr2line.in, "0x%llx\n", (unsigned long long)addr) < 0) {
         ok = 0;
-    } else if (fflush(addr2line.in) != 0) {
+    }
+    if (ok && fflush(addr2line.in) != 0) {
         ok = 0;
     }
 
@@ -227,6 +347,7 @@ addr2line_start(const char *elf_path)
         return 0;
     }
     addr2line_missingTool[0] = '\0';
+    addr2line.useHunkQuery = addr2line_isHunkTool(exe);
 
     int to_child[2];
     int from_child[2];
@@ -281,6 +402,7 @@ addr2line_start(const char *elf_path)
         }
         kill(pid, SIGTERM);
         waitpid(pid, NULL, 0);
+        addr2line.useHunkQuery = 0;
         return 0;
     }
     setvbuf(addr2line.in, NULL, _IOLBF, 0);
@@ -308,6 +430,7 @@ addr2line_stop(void)
     addr2line.bufLen = 0;
     addr2line.expectFunc = 0;
     addr2line.expectFile = 0;
+    addr2line.useHunkQuery = 0;
 }
 
 int
@@ -336,11 +459,13 @@ addr2line_resolveDetailed(uint64_t addr, char *out_file, size_t file_cap, int *o
         return 0;
     }
     uint64_t queryAddr = addr;
-    uint64_t base = (uint64_t)debugger.machine.textBaseAddr;
-    if (base != 0 && queryAddr >= base) {
-        queryAddr -= base;
+    size_t queryIndex = 0;
+    uint32_t queryAddr24 = (uint32_t)(addr & 0x00ffffffu);
+    if (!base_map_runtimeToDebugWithIndex(BASE_MAP_SECTION_TEXT, queryAddr24, &queryAddr24, &queryIndex)) {
+        queryIndex = 0;
     }
-    if (!addr2line_writeQuery(queryAddr)) {
+    queryAddr = (uint64_t)queryAddr24;
+    if (!addr2line_writeQuery(queryAddr, queryIndex)) {
         return 0;
     }
 
@@ -353,16 +478,28 @@ addr2line_resolveDetailed(uint64_t addr, char *out_file, size_t file_cap, int *o
             break;
         }
         if (addr2line_isAddressLine(line)) {
-            unsigned long long got = strtoull(line, NULL, 16);
-            if ((uint64_t)got == queryAddr) {
+            uint64_t gotAddr = 0;
+            size_t gotIndex = 0;
+            int hasIndex = 0;
+            if (addr2line_parseAddressLine(line, &gotAddr, &gotIndex, &hasIndex) &&
+                addr2line.useHunkQuery) {
+                if (hasIndex) {
+                    got_addr = (gotIndex == queryIndex && gotAddr == queryAddr) ? 1 : 0;
+                } else {
+                    got_addr = (gotAddr == queryAddr) ? 1 : 0;
+                }
+                if (!got_addr) {
+                    got_addr = 1;
+                }
+            } else if (addr2line_parseAddressLine(line, &gotAddr, &gotIndex, &hasIndex) &&
+                       !hasIndex &&
+                       gotAddr == queryAddr) {
                 got_addr = 1;
-                addr2line.expectFunc = 1;
-                addr2line.expectFile = 0;
             } else {
                 got_addr = 0;
-                addr2line.expectFunc = 0;
-                addr2line.expectFile = 0;
             }
+            addr2line.expectFunc = got_addr ? 1 : 0;
+            addr2line.expectFile = 0;
             free(line);
             line = NULL;
             continue;

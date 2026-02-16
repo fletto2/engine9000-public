@@ -537,6 +537,10 @@ cli_parseArgs(int argc, char **argv)
             debugger.cliStartFullscreen = 1;
             continue;
         }
+        if (strcmp(argv[i], "--no-opengl") == 0) {
+            debugger.cliDisableGlComposite = 1;
+            continue;
+        }
         if (strcmp(argv[i], "--no-rolling-record") == 0) {
             debugger.cliDisableRollingRecord = 1;
             continue;
@@ -593,6 +597,7 @@ cli_printUsage(const char *argv0)
     printf("  --headless                   Hide main window (useful for --smoke-test/--test)\n");
     printf("  --warp                       Start in speed multiplier mode\n");
     printf("  --fullscreen                 Start in UI fullscreen mode (ESC toggle)\n");
+    printf("  --no-opengl                  Disable OpenGL composite renderer\n");
     printf("  --no-rolling-record          Disable rolling state recording\n");
     printf("\n");
     printf("Neo Geo options (use with --neogeo):\n");

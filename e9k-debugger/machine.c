@@ -19,6 +19,7 @@
 #include "alloc.h"
 #include "libretro_host.h"
 #include "addr2line.h"
+#include "base_map.h"
 
 static void
 machine_clearRegs(machine_t *m)
@@ -118,29 +119,19 @@ machine_getBreakpoints(machine_t *m, const machine_breakpoint_t **out, int *coun
 uint32_t
 machine_textBaseToRelativeAddr(machine_t *m, uint32_t addr)
 {
-    uint32_t addr24 = addr & 0x00ffffffu;
-    if (!m) {
-        return addr24;
-    }
-    uint32_t base24 = m->textBaseAddr & 0x00ffffffu;
-    if (base24 != 0 && addr24 >= base24) {
-        return (addr24 - base24) & 0x00ffffffu;
-    }
-    return addr24;
+    (void)m;
+    uint32_t relativeAddr = addr & 0x00ffffffu;
+    (void)base_map_runtimeToDebug(BASE_MAP_SECTION_TEXT, addr, &relativeAddr);
+    return relativeAddr & 0x00ffffffu;
 }
 
 uint32_t
 machine_textBaseFromRelativeAddr(machine_t *m, uint32_t relativeAddr)
 {
-    uint32_t relative24 = relativeAddr & 0x00ffffffu;
-    if (!m) {
-        return relative24;
-    }
-    uint32_t base24 = m->textBaseAddr & 0x00ffffffu;
-    if (base24 != 0) {
-        return (relative24 + base24) & 0x00ffffffu;
-    }
-    return relative24;
+    (void)m;
+    uint32_t runtimeAddr = relativeAddr & 0x00ffffffu;
+    (void)base_map_debugToRuntime(BASE_MAP_SECTION_TEXT, relativeAddr, &runtimeAddr);
+    return runtimeAddr & 0x00ffffffu;
 }
 
 void

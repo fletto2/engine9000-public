@@ -19,6 +19,7 @@
 #include "alloc.h"
 #include "debug.h"
 #include "debugger.h"
+#include "base_map.h"
 #include "machine.h"
 
 static char *
@@ -1085,8 +1086,8 @@ print_debuginfo_objdump_stabs_loadSymbols(const char *elfPath, print_index_t *in
     uint32_t bssSize = 0;
     (void)print_debuginfo_objdump_stabs_getSectionSizes(elfPath, &dataSize, &bssSize);
 
-    uint32_t dataBase = debugger.machine.dataBaseAddr;
-    uint32_t bssBase = debugger.machine.bssBaseAddr;
+    uint32_t dataBase = base_map_getBasicBase(BASE_MAP_SECTION_DATA);
+    uint32_t bssBase = base_map_getBasicBase(BASE_MAP_SECTION_BSS);
     int preferData = print_debuginfo_objdump_stabs_preferData();
     if (print_debuginfo_objdump_stabs_debugEnabled()) {
         debug_printf("print: stabs sizes data=0x%X bss=0x%X bases data=0x%08X bss=0x%08X prefer=%s\n",
@@ -1434,27 +1435,26 @@ print_debuginfo_objdump_stabs_loadSymbols(const char *elfPath, print_index_t *in
                         if (!print_debuginfo_objdump_stabs_symbolMatch(symName, pv->name)) {
                             continue;
                         }
-                        uint32_t base = 0;
-                        const char *chosen = "unknown";
-                        if (strcmp(section, ".text") == 0 || strncmp(section, ".text.", 6) == 0) {
-                            base = debugger.machine.textBaseAddr;
-                            chosen = "text";
-                        } else if (strcmp(section, ".data") == 0 || strncmp(section, ".data.", 6) == 0) {
-                            base = dataBase;
-                            chosen = "data";
-                        } else if (strcmp(section, ".bss") == 0 || strncmp(section, ".bss.", 5) == 0) {
-                            base = bssBase;
-                            chosen = "bss";
-                        } else if (strcmp(section, ".rodata") == 0 || strncmp(section, ".rodata.", 8) == 0) {
-                            base = dataBase ? dataBase : debugger.machine.textBaseAddr;
-                            chosen = dataBase ? "data" : "text";
-                        }
-                        if (base == 0) {
+                        uint32_t runtimeAddr = 0;
+                        if (!base_map_symbolToRuntime(section, symVal, &runtimeAddr)) {
                             continue;
                         }
+                        uint32_t debugAddr = symVal & 0x00ffffffu;
+                        uint32_t base = runtimeAddr;
+                        if (base_map_runtimeToDebug(BASE_MAP_SECTION_TEXT, runtimeAddr, &debugAddr)) {
+                            base = (runtimeAddr - debugAddr) & 0x00ffffffu;
+                            strncpy(pv->chosenSection, "text", sizeof(pv->chosenSection) - 1);
+                        } else if (base_map_runtimeToDebug(BASE_MAP_SECTION_DATA, runtimeAddr, &debugAddr)) {
+                            base = (runtimeAddr - debugAddr) & 0x00ffffffu;
+                            strncpy(pv->chosenSection, "data", sizeof(pv->chosenSection) - 1);
+                        } else if (base_map_runtimeToDebug(BASE_MAP_SECTION_BSS, runtimeAddr, &debugAddr)) {
+                            base = (runtimeAddr - debugAddr) & 0x00ffffffu;
+                            strncpy(pv->chosenSection, "bss", sizeof(pv->chosenSection) - 1);
+                        } else {
+                            strncpy(pv->chosenSection, "unknown", sizeof(pv->chosenSection) - 1);
+                        }
+                        pv->addr = runtimeAddr & 0x00ffffffu;
                         pv->base = base;
-                        strncpy(pv->chosenSection, chosen, sizeof(pv->chosenSection) - 1);
-                        pv->addr = (base + symVal) & 0x00ffffffu;
                         pv->needsSymLookup = 0;
                         (void)print_debuginfo_objdump_stabs_addSymbol(index, pv->name, pv->addr);
                     }

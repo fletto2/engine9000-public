@@ -21,6 +21,7 @@
 #include "analyse.h"
 #include "debug.h"
 #include "debugger.h"
+#include "base_map.h"
 #include "file.h"
 
 #define ANALYSE_MAP_INITIAL_CAP 1024
@@ -98,11 +99,9 @@ analyse_locationSetFromResolved(analyse_location_entry *entry, const analyse_res
 static unsigned int
 analyse_adjustToolchainPc(unsigned int pc)
 {
-    uint32_t base = debugger.machine.textBaseAddr;
-    if (base != 0 && pc >= base) {
-        return pc - base;
-    }
-    return pc;
+    uint32_t adjusted = pc & 0x00ffffffu;
+    (void)base_map_runtimeToDebug(BASE_MAP_SECTION_TEXT, pc, &adjusted);
+    return adjusted;
 }
 
 static analyse_profile_entry *analyse_profileMap = NULL;

@@ -80,6 +80,10 @@ e9k_debug_reapply_memhooks(void);
 void
 e9k_debug_set_debug_base_callback(void (*cb)(uint32_t section, uint32_t base));
 
+// Optional host callback invoked when the target pushes a relocatable base entry (section, base, size).
+void
+e9k_debug_set_debug_base_stack_callback(void (*cb)(uint32_t section, uint32_t base, uint32_t size));
+
 // Optional host callback invoked when the target requests a breakpoint via a fake debug peripheral.
 void
 e9k_debug_set_debug_breakpoint_callback(void (*cb)(uint32_t addr));
@@ -90,3 +94,6 @@ e9k_debug_set_source_location_resolver(int (*resolver)(uint32_t pc24, uint64_t *
 
 void
 e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *user);
+
+void
+e9k_debug_push_debug_base(uint32_t section, uae_u32 base, uae_u32 size);

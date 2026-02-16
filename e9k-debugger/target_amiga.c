@@ -33,7 +33,21 @@ typedef struct target_amiga_romselect_extra {
     e9ui_component_t *df0Select;
     e9ui_component_t *df1Select;
     e9ui_component_t *hd0Select;
+    struct target_amiga_toolchain_preset_state *toolchainPresetState;
 } target_amiga_romselect_extra_t;
+
+typedef struct target_amiga_toolchain_preset_state {
+    e9ui_component_t *toolchainTextbox;
+    e9ui_component_t *vasmCheckbox;
+    e9ui_component_t *gccCheckbox;
+    int updating;
+} target_amiga_toolchain_preset_state_t;
+
+static const char target_amiga_toolchainPrefixVasm[] = "./system/v-hunk-";
+static const char target_amiga_toolchainPrefixGcc[] = "m68k-amigaos-";
+
+static void
+target_amiga_toolchainPresetSync(target_amiga_toolchain_preset_state_t *st, e9ui_context_t *ctx, const char *prefix);
 
 
 
@@ -51,9 +65,9 @@ target_amiga_applyActiveSettingsToCurrentSystem(void)
 static void
 target_amiga_setActiveDefaultsFromCurrentSystem(void)
 {
-  strncpy(rom_config_activeElfPath, debugger.config.amiga.libretro.exePath, sizeof(rom_config_activeElfPath) - 1);
-  strncpy(rom_config_activeSourceDir, debugger.config.amiga.libretro.sourceDir, sizeof(rom_config_activeSourceDir) - 1);
-  strncpy(rom_config_activeToolchainPrefix, debugger.config.amiga.libretro.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
+    strncpy(rom_config_activeElfPath, debugger.config.amiga.libretro.exePath, sizeof(rom_config_activeElfPath) - 1);
+    strncpy(rom_config_activeSourceDir, debugger.config.amiga.libretro.sourceDir, sizeof(rom_config_activeSourceDir) - 1);
+    strncpy(rom_config_activeToolchainPrefix, debugger.config.amiga.libretro.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
 }
 
 static int
@@ -139,29 +153,28 @@ target_amiga_settingsSaveButtonDisabled(void)
 static void
 target_amiga_validateSettings(void)
 {
-  if (debugger.settingsEdit.amiga.libretro.audioBufferMs <= 0) {
-    debugger.settingsEdit.amiga.libretro.audioBufferMs = 50;
-  }
-  const char *uaePath = debugger.settingsEdit.amiga.libretro.romPath;
-  if (uaePath && *uaePath) {
-    if (!settings_pathHasUaeExtension(uaePath)) {
-      e9ui_showTransientMessage("UAE CONFIG MUST END WITH .uae");
-      return;
+    if (debugger.settingsEdit.amiga.libretro.audioBufferMs <= 0) {
+        debugger.settingsEdit.amiga.libretro.audioBufferMs = 50;
     }
-    if (!amiga_uaeWriteUaeOptionsToFile(uaePath)) {
-      e9ui_showTransientMessage("UAE SAVE FAILED");
-      return;
+    const char *uaePath = debugger.settingsEdit.amiga.libretro.romPath;
+    if (uaePath && *uaePath) {
+        if (!settings_pathHasUaeExtension(uaePath)) {
+            e9ui_showTransientMessage("UAE CONFIG MUST END WITH .uae");
+            return;
+        }
+        if (!amiga_uaeWriteUaeOptionsToFile(uaePath)) {
+            e9ui_showTransientMessage("UAE SAVE FAILED");
+            return;
+        }
     }
-  }
-  amiga_uaeClearPuaeOptions();
-  const char *saveDir = debugger.settingsEdit.amiga.libretro.saveDir[0] ?
-    debugger.settingsEdit.amiga.libretro.saveDir : debugger.settingsEdit.amiga.libretro.systemDir;
-  const char *romPath = debugger.settingsEdit.amiga.libretro.romPath;
-  rom_config_saveSettingsForRom(saveDir, romPath,
-				debugger.settingsEdit.amiga.libretro.exePath,
-				debugger.settingsEdit.amiga.libretro.sourceDir,
-				debugger.settingsEdit.amiga.libretro.toolchainPrefix);
-  
+    amiga_uaeClearPuaeOptions();
+    const char *saveDir = debugger.settingsEdit.amiga.libretro.saveDir[0] ?
+        debugger.settingsEdit.amiga.libretro.saveDir : debugger.settingsEdit.amiga.libretro.systemDir;
+    const char *romPath = debugger.settingsEdit.amiga.libretro.romPath;
+    rom_config_saveSettingsForRom(saveDir, romPath,
+                                  debugger.settingsEdit.amiga.libretro.exePath,
+                                  debugger.settingsEdit.amiga.libretro.sourceDir,
+                                  debugger.settingsEdit.amiga.libretro.toolchainPrefix);
 }
 
 static void
@@ -193,11 +206,11 @@ target_amiga_applyRomConfigForSelection(settings_romselect_state_t *st, const ch
 }
 
 static void
-  target_amiga_settingsSetConfigPaths(int hasElf, const char* elfPath, int hasSource, const char* sourceDir, int hasToolchain, const char*toolchainPrefix)
+target_amiga_settingsSetConfigPaths(int hasElf, const char *elfPath, int hasSource, const char *sourceDir, int hasToolchain, const char *toolchainPrefix)
 {
-  settings_config_setPath(debugger.settingsEdit.amiga.libretro.exePath, PATH_MAX, hasElf ? elfPath : "");
-  settings_config_setPath(debugger.settingsEdit.amiga.libretro.sourceDir, PATH_MAX, hasSource ? sourceDir : "");
-  settings_config_setValue(debugger.settingsEdit.amiga.libretro.toolchainPrefix, PATH_MAX, hasToolchain ? toolchainPrefix : "");
+    settings_config_setPath(debugger.settingsEdit.amiga.libretro.exePath, PATH_MAX, hasElf ? elfPath : "");
+    settings_config_setPath(debugger.settingsEdit.amiga.libretro.sourceDir, PATH_MAX, hasSource ? sourceDir : "");
+    settings_config_setValue(debugger.settingsEdit.amiga.libretro.toolchainPrefix, PATH_MAX, hasToolchain ? toolchainPrefix : "");
 }
 
 
@@ -239,6 +252,11 @@ target_amiga_settingsRomPathChanged(settings_romselect_state_t* st)
   if (extra && extra->hd0Select) {
     const char *hd0 = amiga_uaeGetHardDriveFolderPath();
     e9ui_fileSelect_setText(extra->hd0Select, hd0 ? hd0 : "");
+  }
+  if (extra && extra->toolchainPresetState) {
+    target_amiga_toolchainPresetSync(extra->toolchainPresetState,
+                                     NULL,
+                                     debugger.settingsEdit.amiga.libretro.toolchainPrefix);
   }
   settings_updateSaveLabel();
 }
@@ -398,6 +416,9 @@ target_amiga_validateAPI(void)
   if (!libretro_host_setDebugBaseCallback(debugger_onSetDebugBaseFromCore)) {
     debug_error("debug_base: core does not expose e9k_debug_set_debug_base_callback");
   }
+  if (!libretro_host_setDebugBaseStackCallback(debugger_onPushDebugBaseFromCore)) {
+    debug_error("debug_base_stack: core does not expose e9k_debug_set_debug_base_stack_callback");
+  }
   if (!libretro_host_setDebugBreakpointCallback(debugger_onAddBreakpointFromCore)) {
     debug_error("breakpoint: core does not expose e9k_debug_set_debug_breakpoint_callback");
   }
@@ -489,6 +510,90 @@ target_amiga_settingsHardDriveFolderChanged(e9ui_context_t *ctx, e9ui_component_
     settings_updateSaveLabel();
 }
 
+static int
+target_amiga_isVasmToolchainPrefix(const char *prefix)
+{
+    return (prefix && strcmp(prefix, target_amiga_toolchainPrefixVasm) == 0) ? 1 : 0;
+}
+
+static int
+target_amiga_isGccToolchainPrefix(const char *prefix)
+{
+    return (prefix && strcmp(prefix, target_amiga_toolchainPrefixGcc) == 0) ? 1 : 0;
+}
+
+static void
+target_amiga_toolchainPresetSync(target_amiga_toolchain_preset_state_t *st, e9ui_context_t *ctx, const char *prefix)
+{
+    if (!st) {
+        return;
+    }
+    int selectVasm = target_amiga_isVasmToolchainPrefix(prefix);
+    int selectGcc = target_amiga_isGccToolchainPrefix(prefix);
+    if (!selectVasm && !selectGcc) {
+        selectGcc = 1;
+    }
+    st->updating = 1;
+    if (st->vasmCheckbox) {
+        e9ui_checkbox_setSelected(st->vasmCheckbox, selectVasm ? 1 : 0, ctx);
+    }
+    if (st->gccCheckbox) {
+        e9ui_checkbox_setSelected(st->gccCheckbox, selectGcc ? 1 : 0, ctx);
+    }
+    st->updating = 0;
+}
+
+static void
+target_amiga_toolchainPrefixChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *text, void *user)
+{
+    target_amiga_toolchain_preset_state_t *st = (target_amiga_toolchain_preset_state_t *)user;
+    settings_toolchainPrefixChanged(ctx, comp, text, debugger.settingsEdit.amiga.libretro.toolchainPrefix);
+    target_amiga_toolchainPresetSync(st, ctx, text);
+}
+
+static void
+target_amiga_toolchainPresetApply(target_amiga_toolchain_preset_state_t *st, e9ui_context_t *ctx, const char *prefix)
+{
+    if (!st || !st->toolchainTextbox || !prefix) {
+        return;
+    }
+    e9ui_labeled_textbox_setText(st->toolchainTextbox, prefix);
+    settings_toolchainPrefixChanged(ctx,
+                                    st->toolchainTextbox,
+                                    prefix,
+                                    debugger.settingsEdit.amiga.libretro.toolchainPrefix);
+}
+
+static void
+target_amiga_toolchainPresetChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    target_amiga_toolchain_preset_state_t *st = (target_amiga_toolchain_preset_state_t *)user;
+    if (!st || st->updating) {
+        return;
+    }
+    st->updating = 1;
+    if (self == st->vasmCheckbox) {
+        if (selected) {
+            if (st->gccCheckbox) {
+                e9ui_checkbox_setSelected(st->gccCheckbox, 0, ctx);
+            }
+            target_amiga_toolchainPresetApply(st, ctx, target_amiga_toolchainPrefixVasm);
+        } else if (st->vasmCheckbox) {
+            e9ui_checkbox_setSelected(st->vasmCheckbox, 1, ctx);
+        }
+    } else if (self == st->gccCheckbox) {
+        if (selected) {
+            if (st->vasmCheckbox) {
+                e9ui_checkbox_setSelected(st->vasmCheckbox, 0, ctx);
+            }
+            target_amiga_toolchainPresetApply(st, ctx, target_amiga_toolchainPrefixGcc);
+        } else if (st->gccCheckbox) {
+            e9ui_checkbox_setSelected(st->gccCheckbox, 1, ctx);
+        }
+    }
+    st->updating = 0;
+}
+
 static void
 target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *out)
 {
@@ -546,13 +651,55 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
         e9ui_fileSelect_setOnChange(fsElf, settings_pathChanged, debugger.settingsEdit.amiga.libretro.exePath);
     }
 
+    target_amiga_toolchain_preset_state_t *toolchainPresetState =
+        (target_amiga_toolchain_preset_state_t *)alloc_calloc(1, sizeof(*toolchainPresetState));
     e9ui_component_t *ltToolchain = e9ui_labeled_textbox_make("TOOLCHAIN PREFIX",
                                                               120,
-                                                              600,
-                                                              settings_toolchainPrefixChanged,
-                                                              debugger.settingsEdit.amiga.libretro.toolchainPrefix);
+                                                              0,
+                                                              target_amiga_toolchainPrefixChanged,
+                                                              toolchainPresetState);
     if (ltToolchain) {
         e9ui_labeled_textbox_setText(ltToolchain, debugger.settingsEdit.amiga.libretro.toolchainPrefix);
+        if (toolchainPresetState) {
+            toolchainPresetState->toolchainTextbox = ltToolchain;
+        }
+    }
+
+    e9ui_component_t *toolchainVasmCheckbox = NULL;
+    e9ui_component_t *toolchainGccCheckbox = NULL;
+    e9ui_component_t *toolchainRow = NULL;
+    e9ui_component_t *toolchainRowCenter = NULL;
+    if (toolchainPresetState) {
+        toolchainVasmCheckbox = e9ui_checkbox_make("vasm", 0, target_amiga_toolchainPresetChanged, toolchainPresetState);
+        toolchainGccCheckbox = e9ui_checkbox_make("gcc", 1, target_amiga_toolchainPresetChanged, toolchainPresetState);
+        toolchainPresetState->vasmCheckbox = toolchainVasmCheckbox;
+        toolchainPresetState->gccCheckbox = toolchainGccCheckbox;
+        target_amiga_toolchainPresetSync(toolchainPresetState, ctx, debugger.settingsEdit.amiga.libretro.toolchainPrefix);
+    }
+
+    if (ltToolchain && toolchainVasmCheckbox && toolchainGccCheckbox) {
+        int vasmWidth = 0;
+        int gccWidth = 0;
+        e9ui_checkbox_measure(toolchainVasmCheckbox, ctx, &vasmWidth, NULL);
+        e9ui_checkbox_measure(toolchainGccCheckbox, ctx, &gccWidth, NULL);
+        int gap = e9ui_scale_px(ctx, 10);
+        if (gap <= 0) {
+            gap = 10;
+        }
+        toolchainRow = e9ui_hstack_make();
+        if (toolchainRow) {
+            e9ui_hstack_addFlex(toolchainRow, ltToolchain);
+            e9ui_hstack_addFixed(toolchainRow, e9ui_spacer_make(gap), gap);
+            e9ui_hstack_addFixed(toolchainRow, toolchainVasmCheckbox, vasmWidth);
+            e9ui_hstack_addFixed(toolchainRow, e9ui_spacer_make(gap), gap);
+            e9ui_hstack_addFixed(toolchainRow, toolchainGccCheckbox, gccWidth);
+        }
+        if (toolchainRow) {
+            toolchainRowCenter = e9ui_center_make(toolchainRow);
+            if (toolchainRowCenter) {
+                e9ui_center_setSize(toolchainRowCenter, 600, 0);
+            }
+        }
     }
 
     e9ui_component_t *fsBios = e9ui_fileSelect_make("KICKSTART FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
@@ -596,6 +743,7 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
         extra->df0Select = fsDf0;
         extra->df1Select = fsDf1;
         extra->hd0Select = fsHd0;
+        extra->toolchainPresetState = toolchainPresetState;
         if (romState) {
             romState->targetUser = extra;
         }
@@ -644,7 +792,13 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
             e9ui_stack_addFixed(body, fsElf);
             first = 0;
         }
-        if (ltToolchain) {
+        if (toolchainRowCenter) {
+            if (!first) {
+                e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
+            }
+            e9ui_stack_addFixed(body, toolchainRowCenter);
+            first = 0;
+        } else if (ltToolchain) {
             if (!first) {
                 e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
             }

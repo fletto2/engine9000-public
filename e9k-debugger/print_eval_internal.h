@@ -195,6 +195,7 @@ typedef struct print_index {
     uint32_t cacheTextBaseAddr;
     uint32_t cacheDataBaseAddr;
     uint32_t cacheBssBaseAddr;
+    uint64_t cacheBaseMapSignature;
     print_dwarf_node_t *nodes;
     int nodeCount;
     int nodeCap;

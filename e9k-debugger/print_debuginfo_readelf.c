@@ -18,6 +18,8 @@
 
 #include "alloc.h"
 #include "debugger.h"
+#include "debug.h"
+#include "base_map.h"
 
 static void
 print_debuginfo_readelf_trimRight(char *s)
@@ -530,25 +532,16 @@ print_debuginfo_readelf_addSymbol(print_index_t *index, const char *name, uint32
 }
 
 static uint32_t
-print_debuginfo_readelf_symbolRuntimeAddress(uint32_t symAddr, const char *section)
+print_debuginfo_readelf_symbolRuntimeAddress(uint32_t symAddr, const char *section, int hunkMode)
 {
-    uint32_t base = 0;
-    if (!section || !*section) {
-        return symAddr & 0x00ffffffu;
+    uint32_t runtimeAddr = symAddr & 0x00ffffffu;
+    int mapped = 0;
+    if (hunkMode) {
+        mapped = base_map_symbolToRuntimeHunk(section, symAddr, &runtimeAddr);
+    } else {
+        mapped = base_map_symbolToRuntime(section, symAddr, &runtimeAddr);
     }
-    if (strcmp(section, ".text") == 0 || strncmp(section, ".text.", 6) == 0) {
-        base = debugger.machine.textBaseAddr;
-    } else if (strcmp(section, ".data") == 0 || strncmp(section, ".data.", 6) == 0) {
-        base = debugger.machine.dataBaseAddr;
-    } else if (strcmp(section, ".bss") == 0 || strncmp(section, ".bss.", 5) == 0) {
-        base = debugger.machine.bssBaseAddr;
-    } else if (strcmp(section, ".rodata") == 0 || strncmp(section, ".rodata.", 8) == 0) {
-        base = debugger.machine.dataBaseAddr ? debugger.machine.dataBaseAddr : debugger.machine.textBaseAddr;
-    }
-    if (base == 0) {
-        return symAddr & 0x00ffffffu;
-    }
-    return (base + symAddr) & 0x00ffffffu;
+    return mapped ? (runtimeAddr & 0x00ffffffu) : (symAddr & 0x00ffffffu);
 }
 
 int
@@ -565,6 +558,7 @@ print_debuginfo_readelf_loadSymbols(const char *elfPath, print_index_t *index)
     if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump, "--syms", elfPath, 1)) {
         return 0;
     }
+    int hunkMode = debugger_toolchainUsesHunkAddr2line();
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         return 0;
@@ -604,11 +598,11 @@ print_debuginfo_readelf_loadSymbols(const char *elfPath, print_index_t *index)
                 break;
             }
         }
-        addr = print_debuginfo_readelf_symbolRuntimeAddress(addr, section);
         const char *name = tokens[count - 1];
         if (!name || !*name) {
             continue;
         }
+        addr = print_debuginfo_readelf_symbolRuntimeAddress(addr, section, hunkMode);
         print_debuginfo_readelf_addSymbol(index, name, addr);
     }
     pclose(fp);
@@ -619,6 +613,9 @@ int
 print_debuginfo_readelf_loadDwarfInfo(const char *elfPath, print_index_t *index)
 {
     if (!elfPath || !*elfPath || !index) {
+        return 0;
+    }
+    if (debugger_toolchainUsesHunkAddr2line()) {
         return 0;
     }
     char cmd[PATH_MAX * 2];

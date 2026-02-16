@@ -25,6 +25,8 @@
 #include "target.h"
 #define countof(x) (sizeof(x) / sizeof(x[0]))
 
+struct state_wrap_info;
+
 typedef struct e9k_debug_options {
     int redirectStdout;
     int redirectStderr; 
@@ -121,6 +123,7 @@ typedef struct e9k_debugger {
     int cliWindowH;
     int cliDisableRollingRecord;
     int cliStartFullscreen;
+    int cliDisableGlComposite;
     int cliHeadless;
     int cliWarp;
     int cliAudioVolume;
@@ -285,6 +288,9 @@ int
 debugger_toolchainBuildBinary(char *out, size_t cap, const char *tool);
 
 int
+debugger_toolchainUsesHunkAddr2line(void);
+
+int
 debugger_getAudioEnabled(void);
 
 void
@@ -300,7 +306,19 @@ void
 debugger_onSetDebugBaseFromCore(uint32_t section, uint32_t base);
 
 void
+debugger_onPushDebugBaseFromCore(uint32_t section, uint32_t base, uint32_t size);
+
+void
 debugger_setTextBaseAddress(uint32_t base);
+
+void
+debugger_setDataBaseAddress(uint32_t base);
+
+void
+debugger_setBssBaseAddress(uint32_t base);
+
+void
+debugger_applyStateWrapBases(const struct state_wrap_info *info);
 
 void
 debugger_onAddBreakpointFromCore(uint32_t addr);

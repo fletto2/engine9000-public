@@ -737,6 +737,12 @@ rom_config_setActiveDefaultsFromCurrentSystem(void)
     rom_config_activeInit = 1;
 }
 
+void
+rom_config_syncActiveFromCurrentSystem(void)
+{
+    rom_config_setActiveDefaultsFromCurrentSystem();
+}
+
 static void
 rom_config_applyActiveSettingsToCurrentSystem(void)
 {
@@ -849,7 +855,6 @@ rom_config_loadSettingsForSelectedRom(void)
         strncpy(rom_config_activeToolchainPrefix, data.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
         rom_config_activeToolchainPrefix[sizeof(rom_config_activeToolchainPrefix) - 1] = '\0';
     }
-
     rom_config_applyActiveSettingsToCurrentSystem();
     rom_config_freeData(&data);
 }
@@ -1078,7 +1083,6 @@ rom_config_saveOnExit(void)
         data.hasSource = rom_config_activeSourceDir[0] ? 1 : 0;
         data.hasToolchain = rom_config_activeToolchainPrefix[0] ? 1 : 0;
     }
-
     const machine_breakpoint_t *bps = NULL;
     int bpCount = 0;
     machine_getBreakpoints(&debugger.machine, &bps, &bpCount);
@@ -1192,7 +1196,6 @@ rom_config_saveSettingsForRom(const char *saveDir, const char *romPath,
         rom_config_activeToolchainPrefix[sizeof(rom_config_activeToolchainPrefix) - 1] = '\0';
         rom_config_activeInit = 1;
     }
-
     rom_config_writeJsonFile(jsonPath, romPath, &data);
     rom_config_freeData(&data);
 }

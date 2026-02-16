@@ -652,6 +652,8 @@ e9k-debugger/ Copyright (C) 2026 Enable Software Pty Ltd
 
 This project contains files with various licenses, unless otherwise specified assume GNU General Public License, version 2.
 
+Thanks to Frank Wille for the amiga line debug addr2line.c (tools/amiga/hunk_addr2line)
+
 ---
 
 ## Building

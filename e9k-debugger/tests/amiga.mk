@@ -1,4 +1,5 @@
 AMIGA_TESTS=test-amigasmoke \
+	    test-amigavasm \
 	    test-amigacoreoptions \
             test-amigaexample \
             test-amigasavestate \
@@ -6,7 +7,8 @@ AMIGA_TESTS=test-amigasmoke \
             test-amigalocals \
             test-amigastepping
 
-AMIGA_REMAKE=remake-test-amigacoreoptions \
+AMIGA_REMAKE=remake-test-amigavasm \
+	     remake-test-amigacoreoptions \
              remake-test-amigaexample \
              remake-test-amigasavestate \
              remake-test-amigaconfig \
@@ -17,6 +19,9 @@ AMIGA_REMAKE=remake-test-amigacoreoptions \
 
 make-test-amigalocals: all tests/amiga/locals/locals.adf
 	./e9k-debugger --amiga --source-dir=./tests/amiga/locals/ --uae=./tests/amiga/locals/locals.uae --hunk=./tests/amiga/locals/locals --make-test tests/results/amiga/locals
+
+make-test-amigavasm: all tests/amiga/vasm/vasm.adf
+	./e9k-debugger --amiga --source-dir=./tests/amiga/vasm/ --uae=./tests/amiga/vasm/vasm.uae --hunk=./tests/amiga/vasm/vasm --make-test tests/results/amiga/vasm
 
 make-test-amigaconfig: all 
 	./e9k-debugger --amiga --make-test tests/results/amiga/config
@@ -41,6 +46,9 @@ make-test-amigastepping: all tests/amiga/stepping/stepping.adf
 
 remake-test-amigalocals: all tests/amiga/locals/locals.adf
 	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/locals/ --uae=./tests/amiga/locals/locals.uae --hunk=./tests/amiga/locals/locals --remake-test tests/results/amiga/locals
+
+remake-test-amigavasm: all tests/amiga/vasm/vasm.adf
+	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/vasm/ --uae=./tests/amiga/vasm/vasm.uae --hunk=./tests/amiga/vasm/vasm --remake-test tests/results/amiga/vasm
 
 remake-test-amigaconfig: all 
 	./e9k-debugger --amiga --volume=0 --remake-test tests/results/amiga/config
@@ -74,6 +82,11 @@ test-amigaexample: all tests/amiga/example/example.adf
 test-amigalocals: all tests/amiga/locals/locals.adf
 	@printf "AMIGA LOCALS ($@) ..."
 	@./e9k-debugger $(HEADLESS) --volume=0 --amiga --source-dir=./tests/amiga/locals/ --uae=./tests/amiga/locals/locals.uae --hunk=./tests/amiga/locals/locals --test tests/results/amiga/locals >> test.log 2>&1
+	@echo " PASSED ✅"
+
+test-amigavasm: all tests/amiga/vasm/vasm.adf
+	@printf "AMIGA VASM ($@) ..."
+	@./e9k-debugger $(HEADLESS) --volume=0 --amiga --source-dir=./tests/amiga/vasm/ --uae=./tests/amiga/vasm/vasm.uae --hunk=./tests/amiga/vasm/vasm --test tests/results/amiga/vasm >> test.log 2>&1
 	@echo " PASSED ✅"
 
 test-amigacoreoptions: all tests/amiga/example/example.adf

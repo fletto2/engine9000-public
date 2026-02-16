@@ -9,6 +9,14 @@
 #define ENGINE_9000_DEBUG_BASE_DATA ((volatile ULONG*)0xFC0008)
 #define ENGINE_9000_DEBUG_BASE_BSS  ((volatile ULONG*)0xFC000C)
 #define ENGINE_9000_DEBUG_BREAK     ((volatile ULONG*)0xFC0010)
+#define ENGINE_9000_DEBUG_PUSH_BASE ((volatile ULONG*)0xFC0014)
+#define ENGINE_9000_DEBUG_PUSH_TYPE ((volatile ULONG*)0xFC0018)
+#define ENGINE_9000_DEBUG_PUSH_SIZE ((volatile ULONG*)0xFC001C)
+
+#define ENGINE_9000_DEBUG_SECTION_TEXT 0UL
+#define ENGINE_9000_DEBUG_SECTION_DATA 1UL
+#define ENGINE_9000_DEBUG_SECTION_BSS 2UL
+#define ENGINE_9000_DEBUG_INVALID_SIZE 0xFFFFFFFFUL
 
 #define HUNK_HEADER 0x000003F3UL
 #define HUNK_NAME 0x000003E8UL
@@ -23,6 +31,12 @@
 #define HUNK_DEBUG 0x000003F1UL
 #define HUNK_END 0x000003F2UL
 #define HUNK_RELOC32SHORT 0x000003FCUL
+#define HUNK_DREL32 0x000003F7UL
+#define HUNK_DREL16 0x000003F8UL
+#define HUNK_DREL8 0x000003F9UL
+#define HUNK_RELRELOC32 0x000003FDUL
+#define HUNK_ABSRELOC16 0x000003FEUL
+#define HUNK_PPC_CODE 0x000004E9UL
 
 #define HUNK_SIZE_MASK 0x3FFFFFFFUL
 
@@ -38,12 +52,35 @@
 
 typedef struct SegType {
   ULONG type;
+  ULONG sizeBytes;
 } SegType;
+
+static void
+main_pushBase(ULONG section, ULONG base, ULONG size)
+{
+  *ENGINE_9000_DEBUG_PUSH_BASE = base;
+  *ENGINE_9000_DEBUG_PUSH_TYPE = section;
+  *ENGINE_9000_DEBUG_PUSH_SIZE = size;
+}
 
 static BOOL
 ReadU32(BPTR fh, ULONG *out)
 {
   return (Read(fh, out, 4) == 4);
+}
+
+static BOOL
+ReadU16(BPTR fh, UWORD *out)
+{
+  UBYTE bytes[2];
+  if (!out) {
+    return FALSE;
+  }
+  if (Read(fh, bytes, 2) != 2) {
+    return FALSE;
+  }
+  *out = (UWORD)(((UWORD)bytes[0] << 8) | (UWORD)bytes[1]);
+  return TRUE;
 }
 
 static BOOL
@@ -65,7 +102,22 @@ FilePos(BPTR fh)
 }
 
 static BOOL
-SkipReloc(BPTR fh, BOOL shortOffsets)
+AlignLong(BPTR fh)
+{
+  LONG pos = FilePos(fh);
+  ULONG rem;
+  if (pos < 0) {
+    return FALSE;
+  }
+  rem = (ULONG)pos & 3UL;
+  if (rem == 0UL) {
+    return TRUE;
+  }
+  return SkipBytes(fh, 4UL - rem);
+}
+
+static BOOL
+SkipReloc(BPTR fh)
 {
   for (;;) {
     ULONG n, target;
@@ -75,16 +127,28 @@ SkipReloc(BPTR fh, BOOL shortOffsets)
       break;
     if (!ReadU32(fh, &target))
       return FALSE;
-    if (shortOffsets) {
-      ULONG longs = (n + 1) / 2;
-      if (!SkipLongs(fh, longs))
-        return FALSE;
-    } else {
-      if (!SkipLongs(fh, n))
-        return FALSE;
-    }
+    if (!SkipLongs(fh, n))
+      return FALSE;
   }
   return TRUE;
+}
+
+static BOOL
+SkipRelocShort(BPTR fh)
+{
+  for (;;) {
+    UWORD n = 0;
+    if (!ReadU16(fh, &n)) {
+      return FALSE;
+    }
+    if (n == 0) {
+      break;
+    }
+    if (!SkipBytes(fh, (ULONG)(n + 1U) * 2UL)) {
+      return FALSE;
+    }
+  }
+  return AlignLong(fh);
 }
 
 static BOOL
@@ -250,6 +314,7 @@ ParseHunkTypes(const STRPTR path, SegType **out, ULONG *outCount)
       } break;
 
       case HUNK_CODE:
+      case HUNK_PPC_CODE:
       case HUNK_DATA:
       case HUNK_BSS: {
         ULONG sz;
@@ -259,7 +324,8 @@ ParseHunkTypes(const STRPTR path, SegType **out, ULONG *outCount)
           Close(fh);
           return FALSE;
         }
-        types[i].type = hid;
+        types[i].type = (hid == HUNK_PPC_CODE) ? HUNK_CODE : hid;
+        types[i].sizeBytes = (sz & HUNK_SIZE_MASK) * 4UL;
         if (hid != HUNK_BSS) {
           ULONG bytes = (sz & HUNK_SIZE_MASK) * 4UL;
           if (!SkipBytes(fh, bytes)) {
@@ -273,8 +339,11 @@ ParseHunkTypes(const STRPTR path, SegType **out, ULONG *outCount)
 
       case HUNK_RELOC32:
       case HUNK_RELOC16:
-      case HUNK_RELOC8: {
-        if (!SkipReloc(fh, FALSE)) {
+      case HUNK_RELOC8:
+      case HUNK_DREL16:
+      case HUNK_DREL8:
+      case HUNK_ABSRELOC16: {
+        if (!SkipReloc(fh)) {
           printf(
               "ParseHunkTypes: SkipReloc failed hunk=%08x seg=%d pos=%d\n",  h, i, FilePos(fh));
           FreeVec(types);
@@ -283,8 +352,10 @@ ParseHunkTypes(const STRPTR path, SegType **out, ULONG *outCount)
         }
       } break;
 
-      case HUNK_RELOC32SHORT: {
-        if (!SkipReloc(fh, TRUE)) {
+      case HUNK_RELOC32SHORT:
+      case HUNK_DREL32:
+      case HUNK_RELRELOC32: {
+        if (!SkipRelocShort(fh)) {
           printf("ParseHunkTypes: SkipReloc(short) failed seg=%d pos=%d\n", i, FilePos(fh));
           FreeVec(types);
           Close(fh);
@@ -395,7 +466,15 @@ PrintSegList(BPTR seglist, const SegType *types, ULONG typeCount, int breakEnabl
     BPTR next = (BPTR)p[0];
     APTR base = (APTR)(p + 1);
 
-    ULONG t = (types && idx < typeCount) ? types[idx].type : 0;
+    int haveType = (types && idx < typeCount) ? 1 : 0;
+    ULONG t = haveType ? types[idx].type : 0;
+    ULONG sz = haveType ? types[idx].sizeBytes : ENGINE_9000_DEBUG_INVALID_SIZE;
+    ULONG pushSection = 0;
+    int push = 0;
+
+    if (sz == 0) {
+      sz = ENGINE_9000_DEBUG_INVALID_SIZE;
+    }
 
     {
       int isEntrySeg = (t == HUNK_CODE || (idx == 0 && t == 0));
@@ -413,24 +492,63 @@ PrintSegList(BPTR seglist, const SegType *types, ULONG typeCount, int breakEnabl
         *ENGINE_9000_DEBUG_BREAK = breakAddr2;
         haveBreak = 1;
       }
+      if (isEntrySeg) {
+        push = 1;
+        pushSection = ENGINE_9000_DEBUG_SECTION_TEXT;
+      }
     }
 
-    switch (t) {
-    case HUNK_DATA:
-      if (!haveData) {
-        printf("engine9000: setting .data base=%08x\n", (ULONG)base);      
+    if (haveType) {
+      switch (t) {
+      case HUNK_DATA:
+        if (!haveData) {
+          printf("engine9000: setting .data base=%08x\n", (ULONG)base);      
+          *ENGINE_9000_DEBUG_BASE_DATA = (ULONG)base;
+          haveData = 1;
+        }
+        push = 1;
+        pushSection = ENGINE_9000_DEBUG_SECTION_DATA;
+        break;
+      case HUNK_BSS:
+        if (!haveBss) {
+          printf("engine9000: setting .bss base=%08x\n", (ULONG)base);
+          *ENGINE_9000_DEBUG_BASE_BSS = (ULONG)base;
+          haveBss = 1;
+        }
+        push = 1;
+        pushSection = ENGINE_9000_DEBUG_SECTION_BSS;
+        break;
+      case HUNK_CODE:
+        push = 1;
+        pushSection = ENGINE_9000_DEBUG_SECTION_TEXT;
+        break;
+      }
+    } else {
+      if (idx == 0 && !haveText) {
+        printf("engine9000: fallback .text base=%08x\n", (ULONG)base);
+        *ENGINE_9000_DEBUG_BASE_TEXT = (ULONG)base;
+        haveText = 1;
+        push = 1;
+        pushSection = ENGINE_9000_DEBUG_SECTION_TEXT;
+      } else if (idx == 1 && !haveData) {
+        printf("engine9000: fallback .data base=%08x\n", (ULONG)base);
         *ENGINE_9000_DEBUG_BASE_DATA = (ULONG)base;
         haveData = 1;
-      }
-      break;
-    case HUNK_BSS:
-      if (!haveBss) {
-        printf("engine9000: setting .bss base=%08x\n", (ULONG)base);
+        push = 1;
+        pushSection = ENGINE_9000_DEBUG_SECTION_DATA;
+      } else if (idx == 2 && !haveBss) {
+        printf("engine9000: fallback .bss base=%08x\n", (ULONG)base);
         *ENGINE_9000_DEBUG_BASE_BSS = (ULONG)base;
         haveBss = 1;
+        push = 1;
+        pushSection = ENGINE_9000_DEBUG_SECTION_BSS;
       }
-      break;
     }      
+
+    if (push) {
+      printf("engine9000: push section=%u base=%08x size=%08x\n", (unsigned)pushSection, (ULONG)base, sz);
+      main_pushBase(pushSection, (ULONG)base, sz);
+    }
 
     seg = next;
     idx++;

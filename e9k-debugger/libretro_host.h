@@ -240,6 +240,9 @@ bool
 libretro_host_setDebugBaseCallback(void (*cb)(uint32_t section, uint32_t base));
 
 bool
+libretro_host_setDebugBaseStackCallback(void (*cb)(uint32_t section, uint32_t base, uint32_t size));
+
+bool
 libretro_host_setDebugBreakpointCallback(void (*cb)(uint32_t addr));
 
 bool

@@ -23,6 +23,7 @@
 #include "dasm.h"
 #include "addr2line.h"
 #include "machine.h"
+#include "base_map.h"
 #include "breakpoints.h"
 #include "libretro_host.h"
 #include "debug.h"
@@ -30,6 +31,7 @@
 #include "syntax_highlight.h"
 #include "syntax_highlight_asm.h"
 #include "print_eval.h"
+#include "hunk_fileline_cache.h"
 
 typedef struct source_pane_state {
     source_pane_mode_t viewMode; // C vs ASM vs HEX
@@ -173,6 +175,9 @@ source_pane_collectAsmSymbols(source_pane_state_t *st, const char *elf_path);
 
 static int
 source_pane_collectObjdumpTextAsmSymbols(source_pane_state_t *st, const char *elf_path);
+
+static int
+source_pane_collectObjdumpTextFiles(source_pane_state_t *st, const char *elf_path);
 
 static void
 source_pane_refreshAsmSymbols(e9ui_component_t *comp, source_pane_state_t *st);
@@ -844,6 +849,9 @@ source_pane_collectReadelfFiles(source_pane_state_t *st, const char *elfPath)
     if (!st || !elfPath || !*elfPath) {
         return 0;
     }
+    if (debugger_toolchainUsesHunkAddr2line()) {
+        return 0;
+    }
     char readelf[PATH_MAX];
     if (!debugger_toolchainBuildBinary(readelf, sizeof(readelf), "readelf")) {
         debug_error("source_pane: failed to build readelf tool name (prefix='%s')",
@@ -945,6 +953,9 @@ static int
 source_pane_collectStabsFiles(source_pane_state_t *st, const char *elfPath)
 {
     if (!st || !elfPath || !*elfPath) {
+        return 0;
+    }
+    if (debugger_toolchainUsesHunkAddr2line()) {
         return 0;
     }
     char objdump[PATH_MAX];
@@ -1302,6 +1313,10 @@ source_pane_collectAsmSymbols(source_pane_state_t *st, const char *elf_path)
         return added;
     }
 
+    if (debugger_toolchainUsesHunkAddr2line()) {
+        return source_pane_collectObjdumpTextAsmSymbols(st, elf_path);
+    }
+
     char readelf[PATH_MAX];
     if (!debugger_toolchainBuildBinary(readelf, sizeof(readelf), "readelf")) {
         return 0;
@@ -1534,21 +1549,22 @@ source_pane_resolveAsmAnchorAddr(uint64_t addr)
         return a;
     }
 
-    uint64_t base = (uint64_t)(debugger.machine.textBaseAddr & 0x00ffffffu);
-    if (base == 0) {
-        return a;
+    uint32_t asDebug = (uint32_t)a;
+    if (base_map_runtimeToDebug(BASE_MAP_SECTION_TEXT, (uint32_t)a, &asDebug)) {
+        uint64_t mapped = (uint64_t)(asDebug & 0x00ffffffu);
+        mapped &= ~1ull;
+        if (dasm_findIndexForAddr(mapped, &idx)) {
+            return mapped;
+        }
     }
 
-    uint64_t plus_base = (a + base) & 0x00ffffffull;
-    plus_base &= ~1ull;
-    if (dasm_findIndexForAddr(plus_base, &idx)) {
-        return plus_base;
-    }
-
-    uint64_t minus_base = (a - base) & 0x00ffffffull;
-    minus_base &= ~1ull;
-    if (dasm_findIndexForAddr(minus_base, &idx)) {
-        return minus_base;
+    uint32_t asRuntime = (uint32_t)a;
+    if (base_map_debugToRuntime(BASE_MAP_SECTION_TEXT, (uint32_t)a, &asRuntime)) {
+        uint64_t mapped = (uint64_t)(asRuntime & 0x00ffffffu);
+        mapped &= ~1ull;
+        if (dasm_findIndexForAddr(mapped, &idx)) {
+            return mapped;
+        }
     }
 
     return a;
@@ -1558,6 +1574,9 @@ static int
 source_pane_collectFunctionSymbols(source_pane_state_t *st, const char *elf_path, const char *source_file)
 {
     if (!st || !elf_path || !*elf_path || !debugger.elfValid) {
+        return 0;
+    }
+    if (debugger_toolchainUsesHunkAddr2line()) {
         return 0;
     }
 
@@ -1688,6 +1707,9 @@ static int
 source_pane_collectStabsFunctions(source_pane_state_t *st, const char *elf_path, const char *source_file)
 {
     if (!st || !elf_path || !*elf_path || !debugger.elfValid) {
+        return 0;
+    }
+    if (debugger_toolchainUsesHunkAddr2line()) {
         return 0;
     }
     char objdump[PATH_MAX];
@@ -1897,6 +1919,99 @@ source_pane_collectObjdumpTextFunctions(source_pane_state_t *st, const char *elf
     return added;
 }
 
+static int
+source_pane_collectObjdumpTextFiles(source_pane_state_t *st, const char *elf_path)
+{
+    if (!st || !elf_path || !*elf_path || !debugger.elfValid) {
+        return 0;
+    }
+    char objdump[PATH_MAX];
+    if (!debugger_toolchainBuildBinary(objdump, sizeof(objdump), "objdump")) {
+        return 0;
+    }
+    char objdump_exe[PATH_MAX];
+    if (!file_findInPath(objdump, objdump_exe, sizeof(objdump_exe))) {
+        return 0;
+    }
+    char cmd[PATH_MAX * 2];
+    if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdump_exe, "-t", elf_path, 1)) {
+        return 0;
+    }
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return 0;
+    }
+    if (!addr2line_start(elf_path)) {
+        pclose(fp);
+        return 0;
+    }
+
+    int added = 0;
+    char line[2048];
+    while (fgets(line, sizeof(line), fp)) {
+        char *tokens[16];
+        int count = 0;
+        char *cursor = line;
+        while (*cursor && isspace((unsigned char)*cursor)) {
+            ++cursor;
+        }
+        if (!*cursor || !isxdigit((unsigned char)*cursor)) {
+            continue;
+        }
+        while (count < (int)(sizeof(tokens) / sizeof(tokens[0]))) {
+            while (*cursor && isspace((unsigned char)*cursor)) {
+                ++cursor;
+            }
+            if (!*cursor) {
+                break;
+            }
+            tokens[count++] = cursor;
+            while (*cursor && !isspace((unsigned char)*cursor)) {
+                ++cursor;
+            }
+            if (*cursor) {
+                *cursor++ = '\0';
+            }
+        }
+        if (count < 4) {
+            continue;
+        }
+        uint64_t symbol_addr = 0;
+        if (!source_pane_parseHex64(tokens[0], &symbol_addr) || symbol_addr == 0) {
+            continue;
+        }
+        int text_symbol = 0;
+        for (int i = 1; i < count; ++i) {
+            if (strcmp(tokens[i], ".text") == 0 || strncmp(tokens[i], ".text.", 6) == 0) {
+                text_symbol = 1;
+                break;
+            }
+        }
+        if (!text_symbol) {
+            continue;
+        }
+        const char *symbol_name = tokens[count - 1];
+        if (!symbol_name || !*symbol_name || symbol_name[0] == '.') {
+            continue;
+        }
+
+        char resolved_file[PATH_MAX];
+        int function_line = 0;
+        if (!addr2line_resolve(symbol_addr, resolved_file, sizeof(resolved_file), &function_line)) {
+            continue;
+        }
+        if (function_line <= 0 || !resolved_file[0]) {
+            continue;
+        }
+        char resolved_path[PATH_MAX];
+        source_pane_resolveSourcePath(resolved_file, resolved_path, sizeof(resolved_path));
+        added += source_pane_addSourceFile(st, resolved_path);
+    }
+
+    pclose(fp);
+    return added;
+}
+
 static void
 source_pane_refreshSourceFunctions(e9ui_component_t *comp, source_pane_state_t *st, const char *source_file)
 {
@@ -2016,6 +2131,9 @@ source_pane_refreshSourceFiles(e9ui_component_t *comp, source_pane_state_t *st)
     source_pane_clearSourceFiles(st);
     (void)source_pane_collectReadelfFiles(st, elf);
     (void)source_pane_collectStabsFiles(st, elf);
+    if (st->sourceFileCount <= 0 && debugger_toolchainUsesHunkAddr2line()) {
+        (void)source_pane_collectObjdumpTextFiles(st, elf);
+    }
     int foundSourceFiles = st->sourceFileCount;
     if (foundSourceFiles <= 0) {
         debug_error("source_pane: no source files collected (elf='%s', sourceDir='%s', toolchain='%s')",
@@ -2041,6 +2159,9 @@ source_pane_resolveFileLine(const char *elf, const char *file, int line_no, uint
 {
     if (!elf || !*elf || !debugger.elfValid || !file || !*file || line_no <= 0 || !out_addr) {
         return 0;
+    }
+    if (debugger_toolchainUsesHunkAddr2line()) {
+        return hunk_fileline_cache_resolveFileLine(elf, file, line_no, out_addr);
     }
     char cmd[PATH_MAX * 2];
     char objdump[PATH_MAX];
@@ -2491,6 +2612,49 @@ source_pane_renderHighlightedLine(e9ui_context_t *ctx, e9ui_component_t *owner, 
     }
 }
 
+static int
+source_pane_resolveCurrentHighlightLine(const source_pane_state_t *st, const char *viewPath)
+{
+    if (!st || !viewPath || !viewPath[0]) {
+        return 0;
+    }
+    if (!st->curSrcPath[0] || st->curSrcLine <= 0) {
+        return 0;
+    }
+    if (!source_pane_fileMatches(viewPath, st->curSrcPath)) {
+        return 0;
+    }
+    return st->curSrcLine;
+}
+
+static int
+source_pane_findCurrentAddrRow(const uint64_t *addrs, int count, uint64_t curAddr)
+{
+    if (!addrs || count <= 0) {
+        return -1;
+    }
+    for (int i = 0; i < count; ++i) {
+        if (addrs[i] == curAddr) {
+            return i;
+        }
+    }
+    int best = -1;
+    for (int i = 0; i < count; ++i) {
+        if (addrs[i] <= curAddr) {
+            best = i;
+        } else {
+            break;
+        }
+    }
+    if (best < 0 || best + 1 >= count) {
+        return -1;
+    }
+    if (curAddr < addrs[best + 1]) {
+        return best;
+    }
+    return -1;
+}
+
 static void
 source_pane_clearHover(e9ui_component_t *self, source_pane_state_t *st)
 {
@@ -2582,11 +2746,47 @@ source_pane_extractHoverExprFallback(const char *line, int column, char *outExpr
     return 1;
 }
 
+static int
+source_pane_isIdentifierExpr(const char *expr)
+{
+    if (!expr || !*expr) {
+        return 0;
+    }
+    const unsigned char *p = (const unsigned char *)expr;
+    if (!(isalpha(*p) || *p == '_')) {
+        return 0;
+    }
+    ++p;
+    while (*p) {
+        if (!(isalnum(*p) || *p == '_')) {
+            return 0;
+        }
+        ++p;
+    }
+    return 1;
+}
+
+static void
+source_pane_sanitizeTooltipLine(char *text)
+{
+    if (!text) {
+        return;
+    }
+    for (char *p = text; *p; ++p) {
+        if (*p == '\n' || *p == '\r') {
+            *p = ' ';
+        }
+    }
+}
+
 static void
 source_pane_updateHoverTooltip(e9ui_component_t *self, e9ui_context_t *ctx, source_pane_state_t *st,
                                const e9ui_event_t *ev)
 {
-    if (!self || !ctx || !st || !ev || ev->type != SDL_MOUSEMOTION) {
+    if (!self || !ctx || !st) {
+        return;
+    }
+    if (ev && ev->type != SDL_MOUSEMOTION) {
         return;
     }
     if (st->viewMode != source_pane_mode_c) {
@@ -2597,8 +2797,8 @@ source_pane_updateHoverTooltip(e9ui_component_t *self, e9ui_context_t *ctx, sour
         source_pane_clearHover(self, st);
         return;
     }
-    int mx = ev->motion.x;
-    int my = ev->motion.y;
+    int mx = ev ? ev->motion.x : ctx->mouseX;
+    int my = ev ? ev->motion.y : ctx->mouseY;
     if (!source_pane_pointInBounds(self, mx, my)) {
         source_pane_clearHover(self, st);
         return;
@@ -2693,8 +2893,15 @@ source_pane_updateHoverTooltip(e9ui_component_t *self, e9ui_context_t *ctx, sour
         return;
     }
     const char *line = lines[row] ? lines[row] : "";
+    int relX = mx - textX;
+    int lineLen = (int)strlen(line);
+    int lineWidth = source_pane_measureSegment(useFont, line, 0, lineLen);
+    if (relX > lineWidth) {
+        source_pane_clearHover(self, st);
+        return;
+    }
     int lineNo = first + row;
-    int column = source_pane_columnFromX(useFont, line, mx - textX);
+    int column = source_pane_columnFromX(useFont, line, relX);
     char expr[256];
     expr[0] = '\0';
     if (!syntax_highlight_getHoverExpr(path, lineNo, column, expr, sizeof(expr))) {
@@ -2706,24 +2913,31 @@ source_pane_updateHoverTooltip(e9ui_component_t *self, e9ui_context_t *ctx, sour
     unsigned long pcReg = 0;
     (void)machine_findReg(&debugger.machine, "PC", &pcReg);
     uint32_t pc = (uint32_t)pcReg;
-    uint32_t now = SDL_GetTicks();
-    if (st->hoverActive &&
-        st->hoverLine == lineNo &&
-        st->hoverCol == column &&
-        st->hoverPc == pc &&
-        strcmp(st->hoverExpr, expr) == 0 &&
-        (now - st->hoverTick) < 120u) {
-        return;
-    }
+    int sameTarget = st->hoverActive &&
+                     st->hoverLine == lineNo &&
+                     strcmp(st->hoverExpr, expr) == 0;
     char tip[1024];
     tip[0] = '\0';
     if (!print_eval_eval(expr, tip, sizeof(tip))) {
         source_pane_clearHover(self, st);
         return;
     }
-    for (char *p = tip; *p; ++p) {
-        if (*p == '\n' || *p == '\r') {
-            *p = ' ';
+    source_pane_sanitizeTooltipLine(tip);
+    if (debugger_toolchainUsesHunkAddr2line() && source_pane_isIdentifierExpr(expr)) {
+        char derefExpr[288];
+        if (snprintf(derefExpr, sizeof(derefExpr), "*%s", expr) > 0) {
+            char derefTip[512];
+            derefTip[0] = '\0';
+            if (print_eval_eval(derefExpr, derefTip, sizeof(derefTip))) {
+                source_pane_sanitizeTooltipLine(derefTip);
+                if (derefTip[0]) {
+                    char combinedTip[1024];
+                    snprintf(combinedTip, sizeof(combinedTip), "%s\n%s", tip, derefTip);
+                    combinedTip[sizeof(combinedTip) - 1] = '\0';
+                    strncpy(tip, combinedTip, sizeof(tip) - 1);
+                    tip[sizeof(tip) - 1] = '\0';
+                }
+            }
         }
     }
     strncpy(st->hoverExpr, expr, sizeof(st->hoverExpr) - 1);
@@ -2733,9 +2947,11 @@ source_pane_updateHoverTooltip(e9ui_component_t *self, e9ui_context_t *ctx, sour
     st->hoverLine = lineNo;
     st->hoverCol = column;
     st->hoverPc = pc;
-    st->hoverTick = now;
+    st->hoverTick = SDL_GetTicks();
     st->hoverActive = 1;
-    e9ui_setTooltip(self, st->hoverTip);
+    if (!sameTarget) {
+        e9ui_setTooltip(self, st->hoverTip);
+    }
 }
 
 static void
@@ -3500,6 +3716,7 @@ source_pane_renderAsm(e9ui_component_t *self, e9ui_context_t *ctx)
         source_pane_renderStatusMessage(ctx, useFont, area, padPx, icol, "No disassembly available");
         return;
     }
+    int curRow = source_pane_findCurrentAddrRow(addrs, count, curAddr);
 
     int hexw = dasm_getAddrHexWidth();
     if (hexw < 6) {
@@ -3535,7 +3752,7 @@ source_pane_renderAsm(e9ui_component_t *self, e9ui_context_t *ctx)
     for (int i = 0; i < count; ++i) {
         uint64_t a = addrs[i];
         const char *ins = lines[i] ? lines[i] : "";
-        if (a == curAddr) {
+        if (i == curRow) {
             SDL_SetRenderDrawColor(ctx->renderer, 40, 72, 138, 255);
             SDL_Rect hl = { area.x + 2, y - 2, area.w - 4, metrics.lineHeight + 4 };
             SDL_RenderFillRect(ctx->renderer, &hl);
@@ -3596,6 +3813,7 @@ source_pane_renderHex(e9ui_component_t *self, e9ui_context_t *ctx)
         source_pane_renderStatusMessage(ctx, useFont, area, padPx, icol, "No disassembly available");
         return;
     }
+    int curRow = source_pane_findCurrentAddrRow(addrs, count, curAddr);
 
     int hexw = dasm_getAddrHexWidth();
     if (hexw < 6) {
@@ -3632,7 +3850,7 @@ source_pane_renderHex(e9ui_component_t *self, e9ui_context_t *ctx)
     for (int i = 0; i < count; ++i) {
         uint64_t a = addrs[i];
         const char *ins = lines[i] ? lines[i] : "";
-        if (a == curAddr) {
+        if (i == curRow) {
             SDL_SetRenderDrawColor(ctx->renderer, 40, 72, 138, 255);
             SDL_Rect hl = { area.x + 2, y - 2, area.w - 4, metrics.lineHeight + 4 };
             SDL_RenderFillRect(ctx->renderer, &hl);
@@ -3747,12 +3965,13 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
         source_pane_trackPosition(st);
     }
     if (st) {
-        source_pane_updateSourceLocation(st, 0);
+        source_pane_updateSourceLocation(st, st->scrollLocked ? 1 : 0);
         source_pane_refreshSourceFiles(self, st);
     }
     int manualView = st && st->manualSrcActive && st->manualSrcPath;
     const char *path = manualView ? st->manualSrcPath : (st ? st->curSrcPath : NULL);
     int curLine = manualView ? 0 : (st ? st->curSrcLine : 0);
+    int pcHighlightLine = source_pane_resolveCurrentHighlightLine(st, path);
     if (st) {
         const char *functionPath = path;
         if (st->manualSrcActive && st->manualSrcPath && st->manualSrcPath[0] == '\0') {
@@ -3873,7 +4092,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
         const char *ln = lines[i] ? lines[i] : "";
         int lineNo = first + i;
         // Highlight current line (blue shade)
-        if (curLine > 0 && lineNo == curLine) {
+        if (pcHighlightLine > 0 && lineNo == pcHighlightLine) {
             SDL_SetRenderDrawColor(ctx->renderer, 40, 72, 138, 255);
             SDL_Rect hl = { area.x + 2, y - 2, area.w - 4, lineHeight + 4 };
             SDL_RenderFillRect(ctx->renderer, &hl);
@@ -3930,6 +4149,9 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
         if (y > clipBottom) {
             break;
         }
+    }
+    if (st && st->hoverActive) {
+        source_pane_updateHoverTooltip(self, ctx, st, NULL);
     }
 
  done:
@@ -4219,7 +4441,7 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
             if (!source_pane_resolveFileLine(debugger.libretro.exePath, path, lineNo, &addr)) {
                 return 0;
             }
-            addr = (uint32_t)(((uint64_t)addr + (uint64_t)debugger.machine.textBaseAddr) & 0x00ffffffu);
+            (void)base_map_debugToRuntime(BASE_MAP_SECTION_TEXT, addr, &addr);
             machine_breakpoint_t *bp = machine_addBreakpoint(&debugger.machine, addr, 1);
             if (bp) {
                 strncpy(bp->file, path, sizeof(bp->file) - 1);
@@ -4562,7 +4784,7 @@ source_pane_asmSymbolSelectChanged(e9ui_context_t *ctx, e9ui_component_t *comp, 
         if (!source_pane_resolveFileLine(debugger.libretro.exePath, file_path, line, &runtime)) {
             return;
         }
-        runtime = (uint32_t)(((uint64_t)runtime + (uint64_t)debugger.machine.textBaseAddr) & 0x00ffffffu);
+        (void)base_map_debugToRuntime(BASE_MAP_SECTION_TEXT, runtime, &runtime);
         addr = (uint64_t)runtime;
     }
     uint64_t resolved = source_pane_resolveAsmAnchorAddr(addr);

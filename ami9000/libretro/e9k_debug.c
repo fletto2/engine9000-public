@@ -101,6 +101,7 @@ static int e9k_debug_prof_savedCachesize = -1;
 #endif
 
 static void (*e9k_debug_setDebugBaseCb)(uint32_t section, uint32_t base) = NULL;
+static void (*e9k_debug_pushDebugBaseCb)(uint32_t section, uint32_t base, uint32_t size) = NULL;
 static void (*e9k_debug_setDebugBreakpointCb)(uint32_t addr) = NULL;
 static int (*e9k_debug_sourceLocationResolver)(uint32_t pc24, uint64_t *out_location, void *user) = NULL;
 static void *e9k_debug_sourceLocationResolverUser = NULL;
@@ -285,6 +286,14 @@ e9k_debug_set_debug_base(uint32_t section, uae_u32 base)
 {
 	if (e9k_debug_setDebugBaseCb) {
 		e9k_debug_setDebugBaseCb(section, (uint32_t)base);
+	}
+}
+
+void
+e9k_debug_push_debug_base(uint32_t section, uae_u32 base, uae_u32 size)
+{
+	if (e9k_debug_pushDebugBaseCb) {
+		e9k_debug_pushDebugBaseCb(section, (uint32_t)base, (uint32_t)size);
 	}
 }
 
@@ -812,6 +821,12 @@ E9K_DEBUG_EXPORT void
 e9k_debug_set_debug_base_callback(void (*cb)(uint32_t section, uint32_t base))
 {
 	e9k_debug_setDebugBaseCb = cb;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_set_debug_base_stack_callback(void (*cb)(uint32_t section, uint32_t base, uint32_t size))
+{
+	e9k_debug_pushDebugBaseCb = cb;
 }
 
 E9K_DEBUG_EXPORT void

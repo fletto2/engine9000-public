@@ -24,6 +24,7 @@
 #include "alloc.h"
 #include "debug.h"
 #include "debugger.h"
+#include "base_map.h"
 #include "libretro.h"
 #include "libretro_host.h"
 #include "machine.h"
@@ -58,6 +59,32 @@ static char *print_eval_captureBuffer = NULL;
 static size_t print_eval_captureCap = 0;
 static size_t print_eval_captureLen = 0;
 static int print_eval_captureEnabled = 0;
+
+static uint64_t
+print_eval_baseMapSignature(void)
+{
+    uint64_t h = 1469598103934665603ull;
+    h ^= (uint64_t)base_map_getMode();
+    h *= 1099511628211ull;
+    size_t count = base_map_getStackCount();
+    h ^= (uint64_t)count;
+    h *= 1099511628211ull;
+    for (size_t i = 0; i < count; ++i) {
+        base_map_section_t section = BASE_MAP_SECTION_TEXT;
+        uint32_t base = 0;
+        uint32_t size = 0;
+        if (!base_map_getStackEntry(i, &section, &base, &size)) {
+            continue;
+        }
+        h ^= (uint64_t)((uint32_t)section & 0xffu);
+        h *= 1099511628211ull;
+        h ^= (uint64_t)(base & 0x00ffffffu);
+        h *= 1099511628211ull;
+        h ^= (uint64_t)size;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
 
 static int
 print_eval_debugEnabled(void)
@@ -631,11 +658,8 @@ print_eval_estimateStabsStackBase(const print_stabs_func_t *func,
     if (!func || !outBase) {
         return 0;
     }
-    uint32_t startAbs = func->startPc;
-    uint32_t textBase = debugger.machine.textBaseAddr;
-    if (textBase != 0) {
-        startAbs = (startAbs + textBase) & 0x00ffffffu;
-    }
+    uint32_t startAbs = func->startPc & 0x00ffffffu;
+    (void)base_map_debugToRuntime(BASE_MAP_SECTION_TEXT, startAbs, &startAbs);
     if (pcAbs <= startAbs) {
         *outBase = spNow;
         return 1;
@@ -802,10 +826,7 @@ print_eval_resolveLocalStabs(const char *name, print_index_t *index, print_value
     }
     uint32_t pc = (uint32_t)pcRaw & 0x00ffffffu;
     uint32_t pcRel = pc;
-    uint32_t base = debugger.machine.textBaseAddr;
-    if (base != 0 && pcRel >= base) {
-        pcRel -= base;
-    }
+    (void)base_map_runtimeToDebug(BASE_MAP_SECTION_TEXT, pc, &pcRel);
 
     int funcIndex = -1;
     uint32_t bestStart = 0;
@@ -1064,6 +1085,7 @@ print_eval_clearIndex(print_index_t *index)
     index->cacheTextBaseAddr = 0;
     index->cacheDataBaseAddr = 0;
     index->cacheBssBaseAddr = 0;
+    index->cacheBaseMapSignature = 0;
     index->elfPath[0] = '\0';
 }
 
@@ -1527,15 +1549,23 @@ print_eval_loadIndex(print_index_t *index)
     uint32_t curText = debugger.machine.textBaseAddr;
     uint32_t curData = debugger.machine.dataBaseAddr;
     uint32_t curBss = debugger.machine.bssBaseAddr;
+    uint64_t curBaseMapSignature = print_eval_baseMapSignature();
     if (index->elfPath[0] != '\0' && strcmp(index->elfPath, elfPath) == 0 &&
         index->cacheTextBaseAddr == curText &&
         index->cacheDataBaseAddr == curData &&
-        index->cacheBssBaseAddr == curBss) {
+        index->cacheBssBaseAddr == curBss &&
+        index->cacheBaseMapSignature == curBaseMapSignature) {
         return 1;
     }
     if (print_eval_debugEnabled()) {
-        debug_printf("print: load debuginfo elf='%s' bases text=0x%08X data=0x%08X bss=0x%08X\n",
-                     elfPath, (unsigned)curText, (unsigned)curData, (unsigned)curBss);
+        debug_printf("print: load debuginfo elf='%s' bases text=0x%08X data=0x%08X bss=0x%08X mode=%u stack=%zu sig=0x%llX\n",
+                     elfPath,
+                     (unsigned)curText,
+                     (unsigned)curData,
+                     (unsigned)curBss,
+                     (unsigned)base_map_getMode(),
+                     base_map_getStackCount(),
+                     (unsigned long long)curBaseMapSignature);
     }
     uint64_t t0 = 0;
     if (print_eval_perfEnabled()) {
@@ -1547,6 +1577,7 @@ print_eval_loadIndex(print_index_t *index)
     index->cacheTextBaseAddr = curText;
     index->cacheDataBaseAddr = curData;
     index->cacheBssBaseAddr = curBss;
+    index->cacheBaseMapSignature = curBaseMapSignature;
     print_debuginfo_readelf_loadSymbols(elfPath, index);
     uint64_t tSymbols = 0;
     if (print_eval_perfEnabled()) {
@@ -1565,7 +1596,7 @@ print_eval_loadIndex(print_index_t *index)
     if (print_eval_debugEnabled()) {
         debug_printf("print: readelf pass nodes=%d symbols=%d\n", index->nodeCount, index->symbolCount);
     }
-    if (index->nodeCount == 0) {
+    if (index->nodeCount == 0 && !debugger_toolchainUsesHunkAddr2line()) {
         if (print_eval_debugEnabled()) {
             debug_printf("print: falling back to objdump -G (STABS)\n");
         }
@@ -2102,9 +2133,17 @@ print_eval_parsePrimary(const char **cursor, print_index_t *index, print_value_t
         print_symbol_t *sym = print_eval_findSymbol(index, ident);
         if (sym) {
             print_type_t *type = print_eval_defaultU32(index);
-            *out = print_eval_makeAddressValue(type, sym->addr);
-            if (print_eval_debugEnabled()) {
-                debug_printf("print: resolved sym '%s' -> addr=0x%08X (default u32)\n", ident, (unsigned)sym->addr);
+            if (debugger_toolchainUsesHunkAddr2line()) {
+                *out = print_eval_makeImmediateValue(type, (uint64_t)sym->addr);
+                if (print_eval_debugEnabled()) {
+                    debug_printf("print: resolved hunk sym '%s' -> ptr=0x%08X (immediate)\n",
+                                 ident, (unsigned)sym->addr);
+                }
+            } else {
+                *out = print_eval_makeAddressValue(type, sym->addr);
+                if (print_eval_debugEnabled()) {
+                    debug_printf("print: resolved sym '%s' -> addr=0x%08X (default u32)\n", ident, (unsigned)sym->addr);
+                }
             }
             return 1;
         }
@@ -2749,6 +2788,20 @@ print_eval_resolveAddress(const char *expr, uint32_t *outAddr, size_t *outSize)
         return 0;
     }
     if (!value.hasAddress) {
+        if (debugger_toolchainUsesHunkAddr2line() && value.hasImmediate) {
+            print_type_t *resolvedImm = print_eval_resolveType(value.type);
+            size_t sizeImm = 0;
+            if (resolvedImm && resolvedImm->byteSize > 0) {
+                sizeImm = resolvedImm->byteSize;
+            }
+            if (sizeImm == 0) {
+                sizeImm = 4;
+            }
+            *outAddr = (uint32_t)(value.immediate & 0x00ffffffu);
+            *outSize = sizeImm;
+            print_eval_freeTempTypes(tempTypes);
+            return 1;
+        }
         print_eval_freeTempTypes(tempTypes);
         return 0;
     }
@@ -2875,4 +2928,10 @@ print_eval_eval(const char *expr, char *out, size_t cap)
     print_eval_captureLen = 0;
     print_eval_freeTempTypes(tempTypes);
     return out[0] != '\0';
+}
+
+void
+print_eval_invalidateCache(void)
+{
+    print_eval_clearIndex(&print_eval_index);
 }

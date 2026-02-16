@@ -988,9 +988,7 @@ state_buffer_restoreFrameNo(uint64_t frame_no)
     if (!state_wrap_parse(state, state_size, &info)) {
         return 0;
     }
-    debugger_setTextBaseAddress(info.textBaseAddr);
-    debugger.machine.dataBaseAddr = info.dataBaseAddr;
-    debugger.machine.bssBaseAddr = info.bssBaseAddr;
+    debugger_applyStateWrapBases(&info);
     if (!libretro_host_unserializeFrom(info.payload, info.payloadSize)) {
         return 0;
     }

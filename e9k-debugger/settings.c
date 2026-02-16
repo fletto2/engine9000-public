@@ -368,6 +368,7 @@ settings_save(void)
     target_setTarget(debugger.settingsEdit.target);
     crt_setEnabled(debugger.config.crtEnabled ? 1 : 0);
     debugger_libretroSelectConfig();
+    rom_config_syncActiveFromCurrentSystem();
     debugger_applyCoreOptions();
     debugger_refreshElfValid();
     debugger.settingsOk = settings_configIsOk();
@@ -486,7 +487,6 @@ settings_applyRomConfigForSelection(settings_romselect_state_t *st)
                                        &hasElf, &hasSource, &hasToolchain)) {
         return;
     }
-
     selectedTarget->settingsSetConfigPaths(hasElf, elfPath, hasSource, sourceDir, hasToolchain, toolchainPrefix);
     
     if (st->elfSelect) {
