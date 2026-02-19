@@ -65,7 +65,7 @@ static const console_cmd_entry_t console_cmd[] = {
     { "continue", "c", "continue", "Continue execution and defocus the prompt.", console_cmd_continue, NULL },
     { "diff", NULL, "diff <fromFrame> <toFrame> [size=8|16|32]", "Show RAM addresses that differ between two recorded frames.", console_cmd_diff, NULL },    
     { "loop", NULL, "loop <from> <to>\nloop\nloop clear", "Loop between two recorded frame numbers (decimal).", console_cmd_loop, NULL },
-    { "print", "p", "print <expr>\nprint addr <expr>", "Print an expression using DWARF + symbol info. Use 'print addr <expr>' to show the resolved runtime address.", console_cmd_print, console_cmd_completePrint },   
+    { "print", "p", "print <expr> [size=8|16|32]\nprint addr <expr>", "Print an expression using DWARF + symbol info. Use size=8|16|32 to force a memory read size, or 'print addr <expr>' to show the resolved runtime address.", console_cmd_print, console_cmd_completePrint },   
     { "protect", NULL, "protect\nprotect clear\nprotect del <addr> [size=8|16|32]\nprotect <addr> block [size=8|16|32]\nprotect <addr> set=0x... [size=8|16|32]", "Protect addresses by blocking writes or forcing a value (core-side).", console_cmd_protect, NULL },    
     { "next", "n", "next", "Step over the next line.", console_cmd_next, NULL },    
     { "finish", "f", "finish", "Step out of the current function.", console_cmd_finish, NULL },
@@ -73,7 +73,7 @@ static const console_cmd_entry_t console_cmd[] = {
     { "stepi", "i", "stepi", "Step one instruction.", console_cmd_stepi, NULL },
     { "train", NULL, "train <from> <to> [size=8|16|32]\ntrain ignore\ntrain clear", "Train by breaking on a value transition (from/to accept decimal or 0x...).", console_cmd_train, NULL },    
     { "transition", NULL, "transition <slide|explode|doom|flip|rbar|random|cycle|none>", "Set the transition mode for startup and fullscreen.", console_cmd_transition, console_cmd_completeTransition },
-    { "watch", "wa", "watch [addr] [r|w|rw] [size=8|16|32] [mask=0x...] [val=0x...] [old=0x...] [diff=0x...]\nwatch del <idx> \nwatch clear", "Set or list watchpoints.", console_cmd_watch, NULL },    
+    { "watch", "wa", "watch [addr|symbol] [r|w|rw] [size=8|16|32] [mask=0x...] [val=0x...] [old=0x...] [diff=0x...]\nwatch del <idx> \nwatch clear", "Set or list watchpoints.", console_cmd_watch, NULL },    
     { "write", NULL, "write <dest> <value>", "Write a hex value to an address or symbol.", console_cmd_write, console_cmd_completeWrite },
 
 };
@@ -313,6 +313,37 @@ console_cmd_parseSizeBitsOpt(const char *tok, uint32_t *out_size_bits)
         return -1;
     }
     *out_size_bits = (uint32_t)sz;
+    return 1;
+}
+
+static int
+console_cmd_readMemoryValueBe(uint32_t addr, size_t sizeBytes, uint32_t *outValue)
+{
+    if (outValue) {
+        *outValue = 0u;
+    }
+    if (!outValue || (sizeBytes != 1u && sizeBytes != 2u && sizeBytes != 4u)) {
+        return 0;
+    }
+
+    uint8_t buf[4] = {0, 0, 0, 0};
+    if (!libretro_host_debugReadMemory(addr, buf, sizeBytes)) {
+        return 0;
+    }
+
+    if (sizeBytes == 1u) {
+        *outValue = (uint32_t)buf[0];
+        return 1;
+    }
+    if (sizeBytes == 2u) {
+        *outValue = ((uint32_t)buf[0] << 8) | (uint32_t)buf[1];
+        return 1;
+    }
+
+    *outValue = ((uint32_t)buf[0] << 24) |
+                ((uint32_t)buf[1] << 16) |
+                ((uint32_t)buf[2] << 8) |
+                (uint32_t)buf[3];
     return 1;
 }
 
@@ -853,9 +884,14 @@ console_cmd_watch(int argc, char **argv)
 
     uint32_t addr = 0;
     if (!console_cmd_parseHex(argv[1], &addr)) {
-        debug_error("watch: expected address, got '%s'", argv[1]);
-        return 0;
+        size_t resolvedSize = 0;
+        if (!print_eval_resolveAddress(argv[1], &addr, &resolvedSize)) {
+            debug_error("watch: expected address or symbol, got '%s'", argv[1]);
+            return 0;
+        }
+        (void)resolvedSize;
     }
+    addr &= 0x00ffffffu;
 
     uint32_t op_mask = 0;
     uint32_t diff_operand = 0;
@@ -1397,51 +1433,35 @@ static int
 console_cmd_print(int argc, char **argv)
 {
     if (argc < 2) {
-        debug_printf("Usage: print <expr>\n");
+        debug_printf("Usage: print <expr> [size=8|16|32]\n");
         debug_printf("       print addr <expr>\n");
         return 0;
     }
+
+    int addrMode = 0;
+    int startIndex = 1;
     if (argc >= 3 && strcasecmp(argv[1], "addr") == 0) {
-        char addrExpr[512];
-        addrExpr[0] = '\0';
-        size_t addrUsed = 0;
-        for (int i = 2; i < argc; ++i) {
-            const char *arg = argv[i];
-            if (!arg) {
-                continue;
-            }
-            size_t len = strlen(arg);
-            if (addrUsed > 0 && addrUsed < sizeof(addrExpr) - 1) {
-                addrExpr[addrUsed++] = ' ';
-                addrExpr[addrUsed] = '\0';
-            }
-            if (addrUsed + len >= sizeof(addrExpr)) {
-                len = sizeof(addrExpr) - 1 - addrUsed;
-            }
-            memcpy(addrExpr + addrUsed, arg, len);
-            addrUsed += len;
-            addrExpr[addrUsed] = '\0';
-        }
-        if (addrExpr[0] == '\0') {
-            debug_printf("Usage: print addr <expr>\n");
-            return 0;
-        }
-        uint32_t addr = 0;
-        size_t size = 0;
-        if (!print_eval_resolveAddress(addrExpr, &addr, &size)) {
-            debug_error("print: failed to resolve address '%s'", addrExpr);
-            return 0;
-        }
-        (void)size;
-        debug_printf("%s: 0x%06X\n", addrExpr, (unsigned)(addr & 0x00ffffffu));
-        return 1;
+        addrMode = 1;
+        startIndex = 2;
     }
+
     char expr[512];
     expr[0] = '\0';
     size_t used = 0;
-    for (int i = 1; i < argc; ++i) {
+    uint32_t sizeBitsOpt = 0u;
+    for (int i = startIndex; i < argc; ++i) {
         const char *arg = argv[i];
         if (!arg) {
+            continue;
+        }
+        uint32_t parsedSizeBits = 0u;
+        int sizeToken = console_cmd_parseSizeBitsOpt(arg, &parsedSizeBits);
+        if (sizeToken < 0) {
+            debug_error("print: invalid size '%s' (expected size=8|16|32)", arg);
+            return 0;
+        }
+        if (sizeToken > 0) {
+            sizeBitsOpt = parsedSizeBits;
             continue;
         }
         size_t len = strlen(arg);
@@ -1457,9 +1477,28 @@ console_cmd_print(int argc, char **argv)
         expr[used] = '\0';
     }
     if (expr[0] == '\0') {
-        debug_printf("Usage: print <expr>\n");
-        debug_printf("       print addr <expr>\n");
+        if (addrMode) {
+            debug_printf("Usage: print addr <expr>\n");
+        } else {
+            debug_printf("Usage: print <expr> [size=8|16|32]\n");
+            debug_printf("       print addr <expr>\n");
+        }
         return 0;
+    }
+
+    if (addrMode) {
+        uint32_t addr = 0;
+        size_t sizeBytes = 0;
+        if (!print_eval_resolveAddress(expr, &addr, &sizeBytes)) {
+            debug_error("print: failed to resolve address '%s'", expr);
+            return 0;
+        }
+        uint32_t bits = sizeBitsOpt;
+        if (bits == 0u) {
+            bits = (uint32_t)(sizeBytes > 0 ? sizeBytes * 8u : 32u);
+        }
+        debug_printf("%s: 0x%06X (%u bits)\n", expr, (unsigned)(addr & 0x00ffffffu), (unsigned)bits);
+        return 1;
     }
 
     // Fast-path simple numeric expressions so `print *0xADDR` works without an ELF.
@@ -1509,16 +1548,17 @@ console_cmd_print(int argc, char **argv)
             if (q && *q == '\0') {
                 if (deref) {
                     uint32_t addr = (uint32_t)number & 0x00ffffffu;
-                    uint8_t buf[4];
-                    if (!libretro_host_debugReadMemory(addr, buf, sizeof(buf))) {
+                    size_t sizeBytes = sizeBitsOpt ? (size_t)(sizeBitsOpt / 8u) : 4u;
+                    uint32_t val = 0u;
+                    if (!console_cmd_readMemoryValueBe(addr, sizeBytes, &val)) {
                         debug_error("print: failed to read memory at 0x%06X", (unsigned)addr);
                         return 0;
                     }
-                    uint32_t val = ((uint32_t)buf[0] << 24) |
-                                   ((uint32_t)buf[1] << 16) |
-                                   ((uint32_t)buf[2] << 8) |
-                                   (uint32_t)buf[3];
-                    debug_printf("*0x%06X: 0x%08X\n", (unsigned)addr, (unsigned)val);
+                    debug_printf("*0x%06X: %u (0x%X) [%u bits]\n",
+                                 (unsigned)addr,
+                                 (unsigned)val,
+                                 (unsigned)val,
+                                 (unsigned)(sizeBytes * 8u));
                     return 1;
                 }
                 debug_printf("%s: %llu (0x%llX)\n", expr,
@@ -1527,6 +1567,24 @@ console_cmd_print(int argc, char **argv)
                 return 1;
             }
         }
+    }
+
+    if (sizeBitsOpt != 0u) {
+        uint32_t addr = 0u;
+        size_t resolvedSizeBytes = 0u;
+        if (!print_eval_resolveAddress(expr, &addr, &resolvedSizeBytes)) {
+            debug_error("print: size override requires an address expression");
+            return 0;
+        }
+        size_t sizeBytes = (size_t)(sizeBitsOpt / 8u);
+        uint32_t val = 0u;
+        if (!console_cmd_readMemoryValueBe(addr, sizeBytes, &val)) {
+            debug_error("print: failed to read memory at 0x%06X", (unsigned)(addr & 0x00ffffffu));
+            return 0;
+        }
+        (void)resolvedSizeBytes;
+        debug_printf("%s: %u (0x%X) [%u bits]\n", expr, (unsigned)val, (unsigned)val, (unsigned)sizeBitsOpt);
+        return 1;
     }
 
     return print_eval_print(expr) ? 1 : 0;

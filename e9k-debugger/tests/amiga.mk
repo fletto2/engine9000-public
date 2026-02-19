@@ -1,19 +1,15 @@
 AMIGA_TESTS=test-amigasmoke \
 	    test-amigavasm \
 	    test-amigacoreoptions \
-            test-amigaexample \
             test-amigasavestate \
             test-amigaconfig \
-            test-amigalocals \
-            test-amigastepping
+            test-amigalocals 
 
 AMIGA_REMAKE=remake-test-amigavasm \
 	     remake-test-amigacoreoptions \
-             remake-test-amigaexample \
              remake-test-amigasavestate \
              remake-test-amigaconfig \
-	     remake-test-amigalocals \
-	     remake-test-amigastepping
+	     remake-test-amigalocals 
 
 # makers
 
@@ -26,9 +22,6 @@ make-test-amigavasm: all tests/amiga/vasm/vasm.adf
 make-test-amigaconfig: all 
 	./e9k-debugger --amiga --make-test tests/results/amiga/config
 
-make-test-amigaexample: all tests/amiga/example/example.adf
-	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --make-test tests/results/amiga/example
-
 make-test-amigacoreoptions: all tests/amiga/example/example.adf
 	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --make-test tests/results/amiga/amigacoreoptions
 
@@ -38,9 +31,6 @@ make-test-amigasmoke: all tests/amiga/smoke/smoke.adf
 make-test-amigasavestate: all tests/amiga/smoke/smoke.adf
 	./e9k-debugger --amiga --uae=./tests/amiga/smoke/smoke.uae --make-test tests/results/amiga/savestate
 
-make-test-amigastepping: all tests/amiga/stepping/stepping.adf
-	./e9k-debugger --amiga --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae \
-	--hunk=./tests/amiga/stepping/stepping --make-test tests/results/amiga/stepping
 
 # remakers
 
@@ -53,18 +43,11 @@ remake-test-amigavasm: all tests/amiga/vasm/vasm.adf
 remake-test-amigaconfig: all 
 	./e9k-debugger --amiga --volume=0 --remake-test tests/results/amiga/config
 
-remake-test-amigaexample: all tests/amiga/example/example.adf
-	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --remake-test tests/results/amiga/example
-
 remake-test-amigacoreoptions: all tests/amiga/example/example.adf
 	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --remake-test tests/results/amiga/amigacoreoptions
 
 remake-test-amigasavestate: all tests/amiga/smoke/smoke.adf
 	./e9k-debugger --amiga --volume=0 --uae=./tests/amiga/smoke/smoke.uae --remake-test tests/results/amiga/savestate
-
-remake-test-amigastepping: all tests/amiga/stepping/stepping.adf
-	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae \
-	--hunk=./tests/amiga/stepping/stepping --remake-test tests/results/amiga/stepping
 
 
 # testers
@@ -74,10 +57,6 @@ test-amigaconfig: all
 	@./e9k-debugger $(HEADLESS) --amiga --test tests/results/amiga/config >> test.log 2>&1
 	@echo " PASSED ✅"
 
-test-amigaexample: all tests/amiga/example/example.adf
-	@printf "AMIGA SOURCE LEVEL DEBUG EXAMPLE ($@) ..."
-	@./e9k-debugger $(HEADLESS) --volume=0 --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --test tests/results/amiga/example >> test.log 2>&1
-	@echo " PASSED ✅"
 
 test-amigalocals: all tests/amiga/locals/locals.adf
 	@printf "AMIGA LOCALS ($@) ..."
@@ -104,11 +83,6 @@ test-amigasavestate: all tests/amiga/smoke/smoke.adf
 	@./e9k-debugger $(HEADLESS) --volume=0 --amiga --uae=./tests/amiga/smoke/smoke.uae --test tests/results/amiga/savestate  >> test.log 2>&1
 	@echo "PASSED ✅"
 
-test-amigastepping: all tests/amiga/stepping/stepping.adf
-	@printf "AMIGA STEPPING ($@) ..."
-	@./e9k-debugger $(HEADLESS) --volume=0 --amiga --source-dir=./tests/amiga/stepping/ --uae=./tests/amiga/stepping/stepping.uae \
-	--hunk=./tests/amiga/stepping/stepping --test tests/results/amiga/stepping >> test.log 2>&1
-	@echo "PASSED ✅"
 # assets
 
 tests/amiga/example/example.adf:

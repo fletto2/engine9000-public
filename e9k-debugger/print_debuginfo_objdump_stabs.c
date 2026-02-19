@@ -1325,10 +1325,10 @@ print_debuginfo_objdump_stabs_loadSymbols(const char *elfPath, print_index_t *in
         pending_var_t *pv = &pending[pendingCount++];
         memset(pv, 0, sizeof(*pv));
         pv->name = print_debuginfo_objdump_stabs_strdup(name);
-        strncpy(pv->stabType, stabType, sizeof(pv->stabType) - 1);
+        snprintf(pv->stabType, sizeof(pv->stabType), "%s", stabType);
         pv->nValue = nValue;
         pv->base = base;
-        strncpy(pv->chosenSection, chosenSection, sizeof(pv->chosenSection) - 1);
+        snprintf(pv->chosenSection, sizeof(pv->chosenSection), "%s", chosenSection);
         pv->addr = addr;
         pv->typeId = typeId;
         pv->needsSymLookup = needsSymLookup;
@@ -1443,15 +1443,15 @@ print_debuginfo_objdump_stabs_loadSymbols(const char *elfPath, print_index_t *in
                         uint32_t base = runtimeAddr;
                         if (base_map_runtimeToDebug(BASE_MAP_SECTION_TEXT, runtimeAddr, &debugAddr)) {
                             base = (runtimeAddr - debugAddr) & 0x00ffffffu;
-                            strncpy(pv->chosenSection, "text", sizeof(pv->chosenSection) - 1);
+                            snprintf(pv->chosenSection, sizeof(pv->chosenSection), "%s", "text");
                         } else if (base_map_runtimeToDebug(BASE_MAP_SECTION_DATA, runtimeAddr, &debugAddr)) {
                             base = (runtimeAddr - debugAddr) & 0x00ffffffu;
-                            strncpy(pv->chosenSection, "data", sizeof(pv->chosenSection) - 1);
+                            snprintf(pv->chosenSection, sizeof(pv->chosenSection), "%s", "data");
                         } else if (base_map_runtimeToDebug(BASE_MAP_SECTION_BSS, runtimeAddr, &debugAddr)) {
                             base = (runtimeAddr - debugAddr) & 0x00ffffffu;
-                            strncpy(pv->chosenSection, "bss", sizeof(pv->chosenSection) - 1);
+                            snprintf(pv->chosenSection, sizeof(pv->chosenSection), "%s", "bss");
                         } else {
-                            strncpy(pv->chosenSection, "unknown", sizeof(pv->chosenSection) - 1);
+                            snprintf(pv->chosenSection, sizeof(pv->chosenSection), "%s", "unknown");
                         }
                         pv->addr = runtimeAddr & 0x00ffffffu;
                         pv->base = base;

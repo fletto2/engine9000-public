@@ -8,6 +8,7 @@
 
 #include "e9ui.h"
 #include "debugger.h"
+#include <string.h>
 
 typedef struct e9ui_button_state {
   char               *label;
@@ -381,6 +382,7 @@ e9ui_button_render(e9ui_component_t *self, e9ui_context_t *ctx)
     if (r.w <= 0 || r.h <= 0) {
         return;
     }
+    const int focused = (e9ui_getFocus(ctx) == self) ? 1 : 0;
     int pressed = st->pressed && !self->disabled;
     // Color palette (hex):
     // highlight: 0x7B7C7C, background: 0x5A5B5C, shadow: 0x1C1D1D, text: 0xE6E7E7
@@ -397,7 +399,7 @@ e9ui_button_render(e9ui_component_t *self, e9ui_context_t *ctx)
     SDL_Color sh = disabled ? e9ui_button_disabledBorderColor(&theme->shadow) : theme->shadow;
     SDL_Color textColor = disabled ? e9ui_button_disabledTextColor(&theme->text) : theme->text;
     int allow_cache = 1;
-    if (st->glowPulse && !disabled && !pressed) {
+    if ((st->glowPulse || focused) && !disabled && !pressed) {
         float t = (float)debugger_uiTicks() / 1000.0f;
         float phase = 0.5f + 0.5f * sinf(t * 3.2f);
         fillColor = e9ui_button_applyGlow(&fillColor, phase);
@@ -443,6 +445,11 @@ e9ui_button_render(e9ui_component_t *self, e9ui_context_t *ctx)
     }
     if (!drew_cached) {
         e9ui_button_drawBackground(ctx->renderer, r, fillColor, hi, sh, ed, radius);
+    }
+    if (focused && !disabled) {
+        SDL_SetRenderDrawColor(ctx->renderer, 96, 148, 204, 255);
+        SDL_Rect focusRect = { r.x - 1, r.y - 1, r.w + 2, r.h + 2 };
+        SDL_RenderDrawRect(ctx->renderer, &focusRect);
     }
     // Content: optional icon + text
     int cy = r.y + r.h/2;
@@ -600,6 +607,37 @@ e9ui_button_fireClick(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mo
     }
 }
 
+static int
+e9ui_button_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+{
+    if (!self || !ctx || !ev || self->disabled) {
+        return 0;
+    }
+    if (e9ui_getFocus(ctx) != self) {
+        return 0;
+    }
+    if (ev->type != SDL_KEYDOWN) {
+        return 0;
+    }
+
+    SDL_Keycode kc = ev->key.keysym.sym;
+    SDL_Keymod mods = ev->key.keysym.mod;
+    int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+    int shift = (mods & KMOD_SHIFT) ? 1 : 0;
+
+    if (!accel && kc == SDLK_TAB) {
+        e9ui_focusAdvance(ctx, self, shift);
+        return 1;
+    }
+
+    if (kc == SDLK_SPACE || kc == SDLK_RETURN || kc == SDLK_KP_ENTER) {
+        e9ui_button_fireClick(self, ctx, NULL);
+        return 1;
+    }
+
+    return 0;
+}
+
 static void
 e9ui_button_dtor(e9ui_component_t *self, e9ui_context_t *ctx)
 {
@@ -656,7 +694,9 @@ e9ui_button_make(const char *label, e9ui_button_cb onClick, void *user)
     c->onMouseDown = e9ui_button_onMouseDown;
     c->onMouseUp = e9ui_button_onMouseUp;
     c->onClick = e9ui_button_fireClick;
-    
+    c->handleEvent = e9ui_button_handleEvent;
+    c->focusable = 1;
+
     return c;
 }
 

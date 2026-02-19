@@ -29,27 +29,6 @@
 
 static int hotkeys_enabled = 1;
 
-static int
-hotkeys_componentContains(e9ui_component_t *root, e9ui_component_t *target)
-{
-    if (!root || !target) {
-        return 0;
-    }
-    if (root == target) {
-        return 1;
-    }
-    for (list_t *ptr = root->children; ptr; ptr = ptr->next) {
-        e9ui_component_child_t *container = (e9ui_component_child_t*)ptr->data;
-        if (!container || !container->component) {
-            continue;
-        }
-        if (hotkeys_componentContains(container->component, target)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 static e9ui_component_t *
 hotkeys_findTopModal(void)
 {
@@ -72,79 +51,6 @@ hotkeys_findTopModal(void)
         }
     }
     return NULL;
-}
-
-static void
-hotkeys_collectTextboxes(e9ui_component_t *root, e9ui_component_t ***list, int *count, int *cap)
-{
-    if (!root || !list || !count || !cap) {
-        return;
-    }
-    if (root->name && strcmp(root->name, "e9ui_textbox") == 0) {
-        if (*count >= *cap) {
-            int nextCap = (*cap > 0) ? (*cap * 2) : 16;
-            e9ui_component_t **next = (e9ui_component_t**)alloc_realloc(*list, (size_t)nextCap * sizeof(*next));
-            if (!next) {
-                return;
-            }
-            *list = next;
-            *cap = nextCap;
-        }
-        (*list)[*count] = root;
-        (*count)++;
-    }
-    for (list_t *ptr = root->children; ptr; ptr = ptr->next) {
-        e9ui_component_child_t *container = (e9ui_component_child_t*)ptr->data;
-        if (!container || !container->component || e9ui_getHidden(container->component)) {
-            continue;
-        }
-        hotkeys_collectTextboxes(container->component, list, count, cap);
-    }
-}
-
-static int
-hotkeys_modalCycleTextboxFocus(e9ui_context_t *ctx, int reverse)
-{
-    if (!ctx) {
-        return 0;
-    }
-    e9ui_component_t *modal = hotkeys_findTopModal();
-    if (!modal) {
-        return 0;
-    }
-    e9ui_component_t **textboxes = NULL;
-    int count = 0;
-    int cap = 0;
-    hotkeys_collectTextboxes(modal, &textboxes, &count, &cap);
-    if (count <= 0) {
-        if (textboxes) {
-            alloc_free(textboxes);
-        }
-        return 0;
-    }
-    e9ui_component_t *focus = e9ui_getFocus(ctx);
-    int start = 0;
-    if (focus && hotkeys_componentContains(modal, focus)) {
-        for (int i = 0; i < count; ++i) {
-            if (textboxes[i] == focus) {
-                start = reverse ? (i - 1) : (i + 1);
-                break;
-            }
-        }
-    }
-    if (count > 0) {
-        while (start < 0) {
-            start += count;
-        }
-        while (start >= count) {
-            start -= count;
-        }
-        e9ui_setFocus(ctx, textboxes[start]);
-    }
-    if (textboxes) {
-        alloc_free(textboxes);
-    }
-    return 1;
 }
 
 static void
@@ -285,13 +191,6 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
         return 0;
     }
     SDL_Keycode key = kev->keysym.sym;
-    SDL_Keymod mods = kev->keysym.mod;
-    if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
-        int reverse = (mods & KMOD_SHIFT) ? 1 : 0;
-        if (hotkeys_modalCycleTextboxFocus(ctx, reverse)) {
-            return 1;
-        }
-    }
     SDL_Keymod ctrlMods = (SDL_Keymod)(kev->keysym.mod & (KMOD_CTRL | KMOD_GUI));
     SDL_Keymod blockedMods = (SDL_Keymod)(kev->keysym.mod & KMOD_ALT);
     if (key == SDLK_i && ctrlMods != 0 && blockedMods == 0) {
@@ -418,6 +317,19 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
                 input_record_handleUiKey((unsigned)key, 1);
             }
             return 1;
+        }
+    }
+    if (key == SDLK_TAB) {
+        if (e9ui_getFocus(ctx) != NULL) {
+            return 0;
+        }
+        e9ui_component_t *modal = hotkeys_findTopModal();
+        if (modal) {
+            e9ui_component_t *first = e9ui_focusFindNext(modal, NULL, 0);
+            if (first) {
+                e9ui_setFocus(ctx, first);
+                return 1;
+            }
         }
     }
     if (ctx->dispatchHotkey) {

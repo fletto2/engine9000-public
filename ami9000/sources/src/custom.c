@@ -668,6 +668,7 @@ static int toscr_nr_planes_shifter, toscr_nr_planes_shifter_new;
 static int fetchwidth;
 static int toscr_delay_adjusted[2], toscr_delay_sh[2];
 static bool shdelay_disabled;
+static int custom_bplcon1DelayScrollEnabled = 1;
 static int delay_cycles, delay_cycles2;
 static int delay_lastcycle[2], delay_hsynccycle;
 static int vhposr_delay_offset;
@@ -2461,6 +2462,10 @@ static void compute_toscr_delay(int bplcon1)
 	int delay1 = (bplcon1 & 0x0f) | ((bplcon1 & 0x0c00) >> 6);
 	int delay2 = ((bplcon1 >> 4) & 0x0f) | (((bplcon1 >> 4) & 0x0c00) >> 6);
 	int delaymask = fetchmode_mask >> toscr_res;
+	if (!custom_bplcon1DelayScrollEnabled) {
+		delay1 = 0;
+		delay2 = 0;
+	}
 
 	compute_shifter_mask();
 
@@ -2469,6 +2474,10 @@ static void compute_toscr_delay(int bplcon1)
 
 	int shdelay1 = (bplcon1 >> 8) & 3;
 	int shdelay2 = (bplcon1 >> 12) & 3;
+	if (!custom_bplcon1DelayScrollEnabled) {
+		shdelay1 = 0;
+		shdelay2 = 0;
+	}
 	if (!currprefs.chipset_hr) {
 		// subpixel scrolling not possible
 		if (toscr_res == RES_HIRES) {
@@ -2502,6 +2511,13 @@ static void compute_toscr_delay(int bplcon1)
 	toscr_delay_adjusted[1] |= shdelay2 >> (RES_MAX - toscr_res);
 	toscr_nr_planes = GET_PLANES_LIMIT(bplcon0);
 #endif
+}
+
+void
+custom_setBplcon1DelayScrollEnabled(int enabled)
+{
+	custom_bplcon1DelayScrollEnabled = enabled ? 1 : 0;
+	bplcon1_written = true;
 }
 
 static void set_delay_lastcycle(void)

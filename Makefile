@@ -2,13 +2,16 @@ MINGW_CC=x86_64-w64-mingw32-gcc
 JOBS= -j12
 MEGA9000_DIR=mega9000
 MEGA9000_MAKEFILE=$(MEGA9000_DIR)/Makefile.libretro
+PUBLIC_DIR=../engine9000-public
+PUBLIC_MODULES=e9k-debugger geo9000 ami9000
+PUBLIC_SHARED=e9k-lib tools
 HOST_OS := $(shell uname -s)
 LIBRETRO_PLATFORM := unix
 ifeq ($(HOST_OS),Darwin)
 LIBRETRO_PLATFORM := osx
 endif
 
-.PHONY: all w64 clean test mega9000 mega9000-w64 mega9000-clean mega9000-support
+.PHONY: all w64 clean test mega9000 mega9000-w64 mega9000-clean mega9000-support update-public
 
 all:
 	$(MAKE) $(JOBS) -C ami9000 platform=$(LIBRETRO_PLATFORM)
@@ -72,3 +75,18 @@ mega9000-clean:
 	else \
 		echo "mega9000 is skipped (repo not present)."; \
 	fi
+
+update-public:
+	@mkdir -p "$(PUBLIC_DIR)"
+	@rsync -a --delete --exclude='.git/' --exclude='.git' Makefile "$(PUBLIC_DIR)/"
+	@for d in $(PUBLIC_MODULES) $(PUBLIC_SHARED); do \
+		if [ -d "$$d" ]; then \
+			rsync -a --delete \
+				--exclude='.git/' \
+				--exclude='.git' \
+				--exclude='build/' \
+				"$$d/" "$(PUBLIC_DIR)/$$d/"; \
+		else \
+			echo "$$d is skipped (repo not present)."; \
+		fi; \
+	done

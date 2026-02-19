@@ -419,7 +419,13 @@ e9k_debug_watchpointMatch(const e9k_debug_watchpoint_t *wp, uint32_t accessAddr,
 
 	if (op & E9K_WATCH_OP_ADDR_COMPARE_MASK) {
 		uint32_t mask = wp->addr_mask_operand;
-		if ((accessAddr & mask) != (wp->addr & mask)) {
+		if (mask != 0u) {
+			if ((accessAddr & mask) != (wp->addr & mask)) {
+				return 0;
+			}
+		}
+	} else {
+		if (accessAddr != wp->addr) {
 			return 0;
 		}
 	}
@@ -909,6 +915,9 @@ e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *u
 			break;
 		case E9K_DEBUG_OPTION_AMIGA_AUDIO3:
 			e9k_debug_setAudioChannelEnabled(3, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BPLCON1_DELAY_SCROLL:
+			custom_setBplcon1DelayScrollEnabled(argument != 0u);
 			break;
 		default:
 			break;

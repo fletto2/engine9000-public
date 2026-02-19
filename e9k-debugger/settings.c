@@ -34,6 +34,46 @@ settings_rebuildModalBody(e9ui_context_t *ctx);
 static e9ui_component_t *
 settings_makeSystemBadge(e9ui_context_t *ctx, target_iface_t* system);
 
+static e9ui_component_t *
+settings_findFirstVisibleTextbox(e9ui_component_t *comp)
+{
+    if (!comp) {
+        return NULL;
+    }
+    if (!e9ui_getHidden(comp) && !comp->disabled && !comp->collapsed) {
+        if (comp->name && strcmp(comp->name, "e9ui_textbox") == 0) {
+            return comp;
+        }
+        e9ui_child_iterator iter;
+        if (e9ui_child_iterateChildren(comp, &iter)) {
+            for (e9ui_child_iterator *it = e9ui_child_interateNext(&iter);
+                 it;
+                 it = e9ui_child_interateNext(&iter)) {
+                if (!it->child) {
+                    continue;
+                }
+                e9ui_component_t *found = settings_findFirstVisibleTextbox(it->child);
+                if (found) {
+                    return found;
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+static void
+settings_focusFirstVisibleTextbox(e9ui_context_t *ctx)
+{
+    if (!ctx || !e9ui->settingsModal) {
+        return;
+    }
+    e9ui_component_t *firstTextbox = settings_findFirstVisibleTextbox(e9ui->settingsModal);
+    if (firstTextbox) {
+        e9ui_setFocus(ctx, firstTextbox);
+    }
+}
+
 static int settings_pendingRebuild = 0;
 int settings_coreOptionsDirty = 0;
 
@@ -997,6 +1037,7 @@ settings_rebuildModalBody(e9ui_context_t *ctx)
     e9ui_component_t *overlay = settings_buildModalBody(ctx);
     if (overlay) {
         e9ui_modal_setBodyChild(e9ui->settingsModal, overlay, ctx);
+        settings_focusFirstVisibleTextbox(ctx);
     }
 }
 
@@ -1046,6 +1087,7 @@ settings_uiOpen(e9ui_context_t *ctx, void *user)
         e9ui_component_t *overlay = settings_buildModalBody(ctx);
         if (overlay) {
             e9ui_modal_setBodyChild(e9ui->settingsModal, overlay, ctx);
+            settings_focusFirstVisibleTextbox(ctx);
         }
     }
 }

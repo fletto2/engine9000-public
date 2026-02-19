@@ -192,7 +192,7 @@ static uint32_t frsecsize(FILE *f)
   uint32_t sz;
 
   sz = fr32(f);
-  if ((sz & HUNKF_MEMTYPE) == (HUNKF_FAST|HUNKF_CHIP))
+  if ((sz & HUNKF_MEMTYPE) == (uint32_t)(HUNKF_FAST|HUNKF_CHIP))
     fskip(f,4);  /* ignore extended memory attributes */
   return (sz & ~HUNKF_MEMTYPE) << 2;  /* return section size in bytes */
 }

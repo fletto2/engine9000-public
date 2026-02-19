@@ -79,6 +79,21 @@ runtime_restoreSuppressedBreakpoint(void)
 }
 
 static int
+runtime_isUiTestDeterministicMode(void)
+{
+    if (!ui_test_isEnabled()) {
+        return 0;
+    }
+    ui_test_mode_t mode = ui_test_getMode();
+    if (mode == UI_TEST_MODE_RECORD ||
+        mode == UI_TEST_MODE_COMPARE ||
+        mode == UI_TEST_MODE_REMAKE) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
 runtime_isBreakpointHit(void)
 {
     unsigned long pc = 0;
@@ -204,20 +219,25 @@ runtime_runLoop(void)
                         debugger.frameStepPending = 0;
                     }
                 } else if (running) {
-                    int mult = debugger.speedMultiplier > 0 ? debugger.speedMultiplier : 1;
-                    if (mult > 1) {
+                    if (runtime_isUiTestDeterministicMode()) {
                         debugger.frameTimeAccum = 0.0;
-                        for (int frameIndex = 0; frameIndex < mult; ++frameIndex) {
-                            input_record_applyFrame(debugger.frameCounter + 1);
-                            runtime_executeFrame(DEBUGGER_RUNMODE_CAPTURE, 0);
-                        }
+                        runtime_executeNextFrame();
                     } else {
-                        double fps = libretro_host_getTimingFps();
-                        double frameTime = (fps > 1e-3) ? (1.0 / fps) : (1.0 / 60.0);
-                        debugger.frameTimeAccum += dt;
-                        if (debugger.frameTimeAccum >= frameTime) {
-                            runtime_executeNextFrame();
-                            debugger.frameTimeAccum -= frameTime;
+                        int mult = debugger.speedMultiplier > 0 ? debugger.speedMultiplier : 1;
+                        if (mult > 1) {
+                            debugger.frameTimeAccum = 0.0;
+                            for (int frameIndex = 0; frameIndex < mult; ++frameIndex) {
+                                input_record_applyFrame(debugger.frameCounter + 1);
+                                runtime_executeFrame(DEBUGGER_RUNMODE_CAPTURE, 0);
+                            }
+                        } else {
+                            double fps = libretro_host_getTimingFps();
+                            double frameTime = (fps > 1e-3) ? (1.0 / fps) : (1.0 / 60.0);
+                            debugger.frameTimeAccum += dt;
+                            if (debugger.frameTimeAccum >= frameTime) {
+                                runtime_executeNextFrame();
+                                debugger.frameTimeAccum -= frameTime;
+                            }
                         }
                     }
                 }

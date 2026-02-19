@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <zlib.h>
 
 #include "ui_test.h"
 #include "debugger.h"
@@ -37,7 +38,23 @@ static int ui_test_pendingMissingFrameValid = 0;
 static uint64_t ui_test_pendingMissingFrame = 0;
 static uint8_t *ui_test_captureFrameBuf = NULL;
 static size_t ui_test_captureFrameCap = 0;
+static uint8_t *ui_test_expectedRawFrameBuf = NULL;
+static size_t ui_test_expectedRawFrameCap = 0;
+static uint8_t *ui_test_rawCompressedBuf = NULL;
+static size_t ui_test_rawCompressedCap = 0;
 static const char ui_test_sessionConfigName[] = ".e9k-debugger.cfg";
+static const char ui_test_rawMagicV2[8] = { 'E', '9', 'K', 'R', 'A', 'Z', '0', '1' };
+
+typedef struct ui_test_raw_frame_header_v2 {
+    char magic[8];
+    uint32_t version;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    uint32_t dataSize;
+    uint32_t flags;
+    uint32_t reserved;
+} ui_test_raw_frame_header_v2_t;
 
 static void
 ui_test_clearTempConfigOnFirstRun(void);
@@ -75,6 +92,21 @@ ui_test_formatFrameName(char *out, size_t cap, uint64_t frame)
         snprintf(out, cap, "%s%llu.png", prefix, (unsigned long long)frame);
     } else {
         snprintf(out, cap, "%llu.png", (unsigned long long)frame);
+    }
+}
+
+static void
+ui_test_formatFrameRawName(char *out, size_t cap, uint64_t frame)
+{
+    if (!out || cap == 0) {
+        return;
+    }
+    char prefix[32];
+    ui_test_prefix(prefix, sizeof(prefix));
+    if (prefix[0]) {
+        snprintf(out, cap, "%s%llu.rawz", prefix, (unsigned long long)frame);
+    } else {
+        snprintf(out, cap, "%llu.rawz", (unsigned long long)frame);
     }
 }
 
@@ -191,6 +223,8 @@ ui_test_clearFolderEntry(const char *path, void *user)
     const char *name = NULL;
     ui_test_basename(path, &name);
     if (ui_test_hasSuffixCaseInsensitive(name, ".png") ||
+        ui_test_hasSuffixCaseInsensitive(name, ".rawz") ||
+        ui_test_hasSuffixCaseInsensitive(name, ".raw") ||
         ui_test_hasSuffixCaseInsensitive(name, ".inp") ||
         ui_test_hasSuffixCaseInsensitive(name, ".evt") ||
         ui_test_hasSuffixCaseInsensitive(name, ".json")) {
@@ -214,7 +248,9 @@ ui_test_clearPngOnlyEntry(const char *path, void *user)
     (void)user;
     const char *name = NULL;
     ui_test_basename(path, &name);
-    if (ui_test_hasSuffixCaseInsensitive(name, ".png")) {
+    if (ui_test_hasSuffixCaseInsensitive(name, ".png") ||
+        ui_test_hasSuffixCaseInsensitive(name, ".rawz") ||
+        ui_test_hasSuffixCaseInsensitive(name, ".raw")) {
         remove(path);
     }
     return 1;
@@ -302,7 +338,17 @@ ui_test_shutdown(void)
         free(ui_test_captureFrameBuf);
         ui_test_captureFrameBuf = NULL;
     }
+    if (ui_test_expectedRawFrameBuf) {
+        free(ui_test_expectedRawFrameBuf);
+        ui_test_expectedRawFrameBuf = NULL;
+    }
+    if (ui_test_rawCompressedBuf) {
+        free(ui_test_rawCompressedBuf);
+        ui_test_rawCompressedBuf = NULL;
+    }
     ui_test_captureFrameCap = 0;
+    ui_test_expectedRawFrameCap = 0;
+    ui_test_rawCompressedCap = 0;
     ui_test_prevStride = 0;
     ui_test_prevWidth = 0;
     ui_test_prevHeight = 0;
@@ -564,25 +610,211 @@ ui_test_getUiEventPath(char *out, size_t cap)
 }
 
 static int
-ui_test_writeFrame(uint64_t frame, const uint8_t *data, int width, int height, size_t pitch)
+ui_test_pathExistsFile(const char *path)
+{
+    if (!path || !path[0]) {
+        return 0;
+    }
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return 0;
+    }
+    return S_ISREG(st.st_mode) ? 1 : 0;
+}
+
+static int
+ui_test_getFramePath(char *out, size_t cap, uint64_t frame)
 {
     char name[128];
     ui_test_formatFrameName(name, sizeof(name), frame);
-    char path[PATH_MAX];
-    if (!debugger_platform_pathJoin(path, sizeof(path), ui_test_folder, name)) {
+    return debugger_platform_pathJoin(out, cap, ui_test_folder, name);
+}
+
+static int
+ui_test_getFrameRawPath(char *out, size_t cap, uint64_t frame)
+{
+    char name[128];
+    ui_test_formatFrameRawName(name, sizeof(name), frame);
+    return debugger_platform_pathJoin(out, cap, ui_test_folder, name);
+}
+
+static int
+ui_test_writeFramePng(const char *path, const uint8_t *data, int width, int height, int pitch)
+{
+    if (!path || !path[0] || !data || width <= 0 || height <= 0 || pitch <= 0) {
         return 0;
     }
     SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(
-        (void *)data, width, height, 32, (int)pitch, SDL_PIXELFORMAT_XRGB8888);
+        (void *)data, width, height, 32, pitch, SDL_PIXELFORMAT_XRGB8888);
     if (!surface) {
         debug_error("ui-test: SDL_CreateRGBSurfaceWithFormatFrom failed: %s", SDL_GetError());
         return 0;
     }
-    if (IMG_SavePNG(surface, path) != 0) {
+    int ok = (IMG_SavePNG(surface, path) == 0) ? 1 : 0;
+    if (!ok) {
         debug_error("ui-test: IMG_SavePNG failed: %s", IMG_GetError());
     }
     SDL_FreeSurface(surface);
+    return ok;
+}
+
+static int
+ui_test_writeFrameRaw(const char *path, const uint8_t *data, int width, int height, int pitch)
+{
+    if (!path || !path[0] || !data || width <= 0 || height <= 0 || pitch <= 0) {
+        return 0;
+    }
+
+    size_t stride = (size_t)pitch;
+    size_t pixelBytes = stride * (size_t)height;
+    if (pixelBytes == 0 || pixelBytes > (size_t)UINT32_MAX) {
+        return 0;
+    }
+
+    if (!ui_test_rawCompressedBuf || ui_test_rawCompressedCap < compressBound((uLong)pixelBytes)) {
+        size_t wanted = (size_t)compressBound((uLong)pixelBytes);
+        uint8_t *buf = (uint8_t *)realloc(ui_test_rawCompressedBuf, wanted);
+        if (!buf) {
+            return 0;
+        }
+        ui_test_rawCompressedBuf = buf;
+        ui_test_rawCompressedCap = wanted;
+    }
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        return 0;
+    }
+
+    uLongf compressedSize = (uLongf)ui_test_rawCompressedCap;
+    int zResult = compress2((Bytef *)ui_test_rawCompressedBuf,
+                            &compressedSize,
+                            (const Bytef *)data,
+                            (uLong)pixelBytes,
+                            1);
+    if (zResult != Z_OK || compressedSize == 0 || compressedSize > (uLongf)UINT32_MAX) {
+        fclose(fp);
+        return 0;
+    }
+
+    ui_test_raw_frame_header_v2_t header;
+    memset(&header, 0, sizeof(header));
+    memcpy(header.magic, ui_test_rawMagicV2, sizeof(header.magic));
+    header.version = 2u;
+    header.width = (uint32_t)width;
+    header.height = (uint32_t)height;
+    header.stride = (uint32_t)stride;
+    header.dataSize = (uint32_t)compressedSize;
+    header.flags = 1u;
+    if (fwrite(&header, sizeof(header), 1, fp) != 1) {
+        fclose(fp);
+        return 0;
+    }
+    if (fwrite(ui_test_rawCompressedBuf, 1, (size_t)compressedSize, fp) != (size_t)compressedSize) {
+        fclose(fp);
+        return 0;
+    }
+    fclose(fp);
     return 1;
+}
+
+static int
+ui_test_loadFrameRaw(const char *path, const uint8_t **outPixels, size_t *outPitch, int *outWidth, int *outHeight)
+{
+    if (!path || !path[0] || !outPixels || !outPitch || !outWidth || !outHeight) {
+        return 0;
+    }
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp) {
+        return 0;
+    }
+
+    char magic[8];
+    if (fread(magic, 1, sizeof(magic), fp) != sizeof(magic)) {
+        fclose(fp);
+        return 0;
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return 0;
+    }
+
+    if (memcmp(magic, ui_test_rawMagicV2, sizeof(magic)) == 0) {
+        ui_test_raw_frame_header_v2_t header;
+        if (fread(&header, sizeof(header), 1, fp) != 1) {
+            fclose(fp);
+            return 0;
+        }
+        if (header.version != 2u ||
+            header.width == 0 ||
+            header.height == 0 ||
+            header.stride < (header.width * 4u) ||
+            header.dataSize == 0) {
+            fclose(fp);
+            return 0;
+        }
+
+        size_t stride = (size_t)header.stride;
+        size_t height = (size_t)header.height;
+        if (stride > (SIZE_MAX / height)) {
+            fclose(fp);
+            return 0;
+        }
+        size_t bytes = stride * height;
+        if (!ui_test_expectedRawFrameBuf || ui_test_expectedRawFrameCap < bytes) {
+            uint8_t *buf = (uint8_t *)realloc(ui_test_expectedRawFrameBuf, bytes);
+            if (!buf) {
+                fclose(fp);
+                return 0;
+            }
+            ui_test_expectedRawFrameBuf = buf;
+            ui_test_expectedRawFrameCap = bytes;
+        }
+
+        size_t dataSize = (size_t)header.dataSize;
+        if (!ui_test_rawCompressedBuf || ui_test_rawCompressedCap < dataSize) {
+            uint8_t *buf = (uint8_t *)realloc(ui_test_rawCompressedBuf, dataSize);
+            if (!buf) {
+                fclose(fp);
+                return 0;
+            }
+            ui_test_rawCompressedBuf = buf;
+            ui_test_rawCompressedCap = dataSize;
+        }
+        if (fread(ui_test_rawCompressedBuf, 1, dataSize, fp) != dataSize) {
+            fclose(fp);
+            return 0;
+        }
+
+        if ((header.flags & 1u) != 0u) {
+            uLongf destSize = (uLongf)bytes;
+            int zResult = uncompress((Bytef *)ui_test_expectedRawFrameBuf,
+                                     &destSize,
+                                     (const Bytef *)ui_test_rawCompressedBuf,
+                                     (uLong)dataSize);
+            if (zResult != Z_OK || (size_t)destSize != bytes) {
+                fclose(fp);
+                return 0;
+            }
+        } else {
+            if (dataSize != bytes) {
+                fclose(fp);
+                return 0;
+            }
+            memcpy(ui_test_expectedRawFrameBuf, ui_test_rawCompressedBuf, dataSize);
+        }
+
+        fclose(fp);
+        *outPixels = ui_test_expectedRawFrameBuf;
+        *outPitch = stride;
+        *outWidth = (int)header.width;
+        *outHeight = (int)header.height;
+        return 1;
+    }
+
+    fclose(fp);
+    return 0;
 }
 
 static int
@@ -595,16 +827,10 @@ ui_test_writeMismatchImage(uint64_t frame, const uint8_t *data, int width, int h
     if (!debugger_platform_pathJoin(path, sizeof(path), ui_test_folder, name)) {
         return 0;
     }
-    SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(
-        (void *)data, width, height, 32, (int)pitch, SDL_PIXELFORMAT_XRGB8888);
-    if (!surface) {
-        return 0;
-    }
-    if (IMG_SavePNG(surface, path) == 0 && outPath && cap > 0) {
+    if (ui_test_writeFramePng(path, data, width, height, (int)pitch) && outPath && cap > 0) {
         strncpy(outPath, path, cap - 1);
         outPath[cap - 1] = '\0';
     }
-    SDL_FreeSurface(surface);
     return 1;
 }
 
@@ -721,42 +947,128 @@ ui_test_updatePrevFrame(const uint8_t *data, int width, int height, size_t pitch
 }
 
 static int
-ui_test_compareFrame(uint64_t frame, const uint8_t *data, int width, int height, size_t pitch)
+ui_test_compareFramePixelsDualPitch(const uint8_t *actual,
+                                    size_t actualPitch,
+                                    const uint8_t *expected,
+                                    size_t expectedPitch,
+                                    int width,
+                                    int height)
 {
+    if (!actual || !expected || actualPitch < (size_t)width * 4 || expectedPitch < (size_t)width * 4) {
+        return 0;
+    }
+    const uint32_t mask = 0x00ffffffu;
+    for (int y = 0; y < height; ++y) {
+        const uint8_t *rowActual = actual + (size_t)y * actualPitch;
+        const uint8_t *rowExpected = expected + (size_t)y * expectedPitch;
+        for (int x = 0; x < width; ++x) {
+            const uint32_t *pa = (const uint32_t *)(rowActual + (size_t)x * 4);
+            const uint32_t *pe = (const uint32_t *)(rowExpected + (size_t)x * 4);
+            if (((*pa) & mask) != ((*pe) & mask)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int
+ui_test_getReferencePathForFailure(uint64_t frame,
+                                   const char *primaryPngPath,
+                                   const uint8_t *expectedPixels,
+                                   int expectedWidth,
+                                   int expectedHeight,
+                                   size_t expectedPitch,
+                                   char *outRefPath,
+                                   size_t outCap)
+{
+    if (!outRefPath || outCap == 0) {
+        return 0;
+    }
+    outRefPath[0] = '\0';
+    if (!expectedPixels || expectedWidth <= 0 || expectedHeight <= 0 || expectedPitch == 0) {
+        return 0;
+    }
+    if (primaryPngPath && primaryPngPath[0] && ui_test_pathExistsFile(primaryPngPath)) {
+        ui_test_copyPath(outRefPath, outCap, primaryPngPath);
+        return 1;
+    }
+
     char name[128];
-    ui_test_formatFrameName(name, sizeof(name), frame);
+    ui_test_formatMismatchName(name, sizeof(name), frame, "-ref.png");
     char path[PATH_MAX];
     if (!debugger_platform_pathJoin(path, sizeof(path), ui_test_folder, name)) {
         return 0;
     }
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        if (errno == ENOENT) {
-            ui_test_pendingMissingFrameValid = 1;
-            ui_test_pendingMissingFrame = frame;
+    if (!ui_test_writeFramePng(path,
+                               expectedPixels,
+                               expectedWidth,
+                               expectedHeight,
+                               (int)expectedPitch)) {
+        return 0;
+    }
+    ui_test_copyPath(outRefPath, outCap, path);
+    return 1;
+}
+
+static int
+ui_test_compareFrame(uint64_t frame, const uint8_t *data, int width, int height, size_t pitch)
+{
+    char framePngPath[PATH_MAX];
+    char rawPath[PATH_MAX];
+    if (!ui_test_getFramePath(framePngPath, sizeof(framePngPath), frame)) {
+        return 0;
+    }
+    const uint8_t *expectedPixels = NULL;
+    size_t expectedPitch = 0;
+    int expectedWidth = 0;
+    int expectedHeight = 0;
+    int loadedFromRaw = 0;
+    if (ui_test_getFrameRawPath(rawPath, sizeof(rawPath), frame)) {
+        if (ui_test_loadFrameRaw(rawPath,
+                                 &expectedPixels,
+                                 &expectedPitch,
+                                 &expectedWidth,
+                                 &expectedHeight)) {
+            loadedFromRaw = 1;
+        }
+    }
+    if (loadedFromRaw) {
+        if (expectedWidth == width &&
+            expectedHeight == height &&
+            ui_test_compareFramePixelsDualPitch(data, pitch, expectedPixels, expectedPitch, width, height)) {
             return 0;
         }
+
+        char refPath[PATH_MAX];
         char diffPath[PATH_MAX];
         char montagePath[PATH_MAX];
+        refPath[0] = '\0';
         diffPath[0] = '\0';
         montagePath[0] = '\0';
-        ui_test_writeMismatchImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
-        ui_test_writeDiffScript(frame, path, diffPath, montagePath, sizeof(montagePath));
-        debug_error("ui-test: stat failed for %s (%s)", path,
+        (void)ui_test_getReferencePathForFailure(frame,
+                                                 framePngPath,
+                                                 expectedPixels,
+                                                 expectedWidth,
+                                                 expectedHeight,
+                                                 expectedPitch,
+                                                 refPath,
+                                                 sizeof(refPath));
+        (void)ui_test_writeMismatchImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
+        if (refPath[0] && diffPath[0]) {
+            (void)ui_test_writeDiffScript(frame, refPath, diffPath, montagePath, sizeof(montagePath));
+        }
+        debug_error("ui-test: mismatch at frame #%llu (%s)",
+                    (unsigned long long)frame,
                     montagePath[0] ? montagePath : (diffPath[0] ? diffPath : "diff unavailable"));
         return 1;
     }
-    SDL_Surface *loaded = IMG_Load(path);
+
+    SDL_Surface *loaded = IMG_Load(framePngPath);
     if (!loaded) {
-        char diffPath[PATH_MAX];
-        char montagePath[PATH_MAX];
-        diffPath[0] = '\0';
-        montagePath[0] = '\0';
-        ui_test_writeMismatchImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
-        ui_test_writeDiffScript(frame, path, diffPath, montagePath, sizeof(montagePath));
-        debug_error("ui-test: IMG_Load failed: %s (%s)", IMG_GetError(),
-                    montagePath[0] ? montagePath : (diffPath[0] ? diffPath : "diff unavailable"));
-        return 1;
+        ui_test_pendingMissingFrameValid = 1;
+        ui_test_pendingMissingFrame = frame;
+        return 0;
     }
     SDL_Surface *converted = loaded;
     if (loaded->format->format != SDL_PIXELFORMAT_XRGB8888) {
@@ -768,56 +1080,43 @@ ui_test_compareFrame(uint64_t frame, const uint8_t *data, int width, int height,
         char montagePath[PATH_MAX];
         diffPath[0] = '\0';
         montagePath[0] = '\0';
-        ui_test_writeMismatchImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
-        ui_test_writeDiffScript(frame, path, diffPath, montagePath, sizeof(montagePath));
+        (void)ui_test_writeMismatchImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
+        (void)ui_test_writeDiffScript(frame, framePngPath, diffPath, montagePath, sizeof(montagePath));
         debug_error("ui-test: SDL_ConvertSurfaceFormat failed: %s (%s)", SDL_GetError(),
                     montagePath[0] ? montagePath : (diffPath[0] ? diffPath : "diff unavailable"));
         return 1;
     }
-    int fail = 0;
     if (SDL_MUSTLOCK(converted)) {
         if (SDL_LockSurface(converted) != 0) {
             char diffPath[PATH_MAX];
             char montagePath[PATH_MAX];
             diffPath[0] = '\0';
             montagePath[0] = '\0';
-            ui_test_writeMismatchImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
-            ui_test_writeDiffScript(frame, path, diffPath, montagePath, sizeof(montagePath));
+            (void)ui_test_writeMismatchImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
+            (void)ui_test_writeDiffScript(frame, framePngPath, diffPath, montagePath, sizeof(montagePath));
             debug_error("ui-test: SDL_LockSurface failed: %s (%s)", SDL_GetError(),
                         montagePath[0] ? montagePath : (diffPath[0] ? diffPath : "diff unavailable"));
             SDL_FreeSurface(converted);
             return 1;
         }
     }
-    if (converted->w != width || converted->h != height) {
-        fail = 1;
-    } else {
-        const uint8_t *src = (const uint8_t *)converted->pixels;
-        const uint32_t mask = 0x00ffffffu;
-        for (int y = 0; y < height && !fail; ++y) {
-            const uint8_t *row_a = src + (size_t)y * (size_t)converted->pitch;
-            const uint8_t *row_b = data + (size_t)y * pitch;
-            for (int x = 0; x < width; ++x) {
-                const uint32_t *pa = (const uint32_t *)(row_a + (size_t)x * 4);
-                const uint32_t *pb = (const uint32_t *)(row_b + (size_t)x * 4);
-                if (((*pa) & mask) != ((*pb) & mask)) {
-                    fail = 1;
-                    break;
-                }
-            }
-        }
-    }
+    int same = (converted->w == width && converted->h == height) ?
+        ui_test_compareFramePixelsDualPitch(data, pitch,
+                                            (const uint8_t *)converted->pixels,
+                                            (size_t)converted->pitch,
+                                            width,
+                                            height) : 0;
     if (SDL_MUSTLOCK(converted)) {
         SDL_UnlockSurface(converted);
     }
     SDL_FreeSurface(converted);
-    if (fail) {
+    if (!same) {
         char diffPath[PATH_MAX];
         char montagePath[PATH_MAX];
         diffPath[0] = '\0';
         montagePath[0] = '\0';
-        ui_test_writeMismatchImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
-        ui_test_writeDiffScript(frame, path, diffPath, montagePath, sizeof(montagePath));
+        (void)ui_test_writeMismatchImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
+        (void)ui_test_writeDiffScript(frame, framePngPath, diffPath, montagePath, sizeof(montagePath));
         debug_error("ui-test: mismatch at frame #%llu (%s)",
                     (unsigned long long)frame,
                     montagePath[0] ? montagePath : (diffPath[0] ? diffPath : "diff unavailable"));
@@ -863,7 +1162,14 @@ ui_test_captureFrame(uint64_t frame)
         return r;
     }
     if (different) {
-        ui_test_writeFrame(frame, data, width, height, pitch);
+        char path[PATH_MAX];
+        if (!ui_test_getFrameRawPath(path, sizeof(path), frame) ||
+            !ui_test_writeFrameRaw(path, data, width, height, (int)pitch)) {
+            debug_error("ui-test: failed to write frame #%llu", (unsigned long long)frame);
+            ui_test_failed = 1;
+            ui_test_exitCode = 1;
+            return 1;
+        }
     }
     ui_test_updatePrevFrame(data, width, height, pitch);
     return 0;
@@ -874,6 +1180,23 @@ ui_test_captureWindowFrame(uint64_t frame, SDL_Renderer *renderer)
 {
     if (!ui_test_enabled || !renderer) {
         return 0;
+    }
+    if (ui_test_mode == UI_TEST_MODE_COMPARE) {
+        char framePngPath[PATH_MAX];
+        char rawPath[PATH_MAX];
+        int hasReference = 0;
+        if (ui_test_getFrameRawPath(rawPath, sizeof(rawPath), frame) &&
+            ui_test_pathExistsFile(rawPath)) {
+            hasReference = 1;
+        }
+        if (!hasReference &&
+            ui_test_getFramePath(framePngPath, sizeof(framePngPath), frame) &&
+            ui_test_pathExistsFile(framePngPath)) {
+            hasReference = 1;
+        }
+        if (!hasReference) {
+            return 0;
+        }
     }
     int width = 0;
     int height = 0;
@@ -899,31 +1222,25 @@ ui_test_captureWindowFrame(uint64_t frame, SDL_Renderer *renderer)
         debug_error("ui-test: SDL_RenderReadPixels failed: %s", SDL_GetError());
         return 0;
     }
-    int different = ui_test_isDifferentToPrev(ui_test_captureFrameBuf, width, height, pitch);
     if (ui_test_mode == UI_TEST_MODE_COMPARE) {
-        int r = 0;
-        if (different) {
-            if (ui_test_pendingMissingFrameValid) {
-                debug_error("ui-test: missing reference frame #%llu is not final (next changed frame #%llu)",
-                            (unsigned long long)ui_test_pendingMissingFrame,
-                            (unsigned long long)frame);
-                ui_test_pendingMissingFrameValid = 0;
-                ui_test_failed = 1;
-                ui_test_exitCode = 1;
-                ui_test_updatePrevFrame(ui_test_captureFrameBuf, width, height, pitch);
-                return 1;
-            }
-            r = ui_test_compareFrame(frame, ui_test_captureFrameBuf, width, height, pitch);
-            if (r == 1) {
-                ui_test_failed = 1;
-                ui_test_exitCode = 1;
-            }
+        int r = ui_test_compareFrame(frame, ui_test_captureFrameBuf, width, height, pitch);
+        if (r == 1) {
+            ui_test_failed = 1;
+            ui_test_exitCode = 1;
         }
         ui_test_updatePrevFrame(ui_test_captureFrameBuf, width, height, pitch);
         return r;
     }
+    int different = ui_test_isDifferentToPrev(ui_test_captureFrameBuf, width, height, pitch);
     if (different) {
-        ui_test_writeFrame(frame, ui_test_captureFrameBuf, width, height, pitch);
+        char path[PATH_MAX];
+        if (!ui_test_getFrameRawPath(path, sizeof(path), frame) ||
+            !ui_test_writeFrameRaw(path, ui_test_captureFrameBuf, width, height, (int)pitch)) {
+            debug_error("ui-test: failed to write frame #%llu", (unsigned long long)frame);
+            ui_test_failed = 1;
+            ui_test_exitCode = 1;
+            return 1;
+        }
     }
     ui_test_updatePrevFrame(ui_test_captureFrameBuf, width, height, pitch);
     return 0;

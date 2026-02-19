@@ -664,4 +664,7 @@ help_showModal(e9ui_context_t *ctx)
         e9ui_overlay_setMargin(overlay, 12);
     }
     e9ui_modal_setBodyChild(e9ui->helpModal, overlay ? overlay : center, ctx);
+    if (btnClose) {
+        e9ui_setFocus(ctx, btnClose);
+    }
 }

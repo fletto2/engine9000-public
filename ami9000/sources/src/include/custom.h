@@ -53,6 +53,7 @@ uae_u32 get_copper_address(int copno);
 extern int custom_init(void);
 extern void custom_prepare(void);
 extern void custom_reset(bool hardreset, bool keyboardreset);
+extern void custom_setBplcon1DelayScrollEnabled(int enabled);
 extern int intlev(void);
 extern void intlev_ack(int);
 extern void dumpcustom(void);

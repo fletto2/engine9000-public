@@ -12,6 +12,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -339,6 +340,43 @@ textbox_notifyChange(textbox_state_t *st, e9ui_context_t *ctx)
         return;
     }
     st->change(ctx, st->user);
+}
+
+static void
+textbox_notifySubmit(textbox_state_t *st, e9ui_context_t *ctx)
+{
+    if (!st) {
+        return;
+    }
+    if (st->submit) {
+        st->submit(ctx, st->user);
+    } else {
+        textbox_notifyChange(st, ctx);
+    }
+}
+
+static e9ui_component_t *
+textbox_findNextTextbox(e9ui_component_t *self)
+{
+    if (!self) {
+        return NULL;
+    }
+    e9ui_component_t *root = e9ui_focusTraversalRoot(self);
+    if (!root) {
+        return NULL;
+    }
+    e9ui_component_t *cursor = self;
+    for (int i = 0; i < 2048; i++) {
+        e9ui_component_t *next = e9ui_focusFindNext(root, cursor, 0);
+        if (!next || next == self) {
+            return NULL;
+        }
+        if (next->name && strcmp(next->name, "e9ui_textbox") == 0) {
+            return next;
+        }
+        cursor = next;
+    }
+    return NULL;
 }
 
 static int
@@ -2000,7 +2038,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
     st->suppressNextTextInput = 0;
     SDL_Keycode kc = ev->key.keysym.sym;
     SDL_Keymod mods = ev->key.keysym.mod;
-    if (kc != SDLK_TAB) {
+    if (kc != SDLK_TAB && kc != SDLK_RIGHT) {
         textbox_completionClear(st);
     }
     int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
@@ -2009,8 +2047,10 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
     if (st->key_cb && st->key_cb(ctx, kc, mods, st->key_user)) {
         return 1;
     }
-    if (!accel && kc == SDLK_TAB && st->completionMode != e9ui_textbox_completion_none) {
-        return textbox_filenameCompletion(st, ctx, font, viewW, shift ? 1 : 0);
+    if (!accel && kc == SDLK_TAB) {
+        textbox_notifySubmit(st, ctx);
+        e9ui_focusAdvance(ctx, self, shift ? 1 : 0);
+        return 1;
     }
     if (accel && kc == SDLK_z) {
         if (shift) {
@@ -2225,6 +2265,14 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
     case SDLK_KP_ENTER:
         if (st->submit) {
             st->submit(ctx, st->user);
+            return 1;
+        }
+        textbox_notifySubmit(st, ctx);
+        {
+            e9ui_component_t *nextTextbox = textbox_findNextTextbox(self);
+            if (nextTextbox) {
+                e9ui_setFocus(ctx, nextTextbox);
+            }
         }
         return 1;
     case SDLK_LEFT:
@@ -2244,6 +2292,9 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         textbox_updateScroll(st, font, viewW);
         return 1;
     case SDLK_RIGHT:
+        if (!accel && st->completionMode != e9ui_textbox_completion_none && st->cursor >= st->len) {
+            return textbox_filenameCompletion(st, ctx, font, viewW, 0);
+        }
         if (!st->markActive && textbox_hasSelection(st)) {
             int a = 0;
             int b = 0;

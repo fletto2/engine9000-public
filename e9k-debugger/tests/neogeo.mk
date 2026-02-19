@@ -1,10 +1,7 @@
-NEOGEO_TESTS=test-neogeobasic test-neogeosavestate test-neogeostepping
-NEOGEO_REMAKE=remake-test-neogeobasic remake-test-neogeosavestate remake-test-neogeostepping
+NEOGEO_TESTS=test-neogeosavestate test-neogeostepping
+NEOGEO_REMAKE=remake-test-neogeosavestate remake-test-neogeostepping
 
 # makers
-
-make-test-neogeobasic: all 
-	./e9k-debugger --neogeo --source-dir=./tests/neogeo/basic --elf=./tests/neogeo/basic/basic.elf --rom=./tests/neogeo/basic/basic.neo --make-test tests/results/neogeo/basic
 
 make-test-neogeosavestate: all 
 	./e9k-debugger --neogeo --rom=./tests/neogeo/basic/basic.neo --make-test tests/results/neogeo/savestate
@@ -15,9 +12,6 @@ make-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
 
 # remakers
 
-remake-test-neogeobasic: all 
-	./e9k-debugger --neogeo --volume=0 --source-dir=./tests/neogeo/basic --elf=./tests/neogeo/basic/basic.elf --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/basic
-
 remake-test-neogeosavestate: all 
 	./e9k-debugger --neogeo --volume=0 --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/savestate
 
@@ -27,10 +21,6 @@ remake-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
 
 # testers
 
-test-neogeobasic: all
-	@printf "NEO GEO SOURCE LEVEL DEBUG EXAMPLE ($@) ..."
-	@./e9k-debugger $(HEADLESS) --neogeo --source-dir=./tests/neogeo/basic --elf=./tests/neogeo/basic/basic.elf --rom=./tests/neogeo/basic/basic.neo --test tests/results/neogeo/basic >> test.log 2>&1
-	@echo "PASSED ✅"
 
 test-neogeosavestate: all
 	@printf "NEO GEO SAVE STATE ($@) ..." 

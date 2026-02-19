@@ -25,6 +25,7 @@ typedef struct custom_ui_state {
     int open;
     int closeRequested;
     int blitterEnabled;
+    int bplcon1DelayScrollEnabled;
     int spritesEnabled;
     int spriteEnabled[CUSTOM_UI_AMIGA_SPRITE_COUNT];
     int suppressSpriteCallbacks;
@@ -64,6 +65,7 @@ typedef struct custom_ui_state {
 
 static custom_ui_state_t custom_ui_state = {
     .blitterEnabled = 1,
+    .bplcon1DelayScrollEnabled = 1,
     .spritesEnabled = 1,
     .spriteEnabled = { 1, 1, 1, 1, 1, 1, 1, 1 },
     .bitplanesEnabled = 1,
@@ -178,6 +180,13 @@ custom_ui_applyBlitterOption(void)
 }
 
 static void
+custom_ui_applyBplcon1DelayScrollOption(void)
+{
+    custom_ui_state_t *ui = &custom_ui_state;
+    custom_ui_applyOption(E9K_DEBUG_OPTION_AMIGA_BPLCON1_DELAY_SCROLL, ui->bplcon1DelayScrollEnabled ? 1u : 0u);
+}
+
+static void
 custom_ui_applySpriteOption(int spriteIndex)
 {
     custom_ui_state_t *ui = &custom_ui_state;
@@ -223,6 +232,7 @@ static void
 custom_ui_applyAllOptions(void)
 {
     custom_ui_applyBlitterOption();
+    custom_ui_applyBplcon1DelayScrollOption();
     for (int spriteIndex = 0; spriteIndex < CUSTOM_UI_AMIGA_SPRITE_COUNT; ++spriteIndex) {
         custom_ui_applySpriteOption(spriteIndex);
     }
@@ -332,6 +342,19 @@ custom_ui_blitterChanged(e9ui_component_t *self, e9ui_context_t *ctx, int select
     }
     ui->blitterEnabled = selected ? 1 : 0;
     custom_ui_applyBlitterOption();
+}
+
+static void
+custom_ui_bplcon1DelayScrollChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    custom_ui_state_t *ui = (custom_ui_state_t*)user;
+    if (!ui) {
+        return;
+    }
+    ui->bplcon1DelayScrollEnabled = selected ? 1 : 0;
+    custom_ui_applyBplcon1DelayScrollOption();
 }
 
 static void
@@ -579,6 +602,18 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
         e9ui_childDestroy(rootStack, &ui->ctx);
         return NULL;
     }
+    e9ui_component_t *cbBplcon1DelayScroll = e9ui_checkbox_make("BPLCON1 Scroll",
+                                                                 ui->bplcon1DelayScrollEnabled,
+                                                                 custom_ui_bplcon1DelayScrollChanged,
+                                                                 ui);
+    if (!cbBplcon1DelayScroll) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_checkbox_setLeftMargin(cbBplcon1DelayScroll, 12);
+    e9ui_stack_addFixed(rightColumn, cbBplcon1DelayScroll);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(8));
+
     e9ui_component_t *cbAudios = e9ui_checkbox_make("Audio",
                                                     ui->audiosEnabled,
                                                     custom_ui_audiosChanged,

@@ -30,25 +30,30 @@ e9ui_event_translateMouseButton(Uint8 button)
     }
 }
 
-static void
+static int
 e9ui_event_assignFocusForMouse(e9ui_component_t *comp, e9ui_context_t *ctx)
 {
     if (!ctx || !comp) {
-        return;
+        return 0;
     }
     if (ctx->focusClickHandled) {
-        return;
+        return 0;
     }
+    e9ui_component_t *before = e9ui_getFocus(ctx);
     e9ui_component_t *target = comp->focusTarget ? comp->focusTarget : comp;
     if (target && target->focusable) {
         ctx->focusClickHandled = 1;
         e9ui_setFocus(ctx, target);
+        return before != e9ui_getFocus(ctx);
     } else if (comp->focusTarget) {
         ctx->focusClickHandled = 1;
+        return 0;
     } else if (comp->focusable) {
         ctx->focusClickHandled = 1;
         e9ui_setFocus(ctx, comp);
+        return before != e9ui_getFocus(ctx);
     }
+    return 0;
 }
 
 static int
@@ -94,8 +99,12 @@ e9ui_event_processMouseCallbacks(e9ui_component_t *comp, e9ui_context_t *ctx, co
         inside = e9ui_event_pointInBounds(comp, mouse_ev.x, mouse_ev.y);
         if (inside) {
             comp->mouseInside = 1;
-            e9ui_event_assignFocusForMouse(comp, ctx);
-            if (comp->onMouseDown) {
+            int focusChanged = e9ui_event_assignFocusForMouse(comp, ctx);
+            int skipMouseDown = 0;
+            if (focusChanged && comp->name && strcmp(comp->name, "e9ui_textbox") == 0) {
+                skipMouseDown = 1;
+            }
+            if (comp->onMouseDown && !skipMouseDown) {
                 comp->onMouseDown(comp, ctx, &mouse_ev);
             }
             if ((comp->onClick || comp->onMouseMove || comp->onMouseUp) && !comp->mousePressed) {

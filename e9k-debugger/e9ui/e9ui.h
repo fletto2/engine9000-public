@@ -191,6 +191,15 @@ e9ui_renderFrameNoLayoutNoPresentNoClear(void);
 int
 e9ui_processEvents(void);
 
+e9ui_component_t *
+e9ui_focusTraversalRoot(e9ui_component_t *current);
+
+e9ui_component_t *
+e9ui_focusFindNext(e9ui_component_t *root, e9ui_component_t *current, int reverse);
+
+void
+e9ui_focusAdvance(e9ui_context_t *ctx, e9ui_component_t *current, int reverse);
+
 void
 e9ui_setFullscreenComponent(e9ui_component_t *comp);
 

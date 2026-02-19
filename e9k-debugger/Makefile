@@ -30,6 +30,9 @@ CFLAGS += -O2 -flto
 ifeq ($(UNAME_S),Linux)
 CFLAGS += -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 endif
+ifneq ($(UNAME_S),Darwin)
+CFLAGS += -DUI_TEST_DISABLED
+endif
 CFLAGS += -DE9K_ENABLE_MEGADRIVE=$(E9K_ENABLE_MEGADRIVE)
 CFLAGS += -DE9K_ENABLE_GL_COMPOSITE=$(E9K_ENABLE_GL_COMPOSITE)
 CFLAGS += $(INCLUDES)
@@ -39,6 +42,7 @@ LIBS   += $(SANITIZER_LIBS)
 LIBS   += -lreadline
 LIBS   += -pthread
 LIBS   += -lm
+LIBS   += -lz
 LIBS   += $(PKG_LIBS)
 
 ifeq ($(UNAME_S),Darwin)
@@ -60,6 +64,7 @@ W64_BUILD_DIR = build-w64
 W64_CFLAGS = -flto -O2 -Wall -Wextra -std=c99 -MMD -MP
 W64_CFLAGS += $(BASE_INCLUDES)
 W64_CFLAGS +=  -D_THREAD_SAFE
+W64_CFLAGS += -DUI_TEST_DISABLED
 W64_CFLAGS += -DE9K_ENABLE_MEGADRIVE=$(E9K_ENABLE_MEGADRIVE)
 W64_CFLAGS += -DE9K_ENABLE_GL_COMPOSITE=$(E9K_ENABLE_GL_COMPOSITE)
 W64_CFLAGS += $(W64_EXTRA_CFLAGS)
@@ -107,6 +112,7 @@ ifeq ($(UNAME_S),Darwin)
 SRCS += $(PLATFORM_POSIX_SRCS) $(PLATFORM_MACOS_SRCS)
 else
 SRCS += $(PLATFORM_POSIX_SRCS) $(PLATFORM_LINUX_SRCS)
+SRCS := $(filter-out ui_test.c,$(SRCS))
 endif
 SRCS += syntax_highlight.c syntax_highlight_asm.c
 
@@ -126,7 +132,7 @@ SRCS += $(TREE_SITTER_C_DIR)/src/parser.c
 endif
 endif
 
-W64_SRCS = $(filter-out $(PLATFORM_POSIX_SRCS) $(PLATFORM_LINUX_SRCS) $(PLATFORM_MACOS_SRCS),$(SRCS)) $(PLATFORM_W64_SRCS) $(addprefix e9ui/, $(E9UI_SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
+W64_SRCS = $(filter-out $(PLATFORM_POSIX_SRCS) $(PLATFORM_LINUX_SRCS) $(PLATFORM_MACOS_SRCS) ui_test.c,$(SRCS)) $(PLATFORM_W64_SRCS) $(addprefix e9ui/, $(E9UI_SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
 SRCS_C = $(filter %.c,$(SRCS)) $(addprefix e9ui/, $(E9UI_SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
 SRCS_M = $(filter %.m,$(SRCS))
 OBJS = $(SRCS_C:%.c=$(BUILD_DIR)/%.o) $(SRCS_M:%.m=$(BUILD_DIR)/%.o)

@@ -573,6 +573,137 @@ e9ui_setFocus(e9ui_context_t *ctx, e9ui_component_t *comp)
     e9ui_textbox_clearSelectionExternal(prev);
   }
   ctx->_focus = comp;
+  if (comp && prev != comp && comp->name && strcmp(comp->name, "e9ui_textbox") == 0) {
+    e9ui_textbox_selectAllExternal(comp);
+  }
+}
+
+static void
+e9ui_focusCollectFocusable(e9ui_component_t *comp,
+                           e9ui_component_t **out,
+                           int cap,
+                           int *count)
+{
+    if (!comp || !out || !count || *count >= cap) {
+        return;
+    }
+    if (e9ui_getHidden(comp) || comp->disabled || comp->collapsed) {
+        return;
+    }
+    if (comp->focusable && *count < cap) {
+        out[*count] = comp;
+        (*count)++;
+    }
+    e9ui_child_iterator iter;
+    if (!e9ui_child_iterateChildren(comp, &iter)) {
+        return;
+    }
+    for (e9ui_child_iterator *it = e9ui_child_interateNext(&iter);
+         it;
+         it = e9ui_child_interateNext(&iter)) {
+        if (!it->child) {
+            continue;
+        }
+        e9ui_focusCollectFocusable(it->child, out, cap, count);
+    }
+}
+
+static int
+e9ui_focusComponentContains(e9ui_component_t *root, e9ui_component_t *target)
+{
+    if (!root || !target) {
+        return 0;
+    }
+    if (root == target) {
+        return 1;
+    }
+    e9ui_child_iterator iter;
+    if (!e9ui_child_iterateChildren(root, &iter)) {
+        return 0;
+    }
+    for (e9ui_child_iterator *it = e9ui_child_interateNext(&iter);
+         it;
+         it = e9ui_child_interateNext(&iter)) {
+        if (!it->child) {
+            continue;
+        }
+        if (e9ui_focusComponentContains(it->child, target)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+e9ui_component_t *
+e9ui_focusTraversalRoot(e9ui_component_t *current)
+{
+    if (!e9ui) {
+        return NULL;
+    }
+    if (!current) {
+        return e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
+    }
+    if (e9ui->root) {
+        e9ui_child_reverse_iterator iter;
+        if (e9ui_child_iterateChildrenReverse(e9ui->root, &iter)) {
+            for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+                 it;
+                 it = e9ui_child_iteratePrev(&iter)) {
+                e9ui_component_t *child = it->child;
+                if (!child || e9ui_getHidden(child) || !child->name) {
+                    continue;
+                }
+                if (strcmp(child->name, "e9ui_modal") != 0) {
+                    continue;
+                }
+                if (e9ui_focusComponentContains(child, current)) {
+                    return child;
+                }
+            }
+        }
+    }
+    return e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
+}
+
+e9ui_component_t *
+e9ui_focusFindNext(e9ui_component_t *root, e9ui_component_t *current, int reverse)
+{
+    if (!root) {
+        return NULL;
+    }
+    e9ui_component_t *focusables[2048];
+    int count = 0;
+    e9ui_focusCollectFocusable(root, focusables, (int)(sizeof(focusables) / sizeof(focusables[0])), &count);
+    if (count <= 0) {
+        return NULL;
+    }
+    int idx = -1;
+    for (int i = 0; i < count; i++) {
+        if (focusables[i] == current) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) {
+        return focusables[0];
+    }
+    if (reverse) {
+        return focusables[(idx + count - 1) % count];
+    }
+    return focusables[(idx + 1) % count];
+}
+
+void
+e9ui_focusAdvance(e9ui_context_t *ctx, e9ui_component_t *current, int reverse)
+{
+    if (!ctx || !current) {
+        return;
+    }
+    e9ui_component_t *root = e9ui_focusTraversalRoot(current);
+    e9ui_component_t *next = e9ui_focusFindNext(root, current, reverse ? 1 : 0);
+    if (next) {
+        e9ui_setFocus(ctx, next);
+    }
 }
 
 void
@@ -1523,7 +1654,11 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     }
     e9ui_applyWindowIcon(win);
     e9ui_updateRefreshRate(win);
-    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    uint32_t rendererFlags = SDL_RENDERER_ACCELERATED;
+    if (uiTestMode == UI_TEST_MODE_NONE) {
+        rendererFlags |= SDL_RENDERER_PRESENTVSYNC;
+    }
+    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, rendererFlags);
     if (!ren) {
         ren = SDL_CreateRenderer(win, -1, 0);
     }
@@ -1696,11 +1831,14 @@ e9ui_processEvents(void)
                 continue;
             }
             ev.wheel.y = debugger_platform_normalizeMouseWheelY(ev.wheel.y);
-            int mx = 0;
-            int my = 0;
-            SDL_GetMouseState(&mx, &my);
-            int scaledX = e9ui_scale_coord(&e9ui->ctx, mx);
-            int scaledY = e9ui_scale_coord(&e9ui->ctx, my);
+            int scaledX = e9ui->ctx.mouseX;
+            int scaledY = e9ui->ctx.mouseY;
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+            if (ev.wheel.mouseX != 0 || ev.wheel.mouseY != 0) {
+                scaledX = e9ui_scale_coord(&e9ui->ctx, ev.wheel.mouseX);
+                scaledY = e9ui_scale_coord(&e9ui->ctx, ev.wheel.mouseY);
+            }
+#endif
             e9ui->ctx.mouseX = scaledX;
             e9ui->ctx.mouseY = scaledY;
             e9ui->mouseX = scaledX;
@@ -1757,12 +1895,13 @@ e9ui_processEvents(void)
             }
             // Focused component gets first crack at keydown
             int consumed = 0;
-            if (!consumed && e9ui_getFocus(&e9ui->ctx) && e9ui_getFocus(&e9ui->ctx)->handleEvent) {
-                consumed = e9ui_getFocus(&e9ui->ctx)->handleEvent(e9ui_getFocus(&e9ui->ctx), &e9ui->ctx, &ev);
+            e9ui_component_t *focused = e9ui_getFocus(&e9ui->ctx);
+            if (!consumed && focused && focused->handleEvent) {
+                consumed = focused->handleEvent(focused, &e9ui->ctx, &ev);
             }
             e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
             if (!consumed && root && root->handleEvent) {
-                root->handleEvent(root, &e9ui->ctx, &ev);
+                (void)root->handleEvent(root, &e9ui->ctx, &ev);
             }
             continue;
         } else if (ev.type == SDL_TEXTINPUT) {

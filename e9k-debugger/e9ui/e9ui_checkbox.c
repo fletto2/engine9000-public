@@ -7,6 +7,7 @@
  */
 
 #include "e9ui.h"
+#include <string.h>
 
 typedef struct e9ui_checkbox_state {
     char      *label;
@@ -103,7 +104,10 @@ e9ui_checkbox_render(e9ui_component_t *self, e9ui_context_t *ctx)
     };
     SDL_SetRenderDrawColor(ctx->renderer, 36, 36, 40, 255);
     SDL_RenderFillRect(ctx->renderer, &box);
-    SDL_SetRenderDrawColor(ctx->renderer, 150, 150, 170, 255);
+    SDL_Color borderCol = (e9ui_getFocus(ctx) == self)
+        ? (SDL_Color){96, 148, 204, 255}
+        : (SDL_Color){80, 80, 90, 255};
+    SDL_SetRenderDrawColor(ctx->renderer, borderCol.r, borderCol.g, borderCol.b, borderCol.a);
     SDL_RenderDrawRect(ctx->renderer, &box);
     if (st->selected) {
         SDL_SetRenderDrawColor(ctx->renderer, 120, 220, 120, 255);
@@ -169,6 +173,37 @@ e9ui_checkbox_onClick(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mo
     e9ui_checkbox_toggle(self, ctx);
 }
 
+static int
+e9ui_checkbox_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+{
+    if (!self || !ctx || !ev || self->disabled) {
+        return 0;
+    }
+    if (e9ui_getFocus(ctx) != self) {
+        return 0;
+    }
+    if (ev->type != SDL_KEYDOWN) {
+        return 0;
+    }
+
+    SDL_Keycode kc = ev->key.keysym.sym;
+    SDL_Keymod mods = ev->key.keysym.mod;
+    int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+    int shift = (mods & KMOD_SHIFT) ? 1 : 0;
+
+    if (!accel && kc == SDLK_TAB) {
+        e9ui_focusAdvance(ctx, self, shift);
+        return 1;
+    }
+
+    if (kc == SDLK_SPACE || kc == SDLK_RETURN || kc == SDLK_KP_ENTER) {
+        e9ui_checkbox_toggle(self, ctx);
+        return 1;
+    }
+
+    return 0;
+}
+
 static void
 e9ui_checkbox_invokeCallback(e9ui_component_t *self, e9ui_context_t *ctx)
 {
@@ -206,7 +241,9 @@ e9ui_checkbox_make(const char *label, int selected, e9ui_checkbox_cb_t cb, void 
     comp->layout = e9ui_checkbox_layout;
     comp->render = e9ui_checkbox_render;
     comp->onClick = e9ui_checkbox_onClick;
+    comp->handleEvent = e9ui_checkbox_handleEvent;
     comp->dtor = e9ui_checkbox_dtor;
+    comp->focusable = 1;
     return comp;
 }
 

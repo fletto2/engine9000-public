@@ -10,6 +10,7 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -19,6 +20,7 @@
 #include "console_cmd.h"
 
 #define PROMPT_HISTORY_MAX 10000
+#define PROMPT_HISTORY_MAX_BYTES (8 * 1024 * 1024)
 
 static int
 prompt_appendHistoryLine(const char *path, const char *line)
@@ -40,6 +42,77 @@ prompt_appendHistoryLine(const char *path, const char *line)
         }
     }
     fputc('\n', fp);
+    fclose(fp);
+    return 1;
+}
+
+static int
+prompt_writeHistorySnapshot(const char *path)
+{
+    if (!path || !*path) {
+        return 0;
+    }
+    FILE *fp = fopen(path, "w");
+    if (!fp) {
+        return 0;
+    }
+    extern int history_base;
+    for (int i = 0; i < history_length; ++i) {
+        HIST_ENTRY *he = history_get(history_base + i);
+        if (!he || !he->line) {
+            continue;
+        }
+        for (const char *p = he->line; *p; ++p) {
+            if (*p == '\n' || *p == '\r') {
+                fputc(' ', fp);
+            } else {
+                fputc(*p, fp);
+            }
+        }
+        fputc('\n', fp);
+    }
+    fclose(fp);
+    return 1;
+}
+
+static void
+prompt_compactHistoryIfNeeded(const char *path)
+{
+    if (!path || !*path) {
+        return;
+    }
+    struct stat stbuf;
+    if (stat(path, &stbuf) != 0) {
+        return;
+    }
+    if (stbuf.st_size > (off_t)PROMPT_HISTORY_MAX_BYTES) {
+        (void)prompt_writeHistorySnapshot(path);
+    }
+}
+
+static int
+prompt_loadHistoryFile(const char *path)
+{
+    if (!path || !*path) {
+        return 0;
+    }
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return 0;
+    }
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t lineLen = 0;
+    while ((lineLen = debugger_platform_getline(&line, &cap, fp)) != -1) {
+        while (lineLen > 0 && (line[lineLen - 1] == '\n' || line[lineLen - 1] == '\r')) {
+            line[--lineLen] = '\0';
+        }
+        if (lineLen <= 0) {
+            continue;
+        }
+        add_history(line);
+    }
+    free(line);
     fclose(fp);
     return 1;
 }
@@ -76,6 +149,74 @@ typedef struct prompt_state {
     int cmplPageStart;
     int cmplPageCycleDone;
 } prompt_state_t;
+
+static int
+prompt_resolveHistoryPath(char *out, size_t outCap, const char *historyFile)
+{
+    if (!out || outCap == 0 || !historyFile || !*historyFile) {
+        return 0;
+    }
+    out[0] = '\0';
+
+    char home[1024];
+    if (debugger_platform_getHomeDir(home, sizeof(home)) && home[0]) {
+        if (debugger_platform_pathJoin(out, outCap, home, historyFile)) {
+            return 1;
+        }
+    }
+
+    if (debugger_platform_pathJoin(out, outCap, ".", historyFile)) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static void
+prompt_loadHistory(prompt_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+
+    st->historyPath[0] = '\0';
+    using_history();
+    stifle_history(PROMPT_HISTORY_MAX);
+
+    char primaryPath[1024];
+    char legacyPath[1024];
+    int havePrimaryPath = prompt_resolveHistoryPath(primaryPath, sizeof(primaryPath), ".e9k_history");
+    int haveLegacyPath = prompt_resolveHistoryPath(legacyPath, sizeof(legacyPath), ".e9k-debugger_history");
+
+    if (havePrimaryPath) {
+        snprintf(st->historyPath, sizeof(st->historyPath), "%s", primaryPath);
+        if (prompt_loadHistoryFile(primaryPath)) {
+            prompt_compactHistoryIfNeeded(primaryPath);
+            return;
+        }
+    }
+
+    if (haveLegacyPath) {
+        if (prompt_loadHistoryFile(legacyPath)) {
+            if (!havePrimaryPath) {
+                snprintf(st->historyPath, sizeof(st->historyPath), "%s", legacyPath);
+                prompt_compactHistoryIfNeeded(legacyPath);
+            } else {
+                struct stat stbuf;
+                if (stat(primaryPath, &stbuf) != 0) {
+                    (void)prompt_writeHistorySnapshot(primaryPath);
+                } else {
+                    prompt_compactHistoryIfNeeded(primaryPath);
+                }
+            }
+            return;
+        }
+    }
+
+    if (!havePrimaryPath && haveLegacyPath) {
+        snprintf(st->historyPath, sizeof(st->historyPath), "%s", legacyPath);
+    }
+}
 
 static const char *
 prompt_getText(prompt_state_t *st)
@@ -254,6 +395,15 @@ prompt_render(e9ui_component_t *self, e9ui_context_t *ctx)
   int xoff = area.x + 10; int baseY = area.y + (area.h - lh);
   if (st && st->textbox) {
       e9ui_textbox_setEditable(st->textbox, self->disabled ? 0 : 1);
+  }
+  if (st && ctx) {
+      e9ui_component_t *focus = e9ui_getFocus(ctx);
+      if (focus != self && focus != st->textbox) {
+          st->cmplVisible = 0;
+          st->cmplSel = -1;
+          st->cmplPageStart = 0;
+          st->cmplPageCycleDone = 0;
+      }
   }
   if (self->disabled && st) {
       st->cmplVisible = 0;
@@ -488,7 +638,9 @@ prompt_onSubmit(e9ui_context_t *ctx, void *user)
             // Avoid rewriting potentially huge history files on every command.
             // Prefer appending the latest entry; fall back to write_history if needed.
             if (!prompt_appendHistoryLine(st->historyPath, run)) {
-                write_history(st->historyPath);
+                prompt_writeHistorySnapshot(st->historyPath);
+            } else {
+                prompt_compactHistoryIfNeeded(st->historyPath);
             }
         }
     }
@@ -760,20 +912,7 @@ e9ui_component_t *
 	    prompt_state_t *st = (prompt_state_t*)alloc_calloc(1, sizeof(prompt_state_t));
 	    st->killBuf[0] = '\0'; st->histNavActive = 0; st->histNavIndex = -1; st->histSavedLen = 0; st->histSavedCursor = 0; st->historyPath[0] = '\0';
 	    st->cmpl = NULL; st->cmplCount = 0; st->cmplCap = 0; st->cmplVisible = 0; st->cmplSel = -1; st->cmplPageStart = 0; st->cmplPageCycleDone = 0;
-	    using_history(); const char *home = getenv("HOME"); if (home && *home) {
-	        snprintf(st->historyPath, sizeof(st->historyPath), "%s/.e9k_history", home);
-
-	        // Cap in-memory history to avoid unbounded growth, and truncate the file
-	        // before reading it so we don't load multi-million line histories.
-	        stifle_history(PROMPT_HISTORY_MAX);
-	        struct stat stbuf;
-	        if (stat(st->historyPath, &stbuf) == 0) {
-	            if (stbuf.st_size > (off_t)(8 * 1024 * 1024)) {
-	                (void)history_truncate_file(st->historyPath, PROMPT_HISTORY_MAX);
-	            }
-	        }
-	        read_history(st->historyPath);
-	    }
+	    prompt_loadHistory(st);
 	    st->textbox = e9ui_textbox_make(PROMPT_MAX - 1, prompt_onSubmit, prompt_onChange, st);
 	    if (st->textbox) {
 	        e9ui_textbox_setFrameVisible(st->textbox, 0);
