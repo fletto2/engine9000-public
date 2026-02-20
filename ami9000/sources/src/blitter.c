@@ -24,6 +24,10 @@
 #include "savestate.h"
 #include "debug.h"
 
+#ifndef E9K_HACK_BLITTER_VIS
+#define E9K_HACK_BLITTER_VIS 0
+#endif
+
 // 1 = logging
 // 2 = no wait detection
 // 4 = no D
@@ -104,6 +108,37 @@ static int blit_cyclecounter, blit_waitcyclecounter;
 static int blit_maxcyclecounter, blit_slowdown, blit_totalcyclecounter;
 static int blit_misscyclecounter;
 static int blitter_destinationWriteEnabled = 1;
+#if E9K_HACK_BLITTER_VIS
+#define BLITTER_DEBUG_VIS_MODE_SOLID 0x1
+#define BLITTER_DEBUG_VIS_MODE_COLLECT 0x2
+#define BLITTER_DEBUG_VIS_MODE_PATTERN 0x4
+#define BLITTER_DEBUG_VIS_MODE_STYLE_MASK (BLITTER_DEBUG_VIS_MODE_SOLID | BLITTER_DEBUG_VIS_MODE_PATTERN)
+#define BLITTER_DEBUG_VIS_MODE_MASK (BLITTER_DEBUG_VIS_MODE_STYLE_MASK | BLITTER_DEBUG_VIS_MODE_COLLECT)
+#define BLITTER_DEBUG_VIS_DECAY_MAX 64u
+static int blitter_debugWriteEnabled = 0;
+static uint32_t blitter_debugFrameCounter = 0;
+static uint8_t blitter_debugShowLivePhase = 0;
+static uint32_t *blitter_debugFrames = NULL;
+static uint32_t *blitter_debugEpoch = NULL;
+static uae_u8 *blitter_debugCollected = NULL;
+static uint32_t *blitter_debugActiveWords = NULL;
+static uint32_t blitter_debugActiveCount = 0;
+static uint32_t blitter_debugActiveCapacity = 0;
+static uint32_t blitter_debugMapWordCount = 0;
+static uint32_t blitter_debugEpochCounter = 1;
+static uint32_t blitter_debugPatternRngState = 0x1a2b3c4du;
+static uae_u16 *blitter_debugPatterns = NULL;
+static uint32_t *blitter_debugBlitIds = NULL;
+static uint32_t blitter_debugWritesThisFrame = 0;
+static uint32_t blitter_debugFetchQueriesThisFrame = 0;
+static uint32_t blitter_debugFetchHitsThisFrame = 0;
+static uae_u16 blitter_debugCurrentBlitPattern = 0xffffu;
+static uint32_t blitter_debugCurrentBlitId = 1u;
+static uint32_t blitter_debugNextBlitId = 1u;
+static uint32_t blitter_debugVisDecayFrames = 5u;
+static int blitter_debugVisMode = BLITTER_DEBUG_VIS_MODE_COLLECT;
+static int blitter_debugVisBlink = 1;
+#endif
 
 #ifdef CPUEMU_13
 static int blitter_cyclecounter;
@@ -487,18 +522,464 @@ static void blitter_done_except_d(int hpos)
 	blitter_done_notify(blitline);
 }
 
+#if E9K_HACK_BLITTER_VIS
+static void
+blitter_debugFreeStorage(void)
+{
+	xfree(blitter_debugFrames);
+	blitter_debugFrames = NULL;
+	xfree(blitter_debugEpoch);
+	blitter_debugEpoch = NULL;
+	xfree(blitter_debugCollected);
+	blitter_debugCollected = NULL;
+	xfree(blitter_debugPatterns);
+	blitter_debugPatterns = NULL;
+	xfree(blitter_debugBlitIds);
+	blitter_debugBlitIds = NULL;
+	xfree(blitter_debugActiveWords);
+	blitter_debugActiveWords = NULL;
+	blitter_debugActiveCount = 0;
+	blitter_debugActiveCapacity = 0;
+	blitter_debugMapWordCount = 0;
+	blitter_debugEpochCounter = 1;
+	blitter_debugPatternRngState = 0x1a2b3c4du;
+	blitter_debugCurrentBlitPattern = 0xffffu;
+	blitter_debugCurrentBlitId = 1u;
+	blitter_debugNextBlitId = 1u;
+	blitter_debugWritesThisFrame = 0;
+	blitter_debugFetchQueriesThisFrame = 0;
+	blitter_debugFetchHitsThisFrame = 0;
+}
+
+static int
+blitter_debugEnsureStorage(void)
+{
+	uint32_t mapWordCount = (uint32_t)((chipmem_bank.mask + 1) >> 1);
+	if (!mapWordCount) {
+		blitter_debugFreeStorage();
+		return 0;
+	}
+	if (blitter_debugMapWordCount == mapWordCount &&
+		blitter_debugFrames &&
+		blitter_debugEpoch &&
+		blitter_debugCollected &&
+		blitter_debugPatterns &&
+		blitter_debugBlitIds &&
+		blitter_debugActiveWords) {
+		return 1;
+	}
+
+	blitter_debugFreeStorage();
+
+	blitter_debugFrames = xcalloc(uint32_t, mapWordCount);
+	blitter_debugEpoch = xcalloc(uint32_t, mapWordCount);
+	blitter_debugCollected = xcalloc(uae_u8, mapWordCount);
+	blitter_debugPatterns = xcalloc(uae_u16, mapWordCount);
+	blitter_debugBlitIds = xcalloc(uint32_t, mapWordCount);
+	blitter_debugActiveWords = xcalloc(uint32_t, mapWordCount);
+	if (!blitter_debugFrames || !blitter_debugEpoch || !blitter_debugCollected || !blitter_debugPatterns || !blitter_debugBlitIds || !blitter_debugActiveWords) {
+		blitter_debugFreeStorage();
+		return 0;
+	}
+
+	blitter_debugMapWordCount = mapWordCount;
+	blitter_debugActiveCapacity = mapWordCount;
+	blitter_debugActiveCount = 0;
+	blitter_debugEpochCounter = 1;
+	blitter_debugPatternRngState = 0x1a2b3c4du;
+	blitter_debugCurrentBlitPattern = 0xffffu;
+	blitter_debugCurrentBlitId = 1u;
+	blitter_debugNextBlitId = 1u;
+	blitter_debugWritesThisFrame = 0;
+	blitter_debugFetchQueriesThisFrame = 0;
+	blitter_debugFetchHitsThisFrame = 0;
+	return 1;
+}
+
+static uint32_t
+blitter_debugAddrToWordIndex(uaecptr addr)
+{
+	return (uint32_t)((addr & chipmem_bank.mask) >> 1);
+}
+
+static int
+blitter_debugHasEntryByIndex(uint32_t wordIndex)
+{
+	if (!blitter_debugEpoch || wordIndex >= blitter_debugMapWordCount) {
+		return 0;
+	}
+	return blitter_debugEpoch[wordIndex] == blitter_debugEpochCounter;
+}
+
+static int
+blitter_debugFindWriteIndex(uaecptr addr, uint32_t *wordIndexOut)
+{
+	if (!blitter_debugEnsureStorage()) {
+		return 0;
+	}
+
+	uint32_t wordIndex = blitter_debugAddrToWordIndex(addr);
+	if (wordIndexOut) {
+		*wordIndexOut = wordIndex;
+	}
+	return blitter_debugHasEntryByIndex(wordIndex);
+}
+
+static void
+blitter_debugClearWrites(void)
+{
+	blitter_debugActiveCount = 0;
+	if (blitter_debugEpoch) {
+		blitter_debugEpochCounter++;
+	if (!blitter_debugEpochCounter) {
+		memset(blitter_debugEpoch, 0, blitter_debugMapWordCount * sizeof(*blitter_debugEpoch));
+		blitter_debugEpochCounter = 1;
+	}
+	}
+	blitter_debugShowLivePhase = 0;
+	blitter_debugPatternRngState = 0x1a2b3c4du;
+	blitter_debugCurrentBlitPattern = 0xffffu;
+	blitter_debugCurrentBlitId = 1u;
+	blitter_debugNextBlitId = 1u;
+	blitter_debugWritesThisFrame = 0;
+	blitter_debugFetchQueriesThisFrame = 0;
+	blitter_debugFetchHitsThisFrame = 0;
+}
+
+static uae_u16
+blitter_debugNextPatternValue(void)
+{
+	static const uae_u16 blitterDebugPatternValues[] = { 0xffffu, 0x5555u, 0xaaaau, 0x6666u, 0x9999u };
+	blitter_debugPatternRngState ^= blitter_debugPatternRngState << 13;
+	blitter_debugPatternRngState ^= blitter_debugPatternRngState >> 17;
+	blitter_debugPatternRngState ^= blitter_debugPatternRngState << 5;
+	return blitterDebugPatternValues[blitter_debugPatternRngState % 5u];
+}
+
+static uint32_t
+blitter_debugNextBlitIdValue(void)
+{
+	uint32_t id = blitter_debugNextBlitId++;
+	if (!id) {
+		blitter_debugNextBlitId = 1u;
+		id = blitter_debugNextBlitId++;
+	}
+	return id;
+}
+
+static void
+blitter_debugRestoreAllWritesAndClear(void)
+{
+	blitter_debugClearWrites();
+}
+#endif
+
 void
 blitter_setDestinationWriteEnabled(int enabled)
 {
 	blitter_destinationWriteEnabled = enabled ? 1 : 0;
 }
 
+#if E9K_HACK_BLITTER_VIS
+void
+blitter_setDebugWriteEnabled(int enabled)
+{
+	int wasEnabled = blitter_debugWriteEnabled ? 1 : 0;
+	blitter_debugWriteEnabled = enabled ? 1 : 0;
+	if (!wasEnabled && blitter_debugWriteEnabled) {
+		// Deterministic startup when enabling debug mode.
+		blitter_debugClearWrites();
+		blitter_debugShowLivePhase = 1;
+	}
+	if (wasEnabled && !blitter_debugWriteEnabled) {
+		blitter_debugRestoreAllWritesAndClear();
+	}
+}
+
+int
+blitter_getDebugWriteEnabled(void)
+{
+	return blitter_debugWriteEnabled ? 1 : 0;
+}
+
+void
+blitter_setDebugVisDecayFrames(uint32_t frameCount)
+{
+	if (frameCount > BLITTER_DEBUG_VIS_DECAY_MAX) {
+		frameCount = BLITTER_DEBUG_VIS_DECAY_MAX;
+	}
+	blitter_debugVisDecayFrames = frameCount;
+}
+
+uint32_t
+blitter_getDebugVisDecayFrames(void)
+{
+	return blitter_debugVisDecayFrames;
+}
+
+static int
+blitter_debugVisModeUsesSolid(void)
+{
+	return (blitter_debugVisMode & BLITTER_DEBUG_VIS_MODE_SOLID) != 0;
+}
+
+static int
+blitter_debugVisModeUsesPattern(void)
+{
+	return (blitter_debugVisMode & BLITTER_DEBUG_VIS_MODE_PATTERN) != 0;
+}
+
+static int
+blitter_debugVisModeHasStyle(void)
+{
+	return (blitter_debugVisMode & BLITTER_DEBUG_VIS_MODE_STYLE_MASK) != 0;
+}
+
+static int
+blitter_debugVisModeHasCollect(void)
+{
+	return (blitter_debugVisMode & BLITTER_DEBUG_VIS_MODE_COLLECT) != 0;
+}
+
+void
+blitter_setDebugVisMode(int mode)
+{
+	if (mode < 0) {
+		mode = 0;
+	}
+	mode &= BLITTER_DEBUG_VIS_MODE_MASK;
+	if ((mode & BLITTER_DEBUG_VIS_MODE_STYLE_MASK) == BLITTER_DEBUG_VIS_MODE_STYLE_MASK) {
+		mode &= ~BLITTER_DEBUG_VIS_MODE_PATTERN;
+	}
+	blitter_debugVisMode = mode;
+}
+
+int
+blitter_getDebugVisMode(void)
+{
+	return blitter_debugVisMode;
+}
+
+void
+blitter_setDebugVisBlink(int blink)
+{
+	blitter_debugVisBlink = blink ? 1 : 0;
+	if (!blitter_debugVisBlink) {
+		blitter_debugShowLivePhase = 0;
+	}
+}
+
+int
+blitter_getDebugVisBlink(void)
+{
+	return blitter_debugVisBlink;
+}
+
+uint32_t
+blitter_getDebugActiveCount(void)
+{
+	return blitter_debugActiveCount;
+}
+
+uint32_t
+blitter_getDebugWritesThisFrame(void)
+{
+	return blitter_debugWritesThisFrame;
+}
+
+uint32_t
+blitter_getDebugFrameCounter(void)
+{
+	return blitter_debugFrameCounter;
+}
+
+int
+blitter_getDebugShowLivePhase(void)
+{
+	return blitter_debugShowLivePhase ? 1 : 0;
+}
+
+uint32_t
+blitter_getDebugFetchQueriesThisFrame(void)
+{
+	return blitter_debugFetchQueriesThisFrame;
+}
+
+uint32_t
+blitter_getDebugFetchHitsThisFrame(void)
+{
+	return blitter_debugFetchHitsThisFrame;
+}
+
+void
+blitter_debugFrameTick(void)
+{
+	blitter_debugFrameCounter++;
+	blitter_debugWritesThisFrame = 0;
+	blitter_debugFetchQueriesThisFrame = 0;
+	blitter_debugFetchHitsThisFrame = 0;
+	if (blitter_debugVisBlink) {
+		blitter_debugShowLivePhase = blitter_debugShowLivePhase ? 0 : 1;
+	} else {
+		blitter_debugShowLivePhase = 0;
+	}
+}
+
+static void
+blitter_debugRecordWrite(uaecptr addr)
+{
+	uint32_t wordIndex = 0;
+	int hasExisting = blitter_debugFindWriteIndex(addr, &wordIndex);
+	if (!hasExisting) {
+		if (blitter_debugActiveCount >= blitter_debugActiveCapacity) {
+			return;
+			}
+			blitter_debugEpoch[wordIndex] = blitter_debugEpochCounter;
+			blitter_debugActiveWords[blitter_debugActiveCount] = wordIndex;
+			blitter_debugActiveCount++;
+		}
+	blitter_debugPatterns[wordIndex] = blitter_debugCurrentBlitPattern;
+	blitter_debugBlitIds[wordIndex] = blitter_debugCurrentBlitId;
+	blitter_debugFrames[wordIndex] = blitter_debugFrameCounter;
+	if (blitter_debugCollected) {
+		blitter_debugCollected[wordIndex] = 0u;
+	}
+	blitter_debugWritesThisFrame++;
+}
+#endif
+
+uae_u16
+blitter_chipmem_wget_indirect(uaecptr addr)
+{
+	return chipmem_wget_indirect(addr);
+}
+
+#if E9K_HACK_BLITTER_VIS
+int
+blitter_getDebugVideoFetchInfo(uaecptr addr, uae_u16 *value, uint32_t *blitId, int *useOverride);
+
+int
+blitter_getDebugVideoOverrideValue(uaecptr addr, uae_u16 *value)
+{
+	int useOverride = 0;
+	if (blitter_getDebugVideoFetchInfo(addr, value, NULL, &useOverride) && useOverride) {
+		return 1;
+	}
+	if (value) {
+		*value = 0;
+	}
+	return 0;
+}
+
+int
+blitter_getDebugVideoFetchInfo(uaecptr addr, uae_u16 *value, uint32_t *blitId, int *useOverride)
+{
+	int hasCollect = 0;
+	int hasStyle = 0;
+
+	if (useOverride) {
+		*useOverride = 0;
+	}
+	if (value) {
+		*value = 0;
+	}
+	if (blitId) {
+		*blitId = 0;
+	}
+
+	if (!blitter_debugWriteEnabled) {
+		return 0;
+	}
+	hasCollect = blitter_debugVisModeHasCollect();
+	hasStyle = blitter_debugVisModeHasStyle();
+	if (!hasCollect && !hasStyle) {
+		return 0;
+	}
+	blitter_debugFetchQueriesThisFrame++;
+
+	uint32_t wordIndex = 0;
+	if (!blitter_debugFindWriteIndex(addr, &wordIndex)) {
+		return 0;
+	}
+	if (hasCollect && blitter_debugCollected && blitter_debugCollected[wordIndex]) {
+		return 0;
+	}
+	if (hasCollect && blitter_debugCollected) {
+		blitter_debugCollected[wordIndex] = 1u;
+	}
+	blitter_debugFetchHitsThisFrame++;
+
+	if (blitId) {
+		*blitId = blitter_debugBlitIds[wordIndex];
+	}
+
+	if (hasStyle && !hasCollect && blitter_debugVisBlink && blitter_debugShowLivePhase) {
+		return 0;
+	}
+
+	if (value && hasStyle) {
+		if (blitter_debugVisModeUsesSolid()) {
+			*value = 0xffffu;
+		} else if (blitter_debugVisModeUsesPattern()) {
+			*value = blitter_debugPatterns[wordIndex];
+		}
+	}
+	if (useOverride) {
+		*useOverride = hasStyle ? 1 : 0;
+	}
+	return 1;
+}
+#endif
+
+#if E9K_HACK_BLITTER_VIS
+void
+blitter_debugRestoreWritesOlderThan(uint32_t frameAge)
+{
+	if (!blitter_debugActiveCount) {
+		return;
+	}
+
+	uint32_t keptCount = 0;
+	for (uint32_t index = 0; index < blitter_debugActiveCount; ++index) {
+		uint32_t wordIndex = blitter_debugActiveWords[index];
+		if (!blitter_debugHasEntryByIndex(wordIndex)) {
+			continue;
+		}
+			uint32_t age = blitter_debugFrameCounter - blitter_debugFrames[wordIndex];
+			if (age <= frameAge) {
+				blitter_debugActiveWords[keptCount] = wordIndex;
+				keptCount++;
+				continue;
+			}
+
+			blitter_debugEpoch[wordIndex] = 0;
+		}
+
+	blitter_debugActiveCount = keptCount;
+	if (!blitter_debugActiveCount) {
+		blitter_debugClearWrites();
+	}
+}
+
+#endif
+
 void
 blitter_chipmem_wput_indirect(uaecptr addr, uae_u32 w)
 {
+#if E9K_HACK_BLITTER_VIS
+	if (blitter_debugWriteEnabled) {
+		if (blitter_destinationWriteEnabled) {
+			chipmem_wput_indirect(addr, w);
+			blitter_debugRecordWrite(addr);
+		}
+	} else if (blitter_destinationWriteEnabled) {
+		chipmem_wput_indirect(addr, w);
+	}
+#else
 	if (blitter_destinationWriteEnabled) {
 		chipmem_wput_indirect(addr, w);
 	}
+#endif
 	regs.chipset_latch_rw = w;
 }
 
@@ -722,7 +1203,7 @@ static void blitter_line_read_b(void)
 	if (bltcon0 & BLTCHB) {
 		// B (normally not enabled)
 		record_dma_blit(0x72, 0, bltbpt, last_blitter_hpos);
-		blt_info.bltbdat = chipmem_wget_indirect(bltbpt);
+		blt_info.bltbdat = blitter_chipmem_wget_indirect(bltbpt);
 		regs.chipset_latch_rw = blt_info.bltbdat;
 		record_dma_blit_val(blt_info.bltbdat);
 		bltbpt += blt_info.bltbmod;
@@ -733,7 +1214,7 @@ static void blitter_line_read_c(void)
 	if (bltcon0 & BLTCHC) {
 		// C
 		record_dma_blit(0x70, 0, bltcpt, last_blitter_hpos);
-		blt_info.bltcdat = chipmem_wget_indirect(bltcpt);
+		blt_info.bltcdat = blitter_chipmem_wget_indirect(bltcpt);
 		regs.chipset_latch_rw = blt_info.bltcdat;
 		record_dma_blit_val(blt_info.bltcdat);
 	}
@@ -1410,7 +1891,7 @@ static void blitter_dodma_new(int ch, int hpos, bool addmod)
 		if (!skip) {
 			uae_u16 reg = 0x74;
 			record_dma_blit(reg, 0, bltapt, hpos);
-			blt_info.bltadat = dat = chipmem_wget_indirect(bltapt);
+			blt_info.bltadat = dat = blitter_chipmem_wget_indirect(bltapt);
 			record_dma_blit_val(dat);
 			regs.chipset_latch_rw = blt_info.bltadat;
 		}
@@ -1427,7 +1908,7 @@ static void blitter_dodma_new(int ch, int hpos, bool addmod)
 		if (!skip) {
 			uae_u16 reg = 0x72;
 			record_dma_blit(reg, 0, bltbpt, hpos);
-			blt_info.bltbdat = dat = chipmem_wget_indirect(bltbpt);
+			blt_info.bltbdat = dat = blitter_chipmem_wget_indirect(bltbpt);
 			record_dma_blit_val(dat);
 			regs.chipset_latch_rw = blt_info.bltbdat;
 		}
@@ -1449,7 +1930,7 @@ static void blitter_dodma_new(int ch, int hpos, bool addmod)
 		if (!skip) {
 			uae_u16 reg = 0x70;
 			record_dma_blit(reg, 0, bltcpt, hpos);
-			blt_info.bltcdat = dat = chipmem_wget_indirect(bltcpt);
+			blt_info.bltcdat = dat = blitter_chipmem_wget_indirect(bltcpt);
 			record_dma_blit_val(dat);
 			regs.chipset_latch_rw = blt_info.bltcdat;
 		}
@@ -1643,7 +2124,7 @@ static bool decide_blitter_maybe_write2(int until_hpos, uaecptr addr, uae_u32 va
 				record_dma_blit(0x70, 0, bltcpt | orptr, hpos);
 				check_channel_mods(hpos, 3, &bltcpt);
 				if (!skip) {
-					blt_info.bltcdat = chipmem_wget_indirect(bltcpt | orptr);
+					blt_info.bltcdat = blitter_chipmem_wget_indirect(bltcpt | orptr);
 					regs.chipset_latch_rw = blt_info.bltcdat;
 					record_dma_blit_val(blt_info.bltcdat);
 				}
@@ -2026,6 +2507,12 @@ void do_blitter(int hpos, int copper, uaecptr pc)
 	blt_info.blit_pending = 1;
 
 	blitter_start_init();
+#if E9K_HACK_BLITTER_VIS
+	if (blitter_debugWriteEnabled) {
+		blitter_debugCurrentBlitPattern = blitter_debugNextPatternValue();
+		blitter_debugCurrentBlitId = blitter_debugNextBlitIdValue();
+	}
+#endif
 
 	if (blitline) {
 		cycles = blt_info.vblitsize * blt_info.hblitsize;
@@ -2256,6 +2743,9 @@ void blitter_slowdown (int ddfstrt, int ddfstop, int totalcycles, int freecycles
 
 void blitter_reset (void)
 {
+#if E9K_HACK_BLITTER_VIS
+	blitter_debugClearWrites();
+#endif
 	bltptxpos = -1;
 	blitter_cycle_exact = currprefs.blitter_cycle_exact;
 	immediate_blits = currprefs.immediate_blits;
@@ -2275,6 +2765,9 @@ void blitter_reset (void)
 
 void restore_blitter_start(void)
 {
+#if E9K_HACK_BLITTER_VIS
+	blitter_debugClearWrites();
+#endif
 	blitter_reset();
 }
 
@@ -2305,6 +2798,9 @@ void restore_blitter_finish (void)
 
 uae_u8 *restore_blitter (uae_u8 *src)
 {
+#if E9K_HACK_BLITTER_VIS
+	blitter_debugClearWrites();
+#endif
 	uae_u32 flags = restore_u32();
 
 	if (!(flags & 8)) {
@@ -2354,6 +2850,9 @@ uae_u8 *save_blitter (size_t *len, uae_u8 *dstptr, bool newstate)
 
 uae_u8 *restore_blitter_new(uae_u8 *src)
 {
+#if E9K_HACK_BLITTER_VIS
+	blitter_debugClearWrites();
+#endif
 	uae_u8 state, tmp;
 
 	blt_statefile_type = 1;

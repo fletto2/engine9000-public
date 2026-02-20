@@ -91,33 +91,70 @@ e9ui_checkbox_render(e9ui_component_t *self, e9ui_context_t *ctx)
         int scaled = e9ui_scale_px(ctx, st->leftMargin);
         leftMargin = scaled > 0 ? scaled : st->leftMargin;
     }
-    const int size = self->bounds.h > 24 ? 24 : (self->bounds.h - 4 > 0 ? self->bounds.h - 4 : 16);
+    int sizeMax = e9ui_scale_px(ctx, 12);
+    int sizeInset = e9ui_scale_px(ctx, 2);
+    int sizeMin = e9ui_scale_px(ctx, 8);
+    if (sizeMax <= 0) {
+        sizeMax = 12;
+    }
+    if (sizeInset <= 0) {
+        sizeInset = 2;
+    }
+    if (sizeMin <= 0) {
+        sizeMin = 8;
+    }
+    const int size = self->bounds.h > sizeMax
+                         ? sizeMax
+                         : (self->bounds.h - sizeInset > 0 ? self->bounds.h - sizeInset : sizeMin);
     int gap = e9ui_checkbox_getTextGap(ctx);
     if (gap <= 0) {
         gap = E9UI_THEME_CHECKBOX_TEXT_GAP;
     }
+    int disabled = self->disabled ? 1 : 0;
     SDL_Rect box = {
         self->bounds.x + leftMargin,
         self->bounds.y + (self->bounds.h - size) / 2,
         size,
         size
     };
-    SDL_SetRenderDrawColor(ctx->renderer, 36, 36, 40, 255);
+    if (disabled) {
+        SDL_SetRenderDrawColor(ctx->renderer, 28, 28, 32, 255);
+    } else {
+        SDL_SetRenderDrawColor(ctx->renderer, 36, 36, 40, 255);
+    }
     SDL_RenderFillRect(ctx->renderer, &box);
-    SDL_Color borderCol = (e9ui_getFocus(ctx) == self)
-        ? (SDL_Color){96, 148, 204, 255}
-        : (SDL_Color){80, 80, 90, 255};
+    SDL_Color borderCol = {80, 80, 90, 255};
+    if (disabled) {
+        borderCol = (SDL_Color){64, 64, 72, 255};
+    } else if (e9ui_getFocus(ctx) == self) {
+        borderCol = (SDL_Color){96, 148, 204, 255};
+    }
     SDL_SetRenderDrawColor(ctx->renderer, borderCol.r, borderCol.g, borderCol.b, borderCol.a);
     SDL_RenderDrawRect(ctx->renderer, &box);
     if (st->selected) {
-        SDL_SetRenderDrawColor(ctx->renderer, 120, 220, 120, 255);
-        SDL_Rect inner = { box.x + 3, box.y + 3, box.w - 6, box.h - 6 };
-        SDL_RenderFillRect(ctx->renderer, &inner);
+        int innerPad = e9ui_scale_px(ctx, 2);
+        if (innerPad <= 0) {
+            innerPad = 2;
+        }
+        if (disabled) {
+            SDL_SetRenderDrawColor(ctx->renderer, 92, 132, 92, 255);
+        } else {
+            SDL_SetRenderDrawColor(ctx->renderer, 120, 220, 120, 255);
+        }
+        SDL_Rect inner = {
+            box.x + innerPad,
+            box.y + innerPad,
+            box.w - (innerPad * 2),
+            box.h - (innerPad * 2)
+        };
+        if (inner.w > 0 && inner.h > 0) {
+            SDL_RenderFillRect(ctx->renderer, &inner);
+        }
     }
     if (st->label && st->label[0]) {
         TTF_Font *font = e9ui->theme.text.source ? e9ui->theme.text.source : ctx->font;
         if (font) {
-            SDL_Color col = {220, 220, 220, 255};
+            SDL_Color col = disabled ? (SDL_Color){150, 150, 150, 255} : (SDL_Color){220, 220, 220, 255};
             int tw = 0, th = 0;
             SDL_Texture *tex = e9ui_text_cache_getText(ctx->renderer, font, st->label, col, &tw, &th);
             if (tex) {
@@ -326,7 +363,21 @@ e9ui_checkbox_measure(e9ui_component_t *checkbox, e9ui_context_t *ctx, int *outW
     }
     int pad = e9ui_checkbox_getMargin(ctx);
     int height = pad + lineHeight + pad;
-    int size = height > 24 ? 24 : (height - 4 > 0 ? height - 4 : 16);
+    int sizeMax = e9ui_scale_px(ctx, 12);
+    int sizeInset = e9ui_scale_px(ctx, 2);
+    int sizeMin = e9ui_scale_px(ctx, 8);
+    if (sizeMax <= 0) {
+        sizeMax = 12;
+    }
+    if (sizeInset <= 0) {
+        sizeInset = 2;
+    }
+    if (sizeMin <= 0) {
+        sizeMin = 8;
+    }
+    int size = height > sizeMax
+                   ? sizeMax
+                   : (height - sizeInset > 0 ? height - sizeInset : sizeMin);
     int gap = e9ui_checkbox_getTextGap(ctx);
 
     int leftMargin = 0;

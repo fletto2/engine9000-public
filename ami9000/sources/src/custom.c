@@ -14,6 +14,7 @@
 #include <ctype.h>
 #include <assert.h>
 #include <math.h>
+#include <stdio.h>
 
 #include "options.h"
 #include "uae.h"
@@ -51,6 +52,7 @@
 #include "specialmonitors.h"
 
 #ifdef __LIBRETRO__
+#include "e9k_debug.h"
 extern bool request_update_av_info;
 extern bool retro_av_info_change_timing;
 extern bool retro_av_info_is_ntsc;
@@ -97,6 +99,18 @@ extern uint8_t video_config_allow_hz_change;
 #define EXTRAWIDTH_ULTRA 77
 
 #define LORES_TO_SHRES_SHIFT 2
+
+#if !defined(E9K_DEBUGGER_CUSTOM_LOGGER)
+#define E9K_DEBUGGER_CUSTOM_LOGGER 0
+#endif
+
+#if E9K_HACK_BLITTER_VIS
+#define CUSTOM_BLITTER_VIS_MODE_SOLID 0x1
+#define CUSTOM_BLITTER_VIS_MODE_COLLECT 0x2
+#define CUSTOM_BLITTER_VIS_MODE_PATTERN 0x4
+#define CUSTOM_BLITTER_VIS_MODE_STYLE_MASK (CUSTOM_BLITTER_VIS_MODE_SOLID | CUSTOM_BLITTER_VIS_MODE_PATTERN)
+#define CUSTOM_BLITTER_VIS_FETCH_MIN_TRACK_CAP 16384u
+#endif
 
 #ifdef SERIAL_PORT
 extern uae_u16 serper;
@@ -669,6 +683,16 @@ static int fetchwidth;
 static int toscr_delay_adjusted[2], toscr_delay_sh[2];
 static bool shdelay_disabled;
 static int custom_bplcon1DelayScrollEnabled = 1;
+static int custom_copperLineLimitEnabled = 0;
+static int custom_copperLineLimitStart = 52;
+static int custom_copperLineLimitEnd = 308;
+static int custom_bitplanePointerWriteBlockAllEnabled = 0;
+static int custom_bitplanePointerWriteBlockEnabled[6] = { 0, 0, 0, 0, 0, 0 };
+static int custom_bitplanePointerWriteBlockLineLimitStart = 52;
+static int custom_bitplanePointerWriteBlockLineLimitEnd = 308;
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+static int custom_customLoggerEnabled = 0;
+#endif
 static int delay_cycles, delay_cycles2;
 static int delay_lastcycle[2], delay_hsynccycle;
 static int vhposr_delay_offset;
@@ -697,6 +721,108 @@ up, we accumulate display data; this variable keeps track of how much.
 Thus, once we do call toscr_nbits (which happens at least every 16 bits),
 we can do more work at once.  */
 static int toscr_nbits;
+
+#if E9K_HACK_BLITTER_VIS
+static int custom_blitterVisFetchPixelCursor[MAX_PLANES];
+typedef struct custom_blitter_vis_fetch_min_track_s
+{
+	uae_u32 blitId;
+	int minX;
+	int minLine;
+	int used;
+} custom_blitter_vis_fetch_min_track_t;
+static custom_blitter_vis_fetch_min_track_t custom_blitterVisFetchMinTrack[CUSTOM_BLITTER_VIS_FETCH_MIN_TRACK_CAP];
+static uint32_t custom_blitterVisFetchMinTrackFrame = 0;
+static uint32_t custom_blitterVisFetchMinDropLogsFrame = 0;
+static int custom_blitterVisMarkSite = 0;
+
+#define CUSTOM_BLITTER_VIS_MARK_SITE_FETCH 1
+#define CUSTOM_BLITTER_VIS_MARK_SITE_LONG16 2
+#define CUSTOM_BLITTER_VIS_MARK_SITE_LONG32 3
+#define CUSTOM_BLITTER_VIS_MARK_SITE_LONG64 4
+
+STATIC_INLINE uint32_t
+custom_blitterVisFetchMinHash(uae_u32 blitId)
+{
+	uint32_t mixed = blitId * 2654435761u;
+	return mixed & (CUSTOM_BLITTER_VIS_FETCH_MIN_TRACK_CAP - 1u);
+}
+
+STATIC_INLINE void
+custom_blitterVisFetchMinReset(uint32_t frameId)
+{
+	memset(custom_blitterVisFetchMinTrack, 0, sizeof(custom_blitterVisFetchMinTrack));
+	custom_blitterVisFetchMinTrackFrame = frameId;
+	custom_blitterVisFetchMinDropLogsFrame = 0;
+}
+
+STATIC_INLINE custom_blitter_vis_fetch_min_track_t *
+custom_blitterVisFetchMinFind(uae_u32 blitId, int create)
+{
+	uint32_t index = custom_blitterVisFetchMinHash(blitId);
+	for (uint32_t probe = 0; probe < CUSTOM_BLITTER_VIS_FETCH_MIN_TRACK_CAP; ++probe) {
+		custom_blitter_vis_fetch_min_track_t *entry = &custom_blitterVisFetchMinTrack[index];
+		if (!entry->used) {
+			if (!create) {
+				return NULL;
+			}
+			entry->used = 1;
+			entry->blitId = blitId;
+			entry->minX = 0;
+			entry->minLine = -1;
+			return entry;
+		}
+		if (entry->blitId == blitId) {
+			return entry;
+		}
+		index = (index + 1u) & (CUSTOM_BLITTER_VIS_FETCH_MIN_TRACK_CAP - 1u);
+	}
+	return NULL;
+}
+
+STATIC_INLINE void
+custom_blitterVisLogFetchMinDrop(uaecptr addr, int pixelStart, int pixelCount, uae_u32 blitId)
+{
+	uint32_t frameId = blitter_getDebugFrameCounter();
+	if (custom_blitterVisFetchMinTrackFrame != frameId) {
+		custom_blitterVisFetchMinReset(frameId);
+	}
+	custom_blitter_vis_fetch_min_track_t *entry = custom_blitterVisFetchMinFind(blitId, 1);
+	if (!entry) {
+		return;
+	}
+	if (entry->minLine < 0) {
+		entry->minX = pixelStart;
+		entry->minLine = next_lineno;
+		return;
+	}
+	if (pixelStart >= entry->minX) {
+		return;
+	}
+	entry->minX = pixelStart;
+	entry->minLine = next_lineno;
+}
+
+STATIC_INLINE int
+custom_blitterVisTakeFetchPixelStartPixels(int plane, int pixelCount)
+{
+	if (plane < 0 || plane >= MAX_PLANES) {
+		return -1;
+	}
+	if (pixelCount <= 0) {
+		return -1;
+	}
+	int pixelStart = custom_blitterVisFetchPixelCursor[plane];
+	custom_blitterVisFetchPixelCursor[plane] += pixelCount;
+	return pixelStart;
+}
+
+STATIC_INLINE int
+custom_blitterVisTakeFetchPixelStart(int plane, int fm)
+{
+	return custom_blitterVisTakeFetchPixelStartPixels(plane, 16 << fm);
+}
+#endif
 
 static int REGPARAM3 custom_wput_1(int, uaecptr, uae_u32, int) REGPARAM;
 
@@ -1046,6 +1172,11 @@ static void reset_bpl_vars()
 	out_nbits = 0;
 	out_offs = 0;
 	toscr_nbits = 0;
+#if E9K_HACK_BLITTER_VIS
+	for (int plane = 0; plane < MAX_PLANES; plane++) {
+		custom_blitterVisFetchPixelCursor[plane] = 0;
+	}
+#endif
 	thisline_decision.bplres = output_res(bplcon0_res);
 }
 
@@ -2520,6 +2651,157 @@ custom_setBplcon1DelayScrollEnabled(int enabled)
 	bplcon1_written = true;
 }
 
+static int
+custom_clampCopperLineLimitLine(int line)
+{
+	if (line < 0) {
+		return 0;
+	}
+	if (line >= MAXVPOS_LINES_ECS) {
+		return MAXVPOS_LINES_ECS - 1;
+	}
+	return line;
+}
+
+void
+custom_setCopperLineLimitEnabled(int enabled)
+{
+	custom_copperLineLimitEnabled = enabled ? 1 : 0;
+}
+
+void
+custom_setCopperLineLimitStart(int line)
+{
+	custom_copperLineLimitStart = custom_clampCopperLineLimitLine(line);
+}
+
+void
+custom_setCopperLineLimitEnd(int line)
+{
+	custom_copperLineLimitEnd = custom_clampCopperLineLimitLine(line);
+}
+
+static int
+custom_isCopperLineLimited(int line)
+{
+	if (!custom_copperLineLimitEnabled) {
+		return 0;
+	}
+	int startLine = custom_copperLineLimitStart;
+	int endLine = custom_copperLineLimitEnd;
+	if (startLine > endLine) {
+		int tmp = startLine;
+		startLine = endLine;
+		endLine = tmp;
+	}
+	return line >= startLine && line <= endLine;
+}
+
+static int
+custom_clampBitplanePointerIndex(int bitplaneIndex)
+{
+	if (bitplaneIndex < 0) {
+		return 0;
+	}
+	if (bitplaneIndex > 5) {
+		return 5;
+	}
+	return bitplaneIndex;
+}
+
+void
+custom_setBitplanePointerWriteBlockAllEnabled(int enabled)
+{
+	custom_bitplanePointerWriteBlockAllEnabled = enabled ? 1 : 0;
+}
+
+void
+custom_setBitplanePointerWriteBlockEnabled(int bitplaneIndex, int enabled)
+{
+	int idx = custom_clampBitplanePointerIndex(bitplaneIndex);
+	custom_bitplanePointerWriteBlockEnabled[idx] = enabled ? 1 : 0;
+}
+
+void
+custom_setBitplanePointerWriteBlockLineLimitStart(int line)
+{
+	custom_bitplanePointerWriteBlockLineLimitStart = custom_clampCopperLineLimitLine(line);
+}
+
+void
+custom_setBitplanePointerWriteBlockLineLimitEnd(int line)
+{
+	custom_bitplanePointerWriteBlockLineLimitEnd = custom_clampCopperLineLimitLine(line);
+}
+
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+void
+custom_setCustomLoggerEnabled(int enabled)
+{
+	custom_customLoggerEnabled = enabled ? 1 : 0;
+}
+#endif
+
+static int
+custom_getBitplanePointerIndexFromAddr(uaecptr addr)
+{
+	switch (addr & 0x1FE) {
+		case 0x0E0:
+		case 0x0E2:
+			return 0;
+		case 0x0E4:
+		case 0x0E6:
+			return 1;
+		case 0x0E8:
+		case 0x0EA:
+			return 2;
+		case 0x0EC:
+		case 0x0EE:
+			return 3;
+		case 0x0F0:
+		case 0x0F2:
+			return 4;
+		case 0x0F4:
+		case 0x0F6:
+			return 5;
+		default:
+			break;
+	}
+	return -1;
+}
+
+static int
+custom_isBitplanePointerWriteBlocked(uaecptr addr)
+{
+	int idx = custom_getBitplanePointerIndexFromAddr(addr);
+	if (idx < 0) {
+		return 0;
+	}
+	if (custom_bitplanePointerWriteBlockAllEnabled) {
+		return 1;
+	}
+	return custom_bitplanePointerWriteBlockEnabled[idx] ? 1 : 0;
+}
+
+static int
+custom_isCopperBitplanePointerWriteBlocked(uaecptr addr)
+{
+	int startLine = custom_bitplanePointerWriteBlockLineLimitStart;
+	int endLine = custom_bitplanePointerWriteBlockLineLimitEnd;
+	if (!copper_access) {
+		return 0;
+	}
+	if (!custom_isBitplanePointerWriteBlocked(addr)) {
+		return 0;
+	}
+	if (startLine > endLine) {
+		int tmp = startLine;
+		startLine = endLine;
+		endLine = tmp;
+	}
+	return vpos >= startLine && vpos <= endLine;
+}
+
 static void set_delay_lastcycle(void)
 {
 	delay_lastcycle[0] = (((maxhpos + 0) * 2) + 2) << LORES_TO_SHRES_SHIFT;
@@ -2656,13 +2938,29 @@ static uae_u16 get_strobe_reg(int slot)
 	return strobe;
 }
 
-static uae_u16 fetch16(uaecptr p, int nr)
+#if E9K_HACK_BLITTER_VIS
+STATIC_INLINE uae_u16 custom_getRenderWord(uaecptr addr, int pixelStart, int pixelCount);
+STATIC_INLINE uae_u32 custom_getRenderLong(uaecptr addr, int pixelStart, int pixelCount);
+STATIC_INLINE int custom_getRenderMarkPixelStart(int pixelStart, int pipelineAdvancePixels, int displayDelayPixels);
+#endif
+
+static uae_u16 fetch16(uaecptr p, int nr, int pixelStart)
 {
 	uae_u16 v;
 	if (aga_mode) {
 		// AGA always does 32-bit fetches, this is needed
 		// to emulate 64 pixel wide sprite side-effects.
+#if E9K_HACK_BLITTER_VIS
+		int prevSite = custom_blitterVisMarkSite;
+		custom_blitterVisMarkSite = CUSTOM_BLITTER_VIS_MARK_SITE_FETCH;
+		uae_u32 vv = custom_getRenderLong(p & ~3, -1, 0);
+		if (pixelStart >= 0) {
+			(void)custom_getRenderWord(p, pixelStart, 16);
+		}
+		custom_blitterVisMarkSite = prevSite;
+#else
 		uae_u32 vv = chipmem_lget_indirect(p & ~3);
+#endif
 		if (p & 2) {
 			v = (uae_u16)vv;
 			if (nr >= 0) {
@@ -2675,7 +2973,14 @@ static uae_u16 fetch16(uaecptr p, int nr)
 			}
 		}
 	} else {
+#if E9K_HACK_BLITTER_VIS
+		int prevSite = custom_blitterVisMarkSite;
+		custom_blitterVisMarkSite = CUSTOM_BLITTER_VIS_MARK_SITE_FETCH;
+		v = custom_getRenderWord(p, pixelStart, pixelStart >= 0 ? 16 : 0);
+		custom_blitterVisMarkSite = prevSite;
+#else
 		v = chipmem_wget_indirect(p);
+#endif
 	}
 #ifdef DEBUGGER
 	if (memwatch_enabled) {
@@ -2688,18 +2993,26 @@ static uae_u16 fetch16(uaecptr p, int nr)
 	return v;
 }
 
-static uae_u32 fetch32(uaecptr p)
+static uae_u32 fetch32(uaecptr p, int pixelStart)
 {
 	uae_u32 v;
 	uaecptr pm = p & ~3;
+#if E9K_HACK_BLITTER_VIS
+	int prevSite = custom_blitterVisMarkSite;
+	custom_blitterVisMarkSite = CUSTOM_BLITTER_VIS_MARK_SITE_FETCH;
+	uae_u32 fetchedLong = custom_getRenderLong(pm, pixelStart, pixelStart >= 0 ? 32 : 0);
+	custom_blitterVisMarkSite = prevSite;
+#else
+	uae_u32 fetchedLong = chipmem_lget_indirect(pm);
+#endif
 	if (p & 2) {
-		v = chipmem_lget_indirect(pm) & 0x0000ffff;
+		v = fetchedLong & 0x0000ffff;
 		v |= v << 16;
 	} else if (fetchmode_fmode_bpl & 2) { // optimized (fetchmode_fmode & 3) == 2
-		v = chipmem_lget_indirect(pm) & 0xffff0000;
+		v = fetchedLong & 0xffff0000;
 		v |= v >> 16;
 	} else {
-		v = chipmem_lget_indirect(pm);
+		v = fetchedLong;
 	}
 #ifdef DEBUGGER
 	if (memwatch_enabled) {
@@ -2712,7 +3025,7 @@ static uae_u32 fetch32(uaecptr p)
 	return v;
 }
 
-static uae_u64 fetch64(uaecptr p)
+static uae_u64 fetch64(uaecptr p, int pixelStart)
 {
 	uae_u64 v;
 	uaecptr pm = p & ~7;
@@ -2725,14 +3038,34 @@ static uae_u64 fetch64(uaecptr p)
 		pm2 = pm + 4;
 	}
 	if (p & 2) {
+#if E9K_HACK_BLITTER_VIS
+		int pixelStart1 = pixelStart;
+		int pixelStart2 = pixelStart >= 0 ? (pixelStart + 32) : -1;
+		int prevSite = custom_blitterVisMarkSite;
+		custom_blitterVisMarkSite = CUSTOM_BLITTER_VIS_MARK_SITE_FETCH;
+		uae_u32 v1 = custom_getRenderLong(pm1, pixelStart1, pixelStart1 >= 0 ? 32 : 0) & 0x0000ffff;
+		uae_u32 v2 = custom_getRenderLong(pm2, pixelStart2, pixelStart2 >= 0 ? 32 : 0) & 0x0000ffff;
+		custom_blitterVisMarkSite = prevSite;
+#else
 		uae_u32 v1 = chipmem_lget_indirect(pm1) & 0x0000ffff;
 		uae_u32 v2 = chipmem_lget_indirect(pm2) & 0x0000ffff;
+#endif
 		v1 |= v1 << 16;
 		v2 |= v2 << 16;
 		v = (((uae_u64)v1) << 32) | v2;
 	} else {
+#if E9K_HACK_BLITTER_VIS
+		int pixelStart1 = pixelStart;
+		int pixelStart2 = pixelStart >= 0 ? (pixelStart + 32) : -1;
+		int prevSite = custom_blitterVisMarkSite;
+		custom_blitterVisMarkSite = CUSTOM_BLITTER_VIS_MARK_SITE_FETCH;
+		v = ((uae_u64)custom_getRenderLong(pm1, pixelStart1, pixelStart1 >= 0 ? 32 : 0)) << 32;
+		v |= custom_getRenderLong(pm2, pixelStart2, pixelStart2 >= 0 ? 32 : 0);
+		custom_blitterVisMarkSite = prevSite;
+#else
 		v = ((uae_u64)chipmem_lget_indirect(pm1)) << 32;
 		v |= chipmem_lget_indirect(pm2);
+#endif
 	}
 #ifdef DEBUGGER
 	if (memwatch_enabled) {
@@ -2775,13 +3108,13 @@ static int bplsprchipsetbug(int nr, int fm, int hpos)
 	uae_u64 v;
 	uae_u16 v2;
 	if (fm == 0) {
-		v = fetch16(px, -1);
+		v = fetch16(px, -1, -1);
 		v2 = (uae_u16)v;
 	} else if (fm == 1) {
-		v = fetch32(px);
+		v = fetch32(px, -1);
 		v2 = (uae_u16)(v >> 16);
 	} else {
-		v = fetch64(px);
+		v = fetch64(px, -1);
 		v2 = v >> 48;
 	}
 	bplpt[nr] = px;
@@ -3057,6 +3390,8 @@ static bool fetch(int nr, int fm, int hpos, bool addmodulo)
 
 	uae_u8 dmaslot = cycle_line_slot[hpos];
 	uaecptr p = bplpt[nr];
+	int renderPixelStart = -1;
+	int renderMarkPixelStart = -1;
 
 	if (dmaslot > CYCLE_BITPLANE) {
 		if (dmaslot == CYCLE_STROBE) {
@@ -3103,11 +3438,23 @@ static bool fetch(int nr, int fm, int hpos, bool addmodulo)
 	}
 #endif
 
+#if E9K_HACK_BLITTER_VIS
+	renderPixelStart = custom_blitterVisTakeFetchPixelStart(nr, fm);
+	if (renderPixelStart >= 0) {
+		int delay = toscr_delay_adjusted[nr & 1];
+		// Before first displayed plane block on a line, cycle fetch aligns without
+		// extra advance. Once display pipeline is running, fetched words map one
+		// fetch-unit ahead, same phase as long_fetch_* mark placement.
+		int pipelineAdvance = plane0_first_done ? (16 << fm) : 0;
+		renderMarkPixelStart = custom_getRenderMarkPixelStart(renderPixelStart, pipelineAdvance, delay);
+	}
+#endif
+
 	switch (fm)
 	{
 	case 0:
 	{
-		uae_u16 v = fetch16(p, nr);
+		uae_u16 v = fetch16(p, nr, renderMarkPixelStart);
 		fetched_aga[nr] = fetched[nr] = v;
 		regs.chipset_latch_rw = v;
 		last_custom_value = (uae_u16)regs.chipset_latch_rw;
@@ -3116,7 +3463,7 @@ static bool fetch(int nr, int fm, int hpos, bool addmodulo)
 #ifdef AGA
 	case 1:
 	{
-		fetched_aga[nr] = fetch32(p);
+		fetched_aga[nr] = fetch32(p, renderMarkPixelStart);
 		regs.chipset_latch_rw = (uae_u32)fetched_aga[nr];
 		last_custom_value = (uae_u16)regs.chipset_latch_rw;
 		fetched[nr] = (uae_u16)fetched_aga[nr];
@@ -3124,7 +3471,7 @@ static bool fetch(int nr, int fm, int hpos, bool addmodulo)
 	}
 	case 2:
 	{
-		fetched_aga[nr] = fetch64(p);
+		fetched_aga[nr] = fetch64(p, renderMarkPixelStart);
 		regs.chipset_latch_rw = (uae_u32)fetched_aga[nr];
 		last_custom_value = (uae_u16)regs.chipset_latch_rw;
 		fetched[nr] = (uae_u16)fetched_aga[nr];
@@ -4504,6 +4851,59 @@ static void beginning_of_plane_block(int hpos)
 #define MAX_FETCH_TEMP 128
 static uae_u32 fetch_tmp[MAX_FETCH_TEMP];
 
+#if E9K_HACK_BLITTER_VIS
+STATIC_INLINE int
+custom_useRenderBlitterOverride(void)
+{
+	if (blitter_getDebugWriteEnabled()) {
+		return 1;
+	}
+	return 0;
+}
+
+STATIC_INLINE int
+custom_getRenderMarkPixelStart(int pixelStart, int pipelineAdvancePixels, int displayDelayPixels)
+{
+	// Fetch data is displayed one fetch unit later because fetched/fetched_aga
+	// is consumed before newly fetched words in long_fetch_* loops.
+	if (pixelStart < 0) {
+		return -1;
+	}
+	return pixelStart + pipelineAdvancePixels + displayDelayPixels;
+}
+
+STATIC_INLINE uae_u16
+custom_getRenderWord(uaecptr addr, int pixelStart, int pixelCount)
+{
+	uae_u16 value = 0;
+	uae_u32 blitId = 0;
+	int useOverride = 0;
+	int collectMode = (blitter_getDebugVisMode() & CUSTOM_BLITTER_VIS_MODE_COLLECT) != 0;
+	int styleMode = (blitter_getDebugVisMode() & CUSTOM_BLITTER_VIS_MODE_STYLE_MASK) != 0;
+	if (blitter_getDebugVideoFetchInfo(addr, &value, &blitId, &useOverride)) {
+		if ((collectMode || styleMode) && blitId && pixelStart >= 0 && pixelCount > 0) {
+			custom_blitterVisLogFetchMinDrop(addr, pixelStart, pixelCount, blitId);
+			drawing_blitterVisMarkSourceRange(next_lineno, pixelStart, pixelCount, blitId);
+		}
+		if (useOverride) {
+			return value;
+		}
+	}
+	return chipmem_wget_indirect(addr);
+}
+
+STATIC_INLINE uae_u32
+custom_getRenderLong(uaecptr addr, int pixelStart, int pixelCount)
+{
+	int highCount = pixelCount > 0 ? (pixelCount / 2) : 0;
+	int lowCount = pixelCount > 0 ? (pixelCount - highCount) : 0;
+	int lowStart = pixelStart >= 0 ? (pixelStart + highCount) : -1;
+	uae_u32 high = custom_getRenderWord(addr, pixelStart, highCount);
+	uae_u32 low = custom_getRenderWord(addr + 2, lowStart, lowCount);
+	return (high << 16) | low;
+}
+#endif
+
 /* The usual inlining tricks - don't touch unless you know what you are doing. */
 STATIC_INLINE void long_fetch_16(int plane, int nwords, int weird_number_of_bits)
 {
@@ -4520,15 +4920,34 @@ STATIC_INLINE void long_fetch_16(int plane, int nwords, int weird_number_of_bits
 	bplpt[plane] += nwords * 2;
 	bplptx[plane] += nwords * 2;
 
-	if (real_pt == NULL) {
-		if (nwords > MAX_FETCH_TEMP) {
-			return;
-		}
-		for (int i = 0; i < nwords; i++) {
-			fetch_tmp[i] = chipmem_wget_indirect(bpladdr);
-			bpladdr += 2;
-		}
+#if E9K_HACK_BLITTER_VIS
+	if (custom_useRenderBlitterOverride()) {
+		real_pt = NULL;
 	}
+#endif
+
+		if (real_pt == NULL) {
+			if (nwords > MAX_FETCH_TEMP) {
+				return;
+			}
+#if E9K_HACK_BLITTER_VIS
+			int prevSite = custom_blitterVisMarkSite;
+			custom_blitterVisMarkSite = CUSTOM_BLITTER_VIS_MARK_SITE_LONG16;
+#endif
+			for (int i = 0; i < nwords; i++) {
+#if E9K_HACK_BLITTER_VIS
+				int fetchPixelStart = custom_blitterVisTakeFetchPixelStartPixels(plane, 16);
+				int pixelStart = custom_getRenderMarkPixelStart(fetchPixelStart, 16, delay);
+				fetch_tmp[i] = custom_getRenderWord(bpladdr, pixelStart, 16);
+#else
+			fetch_tmp[i] = chipmem_wget_indirect(bpladdr);
+#endif
+				bpladdr += 2;
+			}
+#if E9K_HACK_BLITTER_VIS
+			custom_blitterVisMarkSite = prevSite;
+#endif
+		}
 
 	shiftbuffer = todisplay2[plane] << delay;
 
@@ -4589,15 +5008,34 @@ STATIC_INLINE void long_fetch_32 (int plane, int nwords, int weird_number_of_bit
 	bplpt[plane] += nwords * 2;
 	bplptx[plane] += nwords * 2;
 
-	if (real_pt == NULL) {
-		if (nwords > MAX_FETCH_TEMP) {
-			return;
-		}
-		for (int i = 0; i < nwords; i++) {
-			fetch_tmp[i] = chipmem_lget_indirect(bpladdr);
-			bpladdr += 4;
-		}
+#if E9K_HACK_BLITTER_VIS
+	if (custom_useRenderBlitterOverride()) {
+		real_pt = NULL;
 	}
+#endif
+
+		if (real_pt == NULL) {
+			if (nwords > MAX_FETCH_TEMP) {
+				return;
+			}
+#if E9K_HACK_BLITTER_VIS
+			int prevSite = custom_blitterVisMarkSite;
+			custom_blitterVisMarkSite = CUSTOM_BLITTER_VIS_MARK_SITE_LONG32;
+#endif
+			for (int i = 0; i < nwords; i++) {
+#if E9K_HACK_BLITTER_VIS
+				int fetchPixelStart = custom_blitterVisTakeFetchPixelStartPixels(plane, 32);
+				int pixelStart = custom_getRenderMarkPixelStart(fetchPixelStart, 32, delay);
+				fetch_tmp[i] = custom_getRenderLong(bpladdr, pixelStart, 32);
+#else
+			fetch_tmp[i] = chipmem_lget_indirect(bpladdr);
+#endif
+				bpladdr += 4;
+			}
+#if E9K_HACK_BLITTER_VIS
+			custom_blitterVisMarkSite = prevSite;
+#endif
+		}
 
 	shiftbuffer = todisplay2_aga[plane] << delay;
 
@@ -4711,15 +5149,34 @@ STATIC_INLINE void long_fetch_64(int plane, int nwords, int weird_number_of_bits
 	bplpt[plane] += nwords * 2;
 	bplptx[plane] += nwords * 2;
 
-	if (real_pt == NULL) {
-		if (nwords * 2 > MAX_FETCH_TEMP) {
-			return;
-		}
-		for (int i = 0; i < nwords * 2; i++) {
-			fetch_tmp[i] = chipmem_lget_indirect(bpladdr);
-			bpladdr += 4;
-		}
+#if E9K_HACK_BLITTER_VIS
+	if (custom_useRenderBlitterOverride()) {
+		real_pt = NULL;
 	}
+#endif
+
+		if (real_pt == NULL) {
+			if (nwords * 2 > MAX_FETCH_TEMP) {
+				return;
+			}
+#if E9K_HACK_BLITTER_VIS
+			int prevSite = custom_blitterVisMarkSite;
+			custom_blitterVisMarkSite = CUSTOM_BLITTER_VIS_MARK_SITE_LONG64;
+#endif
+			for (int i = 0; i < nwords * 2; i++) {
+#if E9K_HACK_BLITTER_VIS
+				int fetchPixelStart = custom_blitterVisTakeFetchPixelStartPixels(plane, 32);
+				int pixelStart = custom_getRenderMarkPixelStart(fetchPixelStart, 64, delay);
+				fetch_tmp[i] = custom_getRenderLong(bpladdr, pixelStart, 32);
+#else
+			fetch_tmp[i] = chipmem_lget_indirect(bpladdr);
+#endif
+				bpladdr += 4;
+			}
+#if E9K_HACK_BLITTER_VIS
+			custom_blitterVisMarkSite = prevSite;
+#endif
+		}
 
 #ifdef HAVE_UAE_U128
 	shiftbuffer = todisplay2_aga[plane] << delay;
@@ -10700,6 +11157,9 @@ static bool copper_cant_read(int hpos, uae_u16 alloc)
 static int custom_wput_copper(int hpos, uaecptr pt, uaecptr addr, uae_u32 value, int noget)
 {
 	int v;
+	if (custom_isCopperLineLimited(vpos)) {
+		return 0;
+	}
 
 #ifdef DEBUGGER
 	value = debug_putpeekdma_chipset(0xdff000 + addr, value, MW_MASK_COPPER, 0x08c);
@@ -12072,6 +12532,12 @@ static int calculate_lineno(int vp)
 // vsync start
 void init_hardware_for_drawing_frame(void)
 {
+#if E9K_HACK_BLITTER_VIS
+	drawing_blitterVisClearSourceFrame();
+	if (!(blitter_getDebugWriteEnabled() && ((blitter_getDebugVisMode() & CUSTOM_BLITTER_VIS_MODE_COLLECT) != 0))) {
+		drawing_blitterVisClearFrame();
+	}
+#endif
 	/* Avoid this code in the first frame after a customreset.  */
 	if (prev_sprite_entries) {
 		int first_pixel = prev_sprite_entries[0].first_pixel;
@@ -14287,6 +14753,9 @@ static void hsync_handler_post(bool onvsync)
 	}
 
 	if (onvsync) {
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+		e9k_debug_ami_customLogFrameCommit();
+#endif
 		// vpos_count >= MAXVPOS just to not crash if VPOSW writes prevent vsync completely
 		vpos = 0;
 		vsync_handler_post();
@@ -15478,6 +15947,15 @@ static int REGPARAM2 custom_wput_1 (int hpos, uaecptr addr, uae_u32 value, int n
 	value &= 0xffff;
 	custom_storage[addr >> 1].value = (uae_u16)value;
 	custom_storage[addr >> 1].pc = copper_access ? cop_state.ip | 1 : M68K_GETPC;
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+	if (custom_customLoggerEnabled) {
+		e9k_debug_ami_customLogWrite(vpos,
+			hpos,
+			(uae_u32)(addr & 0x1FE),
+			(uae_u16)(value & 0xffffu),
+			custom_storage[addr >> 1].pc);
+	}
+#endif
 #ifdef ACTION_REPLAY
 #ifdef ACTION_REPLAY_COMMON
 	ar_custom[addr + 0]=(uae_u8)(value >> 8);
@@ -15597,18 +16075,66 @@ static int REGPARAM2 custom_wput_1 (int hpos, uaecptr addr, uae_u32 value, int n
 	case 0x0D8: AUDxVOL(3, value); break;
 	case 0x0DA: AUDxDAT(3, value); break;
 
-	case 0x0E0: BPLxPTH(hpos, value, 0); break;
-	case 0x0E2: BPLxPTL(hpos, value, 0); break;
-	case 0x0E4: BPLxPTH(hpos, value, 1); break;
-	case 0x0E6: BPLxPTL(hpos, value, 1); break;
-	case 0x0E8: BPLxPTH(hpos, value, 2); break;
-	case 0x0EA: BPLxPTL(hpos, value, 2); break;
-	case 0x0EC: BPLxPTH(hpos, value, 3); break;
-	case 0x0EE: BPLxPTL(hpos, value, 3); break;
-	case 0x0F0: BPLxPTH(hpos, value, 4); break;
-	case 0x0F2: BPLxPTL(hpos, value, 4); break;
-	case 0x0F4: BPLxPTH(hpos, value, 5); break;
-	case 0x0F6: BPLxPTL(hpos, value, 5); break;
+	case 0x0E0:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTH(hpos, value, 0);
+		}
+		break;
+	case 0x0E2:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTL(hpos, value, 0);
+		}
+		break;
+	case 0x0E4:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTH(hpos, value, 1);
+		}
+		break;
+	case 0x0E6:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTL(hpos, value, 1);
+		}
+		break;
+	case 0x0E8:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTH(hpos, value, 2);
+		}
+		break;
+	case 0x0EA:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTL(hpos, value, 2);
+		}
+		break;
+	case 0x0EC:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTH(hpos, value, 3);
+		}
+		break;
+	case 0x0EE:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTL(hpos, value, 3);
+		}
+		break;
+	case 0x0F0:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTH(hpos, value, 4);
+		}
+		break;
+	case 0x0F2:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTL(hpos, value, 4);
+		}
+		break;
+	case 0x0F4:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTH(hpos, value, 5);
+		}
+		break;
+	case 0x0F6:
+		if (!custom_isCopperBitplanePointerWriteBlocked(addr)) {
+			BPLxPTL(hpos, value, 5);
+		}
+		break;
 	case 0x0F8: BPLxPTH(hpos, value, 6); break;
 	case 0x0FA: BPLxPTL(hpos, value, 6); break;
 	case 0x0FC: BPLxPTH(hpos, value, 7); break;

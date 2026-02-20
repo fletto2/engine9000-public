@@ -7,6 +7,10 @@
 #include "uae/types.h"
 #include "e9k-lib.h"
 
+#if !defined(E9K_DEBUGGER_CUSTOM_LOGGER)
+#define E9K_DEBUGGER_CUSTOM_LOGGER 0
+#endif
+
 // Debug base register sections (passed to e9k_debug_set_debug_base_callback()).
 #define E9K_DEBUG_BASE_SECTION_TEXT 0u
 #define E9K_DEBUG_BASE_SECTION_DATA 1u
@@ -70,8 +74,37 @@ e9k_debug_remove_temp_breakpoint(uint32_t addr);
 void
 e9k_debug_set_vblank_callback(void (*cb)(void *), void *user);
 
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+void
+e9k_debug_set_custom_log_frame_callback(e9k_debug_ami_custom_log_frame_callback_t cb, void *user);
+
+void
+e9k_debug_ami_customLogWrite(int vpos, int hpos, uae_u32 reg, uae_u16 value, uae_u32 sourcePc);
+
+void
+e9k_debug_ami_customLogFrameCommit(void);
+#endif
+
 void
 e9k_vblank_notify(void);
+
+void
+e9k_debug_ami_on_video_presented(void);
+
+size_t
+e9k_debug_ami_blitter_vis_read_points(e9k_debug_ami_blitter_vis_point_t *out, size_t cap, uint32_t *outWidth, uint32_t *outHeight);
+
+size_t
+e9k_debug_ami_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap);
+
+int
+e9k_debug_ami_get_video_line_count(void);
+
+int
+e9k_debug_ami_video_line_to_core_line(int videoLine);
+
+int
+e9k_debug_ami_core_line_to_video_line(int coreLine);
 
 void
 e9k_debug_reapply_memhooks(void);

@@ -73,6 +73,9 @@ typedef struct mega_sprite_debug_state
     int showOrderNumbers;
     int highlightIssuesOnly;
     uint32_t windowId;
+    int alwaysOnTopState;
+    int mainWindowFocused;
+    int megaWindowFocused;
 } mega_sprite_debug_state_t;
 
 static mega_sprite_debug_state_t mega_sprite_debug_state = {0};
@@ -151,6 +154,22 @@ mega_sprite_debug_refocusMain(void)
     SDL_ShowWindow(mainWin);
     SDL_RaiseWindow(mainWin);
     SDL_SetWindowInputFocus(mainWin);
+}
+
+static void
+mega_sprite_debug_updateAlwaysOnTop(void)
+{
+#ifndef E9K_DISABLE_ALWAYS_ON_TOP
+    if (!mega_sprite_debug_state.window) {
+        return;
+    }
+    int shouldStayOnTop = (mega_sprite_debug_state.mainWindowFocused || mega_sprite_debug_state.megaWindowFocused) ? 1 : 0;
+    if (mega_sprite_debug_state.alwaysOnTopState == shouldStayOnTop) {
+        return;
+    }
+    SDL_SetWindowAlwaysOnTop(mega_sprite_debug_state.window, shouldStayOnTop ? SDL_TRUE : SDL_FALSE);
+    mega_sprite_debug_state.alwaysOnTopState = shouldStayOnTop;
+#endif
 }
 
 static void
@@ -481,9 +500,15 @@ mega_sprite_debug_toggle(void)
             SDL_SetWindowPosition(mega_sprite_debug_state.window, mega_sprite_debug_state.winX, mega_sprite_debug_state.winY);
             SDL_SetWindowSize(mega_sprite_debug_state.window, mega_sprite_debug_state.winW, mega_sprite_debug_state.winH);
         }
-#ifndef E9K_DISABLE_ALWAYS_ON_TOP
-        SDL_SetWindowAlwaysOnTop(mega_sprite_debug_state.window, SDL_TRUE);
-#endif
+        mega_sprite_debug_state.alwaysOnTopState = -1;
+        mega_sprite_debug_state.mainWindowFocused = 0;
+        if (e9ui && e9ui->ctx.window) {
+            uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
+            mega_sprite_debug_state.mainWindowFocused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+        }
+        uint32_t megaFlags = SDL_GetWindowFlags(mega_sprite_debug_state.window);
+        mega_sprite_debug_state.megaWindowFocused = (megaFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+        mega_sprite_debug_updateAlwaysOnTop();
         mega_sprite_debug_state.texture = SDL_CreateTexture(mega_sprite_debug_state.renderer,
                                                             SDL_PIXELFORMAT_ARGB8888,
                                                             SDL_TEXTUREACCESS_STREAMING,
@@ -521,6 +546,9 @@ mega_sprite_debug_toggle(void)
     mega_sprite_debug_state.texW = 0;
     mega_sprite_debug_state.texH = 0;
     mega_sprite_debug_state.open = 0;
+    mega_sprite_debug_state.alwaysOnTopState = 0;
+    mega_sprite_debug_state.mainWindowFocused = 0;
+    mega_sprite_debug_state.megaWindowFocused = 0;
     mega_sprite_debug_state.cachedValid = 0;
     mega_sprite_debug_refocusMain();
 }
@@ -555,6 +583,12 @@ mega_sprite_debug_handleWindowEvent(const SDL_Event *ev)
         mega_sprite_debug_state.winY = ev->window.data2;
         mega_sprite_debug_state.winHasSaved = 1;
         config_saveConfig();
+    } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+        mega_sprite_debug_state.megaWindowFocused = 1;
+        mega_sprite_debug_updateAlwaysOnTop();
+    } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+        mega_sprite_debug_state.megaWindowFocused = 0;
+        mega_sprite_debug_updateAlwaysOnTop();
     }
 }
 
@@ -591,6 +625,16 @@ mega_sprite_debug_handleKeydown(const SDL_KeyboardEvent *kev)
         return 1;
     }
     return 0;
+}
+
+void
+mega_sprite_debug_setMainWindowFocused(int focused)
+{
+    mega_sprite_debug_state.mainWindowFocused = focused ? 1 : 0;
+    if (!mega_sprite_debug_state.open) {
+        return;
+    }
+    mega_sprite_debug_updateAlwaysOnTop();
 }
 
 int

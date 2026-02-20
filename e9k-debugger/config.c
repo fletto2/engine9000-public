@@ -8,12 +8,17 @@
 
 #include "config.h"
 #include "crt.h"
+#include "custom_log.h"
+#include "custom_ui.h"
 #include "debugger.h"
 #include "e9ui.h"
 #include "sprite_debug.h"
 #include "mega_sprite_debug.h"
+#include "shader_ui.h"
 #include "transition.h"
 #include "ui_test.h"
+
+static const char config_uiTestSessionConfigName[] = ".e9k-debugger.cfg";
 
 
 static void
@@ -151,6 +156,9 @@ config_persistConfig(FILE *f)
     crt_persistConfig(f);
     sprite_debug_persistConfig(f);
     mega_sprite_debug_persistConfig(f);
+    custom_ui_persistConfig(f);
+    custom_log_persistConfig(f);
+    shader_ui_persistConfig(f);
 }
 
 void
@@ -172,14 +180,13 @@ config_saveConfig(void)
     e9ui_saveLayout(path);
 }
 
-void
-config_loadConfig(void)
+static void
+config_loadConfigFile(const char *path)
 {
-    const char *path = debugger_configPath();
-    if (!path) {
+    if (!path || !*path) {
         return;
     }
-    target_setConfigDefaults();
+
     FILE *f = fopen(path, "r");
     if (!f) {
         return;
@@ -304,6 +311,50 @@ config_loadConfig(void)
             mega_sprite_debug_loadConfigProperty(prop, value);
             continue;
         }
+        if (strncmp(key, "comp.custom_ui.", 15) == 0) {
+            const char *prop = key + 15;
+            custom_ui_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.custom_log.", 16) == 0) {
+            const char *prop = key + 16;
+            custom_log_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.shader_ui.", 15) == 0) {
+            const char *prop = key + 15;
+            shader_ui_loadConfigProperty(prop, value);
+            continue;
+        }
     }
     fclose(f);
+}
+
+void
+config_loadConfig(void)
+{
+    target_setConfigDefaults();
+
+    if (ui_test_getMode() != UI_TEST_MODE_NONE) {
+        if (debugger_getLoadTestTempConfig()) {
+            const char *tempPath = debugger_configTempPath();
+            if (tempPath && *tempPath) {
+                config_loadConfigFile(tempPath);
+                return;
+            }
+        }
+
+        char uiTestPath[1024];
+        uiTestPath[0] = '\0';
+        const char *folder = ui_test_getFolder();
+        if (folder && *folder &&
+            debugger_platform_pathJoin(uiTestPath, sizeof(uiTestPath), folder, config_uiTestSessionConfigName)) {
+            config_loadConfigFile(uiTestPath);
+        } else {
+            config_loadConfigFile(debugger_configPath());
+        }
+        return;
+    }
+
+    config_loadConfigFile(debugger_configPath());
 }

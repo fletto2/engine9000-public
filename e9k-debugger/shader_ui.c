@@ -8,7 +8,9 @@
 
 #include <SDL.h>
 #include <SDL_ttf.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "shader_ui.h"
@@ -82,6 +84,14 @@ typedef struct e9k_shader_ui {
     int open;
     int closeRequested;
     int dirty;
+    int alwaysOnTopState;
+    int mainWindowFocused;
+    int shaderWindowFocused;
+    int winX;
+    int winY;
+    int winW;
+    int winH;
+    int winHasSaved;
     SDL_Window *window;
     SDL_Renderer *renderer;
     uint32_t windowId;
@@ -145,6 +155,54 @@ shader_ui_refocusMain(void)
     if (geo) {
         e9ui_setFocus(&e9ui->ctx, geo);
     }
+}
+
+static void
+shader_ui_updateAlwaysOnTop(e9k_shader_ui_t *ui)
+{
+#ifndef E9K_DISABLE_ALWAYS_ON_TOP
+    if (!ui || !ui->window) {
+        return;
+    }
+    int shouldStayOnTop = (ui->mainWindowFocused || ui->shaderWindowFocused) ? 1 : 0;
+    if (ui->alwaysOnTopState == shouldStayOnTop) {
+        return;
+    }
+    SDL_SetWindowAlwaysOnTop(ui->window, shouldStayOnTop ? SDL_TRUE : SDL_FALSE);
+    ui->alwaysOnTopState = shouldStayOnTop;
+#else
+    (void)ui;
+#endif
+}
+
+static int
+shader_ui_parseInt(const char *value, int *out)
+{
+    if (!value || !out) {
+        return 0;
+    }
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (!end || end == value) {
+        return 0;
+    }
+    if (parsed < INT_MIN || parsed > INT_MAX) {
+        return 0;
+    }
+    *out = (int)parsed;
+    return 1;
+}
+
+static void
+shader_ui_captureWindowRect(void)
+{
+    e9k_shader_ui_t *ui = &shader_ui_state;
+    if (!ui->window) {
+        return;
+    }
+    SDL_GetWindowPosition(ui->window, &ui->winX, &ui->winY);
+    SDL_GetWindowSize(ui->window, &ui->winW, &ui->winH);
+    ui->winHasSaved = 1;
 }
 
 
@@ -1164,6 +1222,10 @@ shader_ui_init(void)
         debug_error("shader ui: SDL_CreateRenderer failed: %s", SDL_GetError());
         return 0;
     }
+    if (ui->winHasSaved) {
+        SDL_SetWindowPosition(win, ui->winX, ui->winY);
+        SDL_SetWindowSize(win, ui->winW, ui->winH);
+    }
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     ui->window = win;
     ui->renderer = ren;
@@ -1172,6 +1234,15 @@ shader_ui_init(void)
     ui->ctx.renderer = ren;
     ui->ctx.font = e9ui->ctx.font;
     ui->ctx.dpiScale = shader_ui_computeDpiScale(&ui->ctx);
+    ui->alwaysOnTopState = -1;
+    ui->mainWindowFocused = 0;
+    if (e9ui && e9ui->ctx.window) {
+        uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
+        ui->mainWindowFocused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+    }
+    uint32_t shaderFlags = SDL_GetWindowFlags(win);
+    ui->shaderWindowFocused = (shaderFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+    shader_ui_updateAlwaysOnTop(ui);
     shader_ui_snapshot(ui);
     ui->closeRequested = 0;
     ui->dirty = 1;
@@ -1181,7 +1252,7 @@ shader_ui_init(void)
         shader_ui_shutdown();
         return 0;
     }
-    {
+    if (!ui->winHasSaved) {
         int winW = 0;
         int winH = 0;
         SDL_GetWindowSize(win, &winW, &winH);
@@ -1209,6 +1280,8 @@ shader_ui_shutdown(void)
         e9ui_childDestroy(ui->root, &ui->ctx);
         ui->root = NULL;
     }
+    shader_ui_captureWindowRect();
+    config_saveConfig();
     e9ui_text_cache_clearRenderer(ui->renderer);
     if (ui->renderer) {
         SDL_DestroyRenderer(ui->renderer);
@@ -1220,6 +1293,9 @@ shader_ui_shutdown(void)
     }
     ui->open = 0;
     ui->closeRequested = 0;
+    ui->alwaysOnTopState = 0;
+    ui->mainWindowFocused = 0;
+    ui->shaderWindowFocused = 0;
     ui->windowId = 0;
     ui->dirty = 0;
     memset(&ui->ctx, 0, sizeof(ui->ctx));
@@ -1239,6 +1315,17 @@ shader_ui_getWindowId(void)
 }
 
 void
+shader_ui_setMainWindowFocused(int focused)
+{
+    e9k_shader_ui_t *ui = &shader_ui_state;
+    ui->mainWindowFocused = focused ? 1 : 0;
+    if (!ui->open) {
+        return;
+    }
+    shader_ui_updateAlwaysOnTop(ui);
+}
+
+void
 shader_ui_handleEvent(SDL_Event *ev)
 {
     if (!ev || !shader_ui_state.open) {
@@ -1252,6 +1339,8 @@ shader_ui_handleEvent(SDL_Event *ev)
     e9ui_component_t *root = ui->fullscreen ? ui->fullscreen : ui->root;
     ui->ctx.focusClickHandled = 0;
     ui->ctx.cursorOverride = 0;
+    ui->ctx.focusRoot = ui->root;
+    ui->ctx.focusFullscreen = ui->fullscreen;
 
     if (ev->type == SDL_WINDOWEVENT && ev->window.event == SDL_WINDOWEVENT_CLOSE) {
         ui->closeRequested = 1;
@@ -1290,11 +1379,36 @@ shader_ui_handleEvent(SDL_Event *ev)
         if (ev->window.event == SDL_WINDOWEVENT_RESIZED ||
             ev->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
             ui->ctx.dpiScale = shader_ui_computeDpiScale(&ui->ctx);
+            ui->winW = ev->window.data1;
+            ui->winH = ev->window.data2;
+            ui->winHasSaved = 1;
+            config_saveConfig();
+        } else if (ev->window.event == SDL_WINDOWEVENT_MOVED) {
+            ui->winX = ev->window.data1;
+            ui->winY = ev->window.data2;
+            ui->winHasSaved = 1;
+            config_saveConfig();
+        } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+            ui->shaderWindowFocused = 1;
+            shader_ui_updateAlwaysOnTop(ui);
+        } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            ui->shaderWindowFocused = 0;
+            shader_ui_updateAlwaysOnTop(ui);
         }
     } else if (ev->type == SDL_KEYDOWN) {
         if (ev->key.keysym.sym == SDLK_ESCAPE) {
             shader_ui_cancel(&ui->ctx, ui);
             return;
+        }
+        SDL_Keymod mods = ev->key.keysym.mod;
+        int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+        if (!accel && ev->key.keysym.sym == SDLK_TAB && !e9ui_getFocus(&ui->ctx)) {
+            int reverse = (mods & KMOD_SHIFT) ? 1 : 0;
+            e9ui_component_t *next = e9ui_focusFindNext(root, NULL, reverse);
+            if (next) {
+                e9ui_setFocus(&ui->ctx, next);
+                return;
+            }
         }
         int consumed = 0;
         if (e9ui_getFocus(&ui->ctx) && e9ui_getFocus(&ui->ctx)->handleEvent) {
@@ -1356,4 +1470,55 @@ shader_ui_render(void)
     }
     SDL_RenderPresent(ui->renderer);
     ui->dirty = 0;
+}
+
+void
+shader_ui_persistConfig(FILE *file)
+{
+    if (!file) {
+        return;
+    }
+    e9k_shader_ui_t *ui = &shader_ui_state;
+    if (ui->open) {
+        shader_ui_captureWindowRect();
+    }
+    if (!ui->winHasSaved) {
+        return;
+    }
+    fprintf(file, "comp.shader_ui.win_x=%d\n", ui->winX);
+    fprintf(file, "comp.shader_ui.win_y=%d\n", ui->winY);
+    fprintf(file, "comp.shader_ui.win_w=%d\n", ui->winW);
+    fprintf(file, "comp.shader_ui.win_h=%d\n", ui->winH);
+}
+
+int
+shader_ui_loadConfigProperty(const char *prop, const char *value)
+{
+    e9k_shader_ui_t *ui = &shader_ui_state;
+    int intValue = 0;
+    if (strcmp(prop, "win_x") == 0) {
+        if (!shader_ui_parseInt(value, &intValue)) {
+            return 0;
+        }
+        ui->winX = intValue;
+    } else if (strcmp(prop, "win_y") == 0) {
+        if (!shader_ui_parseInt(value, &intValue)) {
+            return 0;
+        }
+        ui->winY = intValue;
+    } else if (strcmp(prop, "win_w") == 0) {
+        if (!shader_ui_parseInt(value, &intValue)) {
+            return 0;
+        }
+        ui->winW = intValue;
+    } else if (strcmp(prop, "win_h") == 0) {
+        if (!shader_ui_parseInt(value, &intValue)) {
+            return 0;
+        }
+        ui->winH = intValue;
+    } else {
+        return 0;
+    }
+    ui->winHasSaved = 1;
+    return 1;
 }

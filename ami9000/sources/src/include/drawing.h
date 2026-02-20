@@ -335,6 +335,20 @@ struct draw_info {
 extern struct decision line_decisions[2 * (MAXVPOS + MAXVPOS_WRAPLINES) + 1];
 
 extern uae_u8 line_data[(MAXVPOS + MAXVPOS_WRAPLINES) * 2][MAX_PLANES * MAX_WORDS_PER_LINE * 2];
+#if E9K_HACK_BLITTER_VIS
+extern void drawing_blitterVisClearSourceFrame(void);
+extern void drawing_blitterVisClearFrame(void);
+extern void drawing_blitterVisClearAll(void);
+extern void drawing_blitterVisSnapshotFrame(void);
+extern void drawing_blitterVisSetLineContext(int sourceLine, int nativeLine);
+extern void drawing_blitterVisMarkSourceRange(int lineno, int pixelStart, int pixelCount, uae_u32 blitId);
+extern void drawing_blitterVisMarkNativeRange(int pixelStart, int pixelCount, uae_u32 blitId);
+extern int drawing_blitterVisGetNativePixelBlitId(int pixelY, int pixelX, uae_u32 *blitId);
+extern int drawing_blitterVisTakeNativePixelBlitId(int pixelY, int pixelX, uae_u32 *blitId);
+extern uint32_t drawing_blitterVisGetSourceMarkCallsFrame(void);
+extern uint32_t drawing_blitterVisGetNativeMarkCallsFrame(void);
+extern uint32_t drawing_blitterVisGetNativeMarkCallsSnapshot(void);
+#endif
 
 /* Functions in drawing.c.  */
 extern int coord_native_to_amiga_y (int);

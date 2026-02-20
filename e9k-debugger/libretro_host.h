@@ -201,6 +201,27 @@ bool
 libretro_host_debugGetAmigaDebugDmaAddr(int **out_addr);
 
 bool
+libretro_host_debugAmiSetBlitterDebug(int enabled);
+
+bool
+libretro_host_debugAmiGetBlitterDebug(int *out_enabled);
+
+size_t
+libretro_host_debugAmiReadBlitterVisPoints(e9k_debug_ami_blitter_vis_point_t *out, size_t cap, uint32_t *out_width, uint32_t *out_height);
+
+bool
+libretro_host_debugAmiReadBlitterVisStats(e9k_debug_ami_blitter_vis_stats_t *out);
+
+bool
+libretro_host_debugAmiGetVideoLineCount(int *out_line_count);
+
+bool
+libretro_host_debugAmiVideoLineToCoreLine(int video_line, int *out_core_line);
+
+bool
+libretro_host_debugAmiCoreLineToVideoLine(int core_line, int *out_video_line);
+
+bool
 libretro_host_getSerializeSize(size_t *out_size);
 
 bool
@@ -235,6 +256,9 @@ libretro_host_getSystemDir(void);
 
 bool
 libretro_host_setVblankCallback(void (*cb)(void *), void *user);
+
+bool
+libretro_host_setCustomLogFrameCallback(e9k_debug_ami_custom_log_frame_callback_t cb, void *user);
 
 bool
 libretro_host_setDebugBaseCallback(void (*cb)(uint32_t section, uint32_t base));

@@ -50,10 +50,24 @@ extern bool direct_rgb;
 
 uae_u32 get_copper_address(int copno);
 
+#if !defined(E9K_DEBUGGER_CUSTOM_LOGGER)
+#define E9K_DEBUGGER_CUSTOM_LOGGER 0
+#endif
+
 extern int custom_init(void);
 extern void custom_prepare(void);
 extern void custom_reset(bool hardreset, bool keyboardreset);
 extern void custom_setBplcon1DelayScrollEnabled(int enabled);
+extern void custom_setCopperLineLimitEnabled(int enabled);
+extern void custom_setCopperLineLimitStart(int line);
+extern void custom_setCopperLineLimitEnd(int line);
+extern void custom_setBitplanePointerWriteBlockAllEnabled(int enabled);
+extern void custom_setBitplanePointerWriteBlockEnabled(int bitplaneIndex, int enabled);
+extern void custom_setBitplanePointerWriteBlockLineLimitStart(int line);
+extern void custom_setBitplanePointerWriteBlockLineLimitEnd(int line);
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+extern void custom_setCustomLoggerEnabled(int enabled);
+#endif
 extern int intlev(void);
 extern void intlev_ack(int);
 extern void dumpcustom(void);

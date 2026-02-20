@@ -27,6 +27,8 @@ typedef struct e9ui_context {
     float         dpiScale; 
     struct e9ui_component *_focus;
     int                  focusClickHandled;
+    struct e9ui_component *focusRoot;
+    struct e9ui_component *focusFullscreen;
 
     void (*sendLine)(const char *s);
     void (*sendInterrupt)(void);
@@ -45,4 +47,3 @@ typedef struct e9ui_context {
 #define e9ui_getFocus(ctx) (ctx)->_focus
 void
 e9ui_setFocus(struct e9ui_context *ctx, struct e9ui_component* comp);
-

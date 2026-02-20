@@ -8,7 +8,6 @@
 
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 #include <SDL.h>
 
 #include "runtime.h"
@@ -31,6 +30,8 @@
 #include "debugger_signal.h"
 #include "settings.h"
 #include "debugger.h"
+#include "custom_log.h"
+
 void
 runtime_onVblank(void *user)
 {
@@ -288,6 +289,7 @@ runtime_runLoop(void)
         ui_updateSourceTitle();
         e9ui_renderFrame();
         custom_ui_render();
+        custom_log_render();
         shader_ui_render();
         memory_track_ui_render();
         if (debugger.smokeTestCompleted) {

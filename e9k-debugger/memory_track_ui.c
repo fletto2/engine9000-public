@@ -69,6 +69,9 @@ typedef struct memory_track_ranges {
 struct memory_track_ui {
     int open;
     int closeRequested;
+    int alwaysOnTopState;
+    int mainWindowFocused;
+    int memoryTrackWindowFocused;
     SDL_Window *window;
     SDL_Renderer *renderer;
     uint32_t windowId;
@@ -195,6 +198,24 @@ memory_track_ui_refocusMain(void)
     if (geo) {
         e9ui_setFocus(&e9ui->ctx, geo);
     }
+}
+
+static void
+memory_track_ui_updateAlwaysOnTop(memory_track_ui_t *ui)
+{
+#ifndef E9K_DISABLE_ALWAYS_ON_TOP
+    if (!ui || !ui->window) {
+        return;
+    }
+    int shouldStayOnTop = (ui->mainWindowFocused || ui->memoryTrackWindowFocused) ? 1 : 0;
+    if (ui->alwaysOnTopState == shouldStayOnTop) {
+        return;
+    }
+    SDL_SetWindowAlwaysOnTop(ui->window, shouldStayOnTop ? SDL_TRUE : SDL_FALSE);
+    ui->alwaysOnTopState = shouldStayOnTop;
+#else
+    (void)ui;
+#endif
 }
 
 static void
@@ -2541,6 +2562,15 @@ memory_track_ui_init(void)
     ui->ctx.renderer = ren;
     ui->ctx.font = e9ui->ctx.font;
     ui->ctx.dpiScale = memory_track_ui_computeDpiScale(&ui->ctx);
+    ui->alwaysOnTopState = -1;
+    ui->mainWindowFocused = 0;
+    if (e9ui && e9ui->ctx.window) {
+        uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
+        ui->mainWindowFocused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+    }
+    uint32_t memTrackFlags = SDL_GetWindowFlags(win);
+    ui->memoryTrackWindowFocused = (memTrackFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+    memory_track_ui_updateAlwaysOnTop(ui);
     if (e9ui->layout.memTrackWinX >= 0 && e9ui->layout.memTrackWinY >= 0) {
         SDL_SetWindowPosition(win, e9ui->layout.memTrackWinX, e9ui->layout.memTrackWinY);
     }
@@ -2660,6 +2690,9 @@ memory_track_ui_shutdown(void)
     ui->cachedBuildFrameNo = 0;
     ui->open = 0;
     ui->closeRequested = 0;
+    ui->alwaysOnTopState = 0;
+    ui->mainWindowFocused = 0;
+    ui->memoryTrackWindowFocused = 0;
     ui->windowId = 0;
     ui->headerRow = NULL;
     ui->scroll = NULL;
@@ -2684,6 +2717,17 @@ memory_track_ui_getWindowId(void)
 }
 
 void
+memory_track_ui_setMainWindowFocused(int focused)
+{
+    memory_track_ui_t *ui = &memory_track_ui_state;
+    ui->mainWindowFocused = focused ? 1 : 0;
+    if (!ui->open) {
+        return;
+    }
+    memory_track_ui_updateAlwaysOnTop(ui);
+}
+
+void
 memory_track_ui_handleEvent(SDL_Event *ev)
 {
     if (!ev || !memory_track_ui_state.open) {
@@ -2696,6 +2740,8 @@ memory_track_ui_handleEvent(SDL_Event *ev)
     e9ui_component_t *root = ui->fullscreen ? ui->fullscreen : ui->root;
     ui->ctx.focusClickHandled = 0;
     ui->ctx.cursorOverride = 0;
+    ui->ctx.focusRoot = ui->root;
+    ui->ctx.focusFullscreen = ui->fullscreen;
 
     if (ev->type == SDL_WINDOWEVENT && ev->window.event == SDL_WINDOWEVENT_CLOSE) {
         ui->closeRequested = 1;
@@ -2742,11 +2788,27 @@ memory_track_ui_handleEvent(SDL_Event *ev)
             e9ui->layout.memTrackWinX = ev->window.data1;
             e9ui->layout.memTrackWinY = ev->window.data2;
             config_saveConfig();
+        } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+            ui->memoryTrackWindowFocused = 1;
+            memory_track_ui_updateAlwaysOnTop(ui);
+        } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            ui->memoryTrackWindowFocused = 0;
+            memory_track_ui_updateAlwaysOnTop(ui);
         }
     } else if (ev->type == SDL_KEYDOWN) {
         if (ev->key.keysym.sym == SDLK_ESCAPE) {
             ui->closeRequested = 1;
             return;
+        }
+        SDL_Keymod mods = ev->key.keysym.mod;
+        int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+        if (!accel && ev->key.keysym.sym == SDLK_TAB && !e9ui_getFocus(&ui->ctx)) {
+            int reverse = (mods & KMOD_SHIFT) ? 1 : 0;
+            e9ui_component_t *next = e9ui_focusFindNext(root, NULL, reverse);
+            if (next) {
+                e9ui_setFocus(&ui->ctx, next);
+                return;
+            }
         }
         int consumed = 0;
         if (e9ui_getFocus(&ui->ctx) && e9ui_getFocus(&ui->ctx)->handleEvent) {

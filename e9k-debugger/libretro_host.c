@@ -89,7 +89,15 @@ typedef void (*e9k_debug_set_checkpoint_enabled_fn_t)(int enabled);
 typedef int (*e9k_debug_get_checkpoint_enabled_fn_t)(void);
 typedef uint64_t (*e9k_debug_read_cycle_count_fn_t)(void);
 typedef void (*e9k_debug_set_vblank_callback_fn_t)(void (*cb)(void *), void *user);
+typedef void (*e9k_debug_set_custom_log_frame_callback_fn_t)(e9k_debug_ami_custom_log_frame_callback_t cb, void *user);
 typedef int *(*e9k_debug_amiga_get_debug_dma_addr_fn_t)(void);
+typedef void (*e9k_debug_ami_set_blitter_debug_fn_t)(int enabled);
+typedef int (*e9k_debug_ami_get_blitter_debug_fn_t)(void);
+typedef size_t (*e9k_debug_ami_blitter_vis_read_points_fn_t)(e9k_debug_ami_blitter_vis_point_t *out, size_t cap, uint32_t *out_width, uint32_t *out_height);
+typedef size_t (*e9k_debug_ami_blitter_vis_read_stats_fn_t)(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap);
+typedef int (*e9k_debug_ami_get_video_line_count_fn_t)(void);
+typedef int (*e9k_debug_ami_video_line_to_core_line_fn_t)(int videoLine);
+typedef int (*e9k_debug_ami_core_line_to_video_line_fn_t)(int coreLine);
 typedef void (*e9k_debug_set_breakpoint_callback_fn_t)(void (*cb)(uint32_t addr));
 typedef void (*e9k_debug_set_source_location_resolver_fn_t)(int (*resolver)(uint32_t pc24, uint64_t *out_location, void *user), void *user);
 typedef void (*e9k_debug_set_debug_option_fn_t)(e9k_debug_option_t option, uint32_t argument, void *user);
@@ -204,7 +212,15 @@ typedef struct  {
     e9k_debug_get_checkpoint_enabled_fn_t debugGetCheckpointEnabled;
     e9k_debug_read_cycle_count_fn_t debugReadCycleCount;
     e9k_debug_set_vblank_callback_fn_t setVblankCallback;
+    e9k_debug_set_custom_log_frame_callback_fn_t setCustomLogFrameCallback;
     e9k_debug_amiga_get_debug_dma_addr_fn_t debugAmigaGetDebugDmaAddr;
+    e9k_debug_ami_set_blitter_debug_fn_t debugAmiSetBlitterDebug;
+    e9k_debug_ami_get_blitter_debug_fn_t debugAmiGetBlitterDebug;
+    e9k_debug_ami_blitter_vis_read_points_fn_t debugAmiBlitterVisReadPoints;
+    e9k_debug_ami_blitter_vis_read_stats_fn_t debugAmiBlitterVisReadStats;
+    e9k_debug_ami_get_video_line_count_fn_t debugAmiGetVideoLineCount;
+    e9k_debug_ami_video_line_to_core_line_fn_t debugAmiVideoLineToCoreLine;
+    e9k_debug_ami_core_line_to_video_line_fn_t debugAmiCoreLineToVideoLine;
     uint8_t *stateData;
     size_t stateSize;
     uint32_t inputMask[LIBRETRO_HOST_MAX_PORTS];
@@ -1341,6 +1357,7 @@ libretro_host_start(const char *corePath, const char *romPath,
     libretro_host.debugGetCheckpointEnabled = (e9k_debug_get_checkpoint_enabled_fn_t)libretro_host_loadSymbol("e9k_debug_get_checkpoint_enabled");
     libretro_host.debugReadCycleCount = (e9k_debug_read_cycle_count_fn_t)libretro_host_loadSymbol("e9k_debug_read_cycle_count");
     libretro_host.setVblankCallback = (e9k_debug_set_vblank_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_vblank_callback");
+    libretro_host.setCustomLogFrameCallback = (e9k_debug_set_custom_log_frame_callback_fn_t)libretro_host_loadSymbol("e9k_debug_set_custom_log_frame_callback");
     if (!libretro_host.setEnvironment || !libretro_host.setVideoRefresh ||
         !libretro_host.setInputPoll || !libretro_host.setInputState ||
         !libretro_host.init || !libretro_host.loadGame || !libretro_host.getSystemAvInfo ||
@@ -2062,6 +2079,144 @@ libretro_host_debugGetAmigaDebugDmaAddr(int **out_addr)
 }
 
 bool
+libretro_host_debugAmiSetBlitterDebug(int enabled)
+{
+    if (!libretro_host.debugAmiSetBlitterDebug) {
+        libretro_host.debugAmiSetBlitterDebug = (e9k_debug_ami_set_blitter_debug_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_set_blitter_debug");
+    }
+    if (!libretro_host.debugAmiSetBlitterDebug) {
+        return false;
+    }
+    libretro_host.debugAmiSetBlitterDebug(enabled ? 1 : 0);
+    return true;
+}
+
+bool
+libretro_host_debugAmiGetBlitterDebug(int *out_enabled)
+{
+    if (out_enabled) {
+        *out_enabled = 0;
+    }
+    if (!libretro_host.debugAmiGetBlitterDebug) {
+        libretro_host.debugAmiGetBlitterDebug = (e9k_debug_ami_get_blitter_debug_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_get_blitter_debug");
+    }
+    if (!libretro_host.debugAmiGetBlitterDebug) {
+        return false;
+    }
+    if (out_enabled) {
+        *out_enabled = libretro_host.debugAmiGetBlitterDebug() ? 1 : 0;
+    }
+    return true;
+}
+
+size_t
+libretro_host_debugAmiReadBlitterVisPoints(e9k_debug_ami_blitter_vis_point_t *out, size_t cap, uint32_t *out_width, uint32_t *out_height)
+{
+    if (out_width) {
+        *out_width = 0u;
+    }
+    if (out_height) {
+        *out_height = 0u;
+    }
+    if (!libretro_host.debugAmiBlitterVisReadPoints) {
+        libretro_host.debugAmiBlitterVisReadPoints = (e9k_debug_ami_blitter_vis_read_points_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_blitter_vis_read_points");
+    }
+    if (!libretro_host.debugAmiBlitterVisReadPoints) {
+        return 0u;
+    }
+    return libretro_host.debugAmiBlitterVisReadPoints(out, cap, out_width, out_height);
+}
+
+bool
+libretro_host_debugAmiReadBlitterVisStats(e9k_debug_ami_blitter_vis_stats_t *out)
+{
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!libretro_host.debugAmiBlitterVisReadStats) {
+        libretro_host.debugAmiBlitterVisReadStats = (e9k_debug_ami_blitter_vis_read_stats_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_blitter_vis_read_stats");
+    }
+    if (!libretro_host.debugAmiBlitterVisReadStats) {
+        return false;
+    }
+    return libretro_host.debugAmiBlitterVisReadStats(out, sizeof(*out)) == sizeof(*out);
+}
+
+bool
+libretro_host_debugAmiGetVideoLineCount(int *out_line_count)
+{
+    if (out_line_count) {
+        *out_line_count = 0;
+    }
+    if (!libretro_host.debugAmiGetVideoLineCount) {
+        libretro_host.debugAmiGetVideoLineCount = (e9k_debug_ami_get_video_line_count_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_get_video_line_count");
+    }
+    if (!libretro_host.debugAmiGetVideoLineCount) {
+        return false;
+    }
+    int line_count = libretro_host.debugAmiGetVideoLineCount();
+    if (line_count <= 0) {
+        return false;
+    }
+    if (out_line_count) {
+        *out_line_count = line_count;
+    }
+    return true;
+}
+
+bool
+libretro_host_debugAmiVideoLineToCoreLine(int video_line, int *out_core_line)
+{
+    if (out_core_line) {
+        *out_core_line = -1;
+    }
+    if (!libretro_host.debugAmiVideoLineToCoreLine) {
+        libretro_host.debugAmiVideoLineToCoreLine = (e9k_debug_ami_video_line_to_core_line_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_video_line_to_core_line");
+    }
+    if (!libretro_host.debugAmiVideoLineToCoreLine) {
+        return false;
+    }
+    int core_line = libretro_host.debugAmiVideoLineToCoreLine(video_line);
+    if (core_line < 0) {
+        return false;
+    }
+    if (out_core_line) {
+        *out_core_line = core_line;
+    }
+    return true;
+}
+
+bool
+libretro_host_debugAmiCoreLineToVideoLine(int core_line, int *out_video_line)
+{
+    if (out_video_line) {
+        *out_video_line = -1;
+    }
+    if (!libretro_host.debugAmiCoreLineToVideoLine) {
+        libretro_host.debugAmiCoreLineToVideoLine = (e9k_debug_ami_core_line_to_video_line_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_core_line_to_video_line");
+    }
+    if (!libretro_host.debugAmiCoreLineToVideoLine) {
+        return false;
+    }
+    int video_line = libretro_host.debugAmiCoreLineToVideoLine(core_line);
+    if (video_line < 0) {
+        return false;
+    }
+    if (out_video_line) {
+        *out_video_line = video_line;
+    }
+    return true;
+}
+
+bool
 libretro_host_debugGetSpriteState(e9k_debug_sprite_state_t *out)
 {
     if (!out || !libretro_host.debugNeoGeoGetSpriteState) {
@@ -2306,6 +2461,16 @@ libretro_host_setVblankCallback(void (*cb)(void *), void *user)
         return false;
     }
     libretro_host.setVblankCallback(cb, user);
+    return true;
+}
+
+bool
+libretro_host_setCustomLogFrameCallback(e9k_debug_ami_custom_log_frame_callback_t cb, void *user)
+{
+    if (!libretro_host.setCustomLogFrameCallback) {
+        return false;
+    }
+    libretro_host.setCustomLogFrameCallback(cb, user);
     return true;
 }
 

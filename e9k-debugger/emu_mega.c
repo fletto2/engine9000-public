@@ -604,4 +604,5 @@ const emu_system_iface_t emu_mega_iface = {
     .mapKeyToJoypad = emu_mega_mapKeyToJoypad,
     .createOverlays = emu_mega_createOverlays,
     .render = emu_mega_render,
+    .destroy = NULL,
 };

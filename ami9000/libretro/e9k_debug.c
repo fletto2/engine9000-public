@@ -6,6 +6,7 @@
 #include "e9k_watchpoint.h"
 
 #include "libretro.h"
+#include "libretro-core.h"
 
 #include "sysconfig.h"
 #include "sysdeps.h"
@@ -19,6 +20,8 @@
 #include "drawing.h"
 #include "debug.h"
 
+#include <stdlib.h>
+
 #define E9K_DEBUG_CALLSTACK_MAX 256
 #define E9K_DEBUG_BREAKPOINT_MAX 4096
 
@@ -26,8 +29,36 @@ extern bool libretro_frame_end;
 
 #define E9K_DEBUG_EXPORT RETRO_API
 
+#if !defined(E9K_DEBUGGER_CUSTOM_LOGGER)
+#define E9K_DEBUGGER_CUSTOM_LOGGER 0
+#endif
+
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+#define E9K_DEBUG_AMI_CUSTOM_LOG_ENTRY_CAP 262144u
+#endif
+
 // Fake debug output register support (written by target code, consumed by e9k-debugger)
 #define E9K_DEBUG_TEXT_CAP 8192
+#if E9K_HACK_BLITTER_VIS
+#define E9K_DEBUG_BLITTER_VIS_MODE_COLLECT 0x2
+#define E9K_DEBUG_BLITTER_VIS_LINE_TABLE_CAP 16384u
+#define E9K_DEBUG_BLITTER_VIS_X_DELTA_THRESHOLD 0
+#define E9K_DEBUG_BLITTER_VIS_Y_GAP_MAX 1024
+#define E9K_DEBUG_BLITTER_VIS_SAME_BLIT_WORD_SHIFT_PIXELS 16
+#define E9K_DEBUG_BLITTER_VIS_WORD_SHIFT_PIXELS 16
+#define E9K_DEBUG_BLITTER_VIS_WORD_SHIFT_WIDTH_DELTA_MAX 2
+#define E9K_DEBUG_BLITTER_VIS_MAX_ANOMALY_LOGS 24u
+
+typedef struct e9k_debug_blitter_vis_line_stat_s
+{
+	uae_u32 blitId;
+	uint32_t y;
+	uint32_t minX;
+	uint32_t maxX;
+	uint32_t count;
+	int used;
+} e9k_debug_blitter_vis_line_stat_t;
+#endif
 
 static int e9k_debug_paused = 0;
 static uint32_t e9k_debug_callstack[E9K_DEBUG_CALLSTACK_MAX];
@@ -112,8 +143,38 @@ static char e9k_debug_textBuf[E9K_DEBUG_TEXT_CAP];
 static size_t e9k_debug_textHead = 0;
 static size_t e9k_debug_textTail = 0;
 static size_t e9k_debug_textCount = 0;
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+static e9k_debug_ami_custom_log_entry_t e9k_debug_amiCustomLogEntries[E9K_DEBUG_AMI_CUSTOM_LOG_ENTRY_CAP];
+static size_t e9k_debug_amiCustomLogEntryCount = 0;
+static uint32_t e9k_debug_amiCustomLogDropped = 0;
+static uint64_t e9k_debug_amiCustomLogFrameNo = 0;
+static e9k_debug_ami_custom_log_frame_callback_t e9k_debug_amiCustomLogFrameCb = NULL;
+static void *e9k_debug_amiCustomLogFrameCbUser = NULL;
+#endif
+#if E9K_HACK_BLITTER_VIS
+static e9k_debug_blitter_vis_line_stat_t e9k_debug_blitterVisLineTable[E9K_DEBUG_BLITTER_VIS_LINE_TABLE_CAP];
+static e9k_debug_blitter_vis_line_stat_t e9k_debug_blitterVisLineList[E9K_DEBUG_BLITTER_VIS_LINE_TABLE_CAP];
+static uint32_t e9k_debug_blitterVisDroppedLineEntries = 0;
+#endif
 
 static void e9k_debug_requestBreak(void);
+
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+static void
+e9k_debug_ami_customLogFlushFrame(void)
+{
+	if (e9k_debug_amiCustomLogFrameCb) {
+		e9k_debug_amiCustomLogFrameCb(e9k_debug_amiCustomLogEntries,
+			e9k_debug_amiCustomLogEntryCount,
+			e9k_debug_amiCustomLogDropped,
+			e9k_debug_amiCustomLogFrameNo,
+			e9k_debug_amiCustomLogFrameCbUser);
+	}
+	e9k_debug_amiCustomLogEntryCount = 0;
+	e9k_debug_amiCustomLogDropped = 0;
+	e9k_debug_amiCustomLogFrameNo++;
+}
+#endif
 
 static void
 e9k_debug_profiler_reset(void)
@@ -329,6 +390,142 @@ e9k_debug_sizeBytes(uint32_t sizeBits)
 	}
 	return 0u;
 }
+
+#if E9K_HACK_BLITTER_VIS
+static int
+e9k_debug_blitterVisAbs(int value)
+{
+	if (value < 0) {
+		return -value;
+	}
+	return value;
+}
+
+static uint32_t
+e9k_debug_blitterVisHash(uae_u32 blitId, uint32_t y)
+{
+	uint32_t mixed = (blitId * 2654435761u) ^ (y * 2246822519u);
+	return mixed & (E9K_DEBUG_BLITTER_VIS_LINE_TABLE_CAP - 1u);
+}
+
+static void
+e9k_debug_blitterVisResetLineTable(void)
+{
+	memset(e9k_debug_blitterVisLineTable, 0, sizeof(e9k_debug_blitterVisLineTable));
+	e9k_debug_blitterVisDroppedLineEntries = 0;
+}
+
+static e9k_debug_blitter_vis_line_stat_t *
+e9k_debug_blitterVisFindLine(uae_u32 blitId, uint32_t y, int create)
+{
+	uint32_t index = e9k_debug_blitterVisHash(blitId, y);
+	for (uint32_t probe = 0; probe < E9K_DEBUG_BLITTER_VIS_LINE_TABLE_CAP; ++probe) {
+		e9k_debug_blitter_vis_line_stat_t *entry = &e9k_debug_blitterVisLineTable[index];
+		if (!entry->used) {
+			if (!create) {
+				return NULL;
+			}
+			entry->used = 1;
+			entry->blitId = blitId;
+			entry->y = y;
+			entry->minX = 0;
+			entry->maxX = 0;
+			entry->count = 0;
+			return entry;
+		}
+		if (entry->blitId == blitId && entry->y == y) {
+			return entry;
+		}
+		index = (index + 1u) & (E9K_DEBUG_BLITTER_VIS_LINE_TABLE_CAP - 1u);
+	}
+	if (create) {
+		e9k_debug_blitterVisDroppedLineEntries++;
+	}
+	return NULL;
+}
+
+static void
+e9k_debug_blitterVisRecordPoint(uae_u32 blitId, uint32_t y, uint32_t x)
+{
+	e9k_debug_blitter_vis_line_stat_t *entry = e9k_debug_blitterVisFindLine(blitId, y, 1);
+	if (!entry) {
+		return;
+	}
+	if (entry->count == 0) {
+		entry->minX = x;
+		entry->maxX = x;
+	} else {
+		if (x < entry->minX) {
+			entry->minX = x;
+		}
+		if (x > entry->maxX) {
+			entry->maxX = x;
+		}
+	}
+	entry->count++;
+}
+
+static int
+e9k_debug_blitterVisLineCompare(const void *lhs, const void *rhs)
+{
+	const e9k_debug_blitter_vis_line_stat_t *left = (const e9k_debug_blitter_vis_line_stat_t *)lhs;
+	const e9k_debug_blitter_vis_line_stat_t *right = (const e9k_debug_blitter_vis_line_stat_t *)rhs;
+	if (left->blitId < right->blitId) {
+		return -1;
+	}
+	if (left->blitId > right->blitId) {
+		return 1;
+	}
+	if (left->y < right->y) {
+		return -1;
+	}
+	if (left->y > right->y) {
+		return 1;
+	}
+	return 0;
+}
+
+static int
+e9k_debug_blitterVisLineCompareByY(const void *lhs, const void *rhs)
+{
+	const e9k_debug_blitter_vis_line_stat_t *left = (const e9k_debug_blitter_vis_line_stat_t *)lhs;
+	const e9k_debug_blitter_vis_line_stat_t *right = (const e9k_debug_blitter_vis_line_stat_t *)rhs;
+	if (left->y < right->y) {
+		return -1;
+	}
+	if (left->y > right->y) {
+		return 1;
+	}
+	if (left->minX < right->minX) {
+		return -1;
+	}
+	if (left->minX > right->minX) {
+		return 1;
+	}
+	if (left->maxX < right->maxX) {
+		return -1;
+	}
+	if (left->maxX > right->maxX) {
+		return 1;
+	}
+	if (left->blitId < right->blitId) {
+		return -1;
+	}
+	if (left->blitId > right->blitId) {
+		return 1;
+	}
+	return 0;
+}
+
+static void
+e9k_debug_blitterVisAnalyzeLineTable(uint32_t frameId, uint32_t width, uint32_t height, int collectMode)
+{
+	(void)frameId;
+	(void)width;
+	(void)height;
+	(void)collectMode;
+}
+#endif
 
 static int
 e9k_debug_resolveSourceLocation(uint32_t pc24, uint64_t *outLocation)
@@ -823,6 +1020,51 @@ e9k_debug_set_vblank_callback(void (*cb)(void *), void *user)
 	e9k_debug_vblankUser = user;
 }
 
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+E9K_DEBUG_EXPORT void
+e9k_debug_set_custom_log_frame_callback(e9k_debug_ami_custom_log_frame_callback_t cb, void *user)
+{
+	e9k_debug_amiCustomLogFrameCb = cb;
+	e9k_debug_amiCustomLogFrameCbUser = user;
+	e9k_debug_amiCustomLogEntryCount = 0;
+	e9k_debug_amiCustomLogDropped = 0;
+	e9k_debug_amiCustomLogFrameNo = 0;
+}
+
+void
+e9k_debug_ami_customLogWrite(int vpos, int hpos, uae_u32 reg, uae_u16 value, uae_u32 sourcePc)
+{
+	if (e9k_debug_amiCustomLogEntryCount >= E9K_DEBUG_AMI_CUSTOM_LOG_ENTRY_CAP) {
+		if (e9k_debug_amiCustomLogDropped != UINT32_MAX) {
+			e9k_debug_amiCustomLogDropped++;
+		}
+		return;
+	}
+
+	e9k_debug_ami_custom_log_entry_t *entry = &e9k_debug_amiCustomLogEntries[e9k_debug_amiCustomLogEntryCount++];
+	entry->vpos = (uint16_t)(vpos & 0xffff);
+	entry->hpos = (uint16_t)(hpos & 0xffff);
+	entry->reg = (uint16_t)(reg & 0x1feu);
+	entry->value = value;
+	if (sourcePc & 1u) {
+		entry->sourceIsCopper = 1u;
+		entry->sourceAddr = sourcePc & ~1u;
+	} else {
+		entry->sourceIsCopper = 0u;
+		entry->sourceAddr = sourcePc;
+	}
+	entry->reserved[0] = 0;
+	entry->reserved[1] = 0;
+	entry->reserved[2] = 0;
+}
+
+void
+e9k_debug_ami_customLogFrameCommit(void)
+{
+	e9k_debug_ami_customLogFlushFrame();
+}
+#endif
+
 E9K_DEBUG_EXPORT void
 e9k_debug_set_debug_base_callback(void (*cb)(uint32_t section, uint32_t base))
 {
@@ -919,6 +1161,68 @@ e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *u
 		case E9K_DEBUG_OPTION_AMIGA_BPLCON1_DELAY_SCROLL:
 			custom_setBplcon1DelayScrollEnabled(argument != 0u);
 			break;
+		case E9K_DEBUG_OPTION_AMIGA_BLITTER_VIS_DECAY:
+#if E9K_HACK_BLITTER_VIS
+			blitter_setDebugVisDecayFrames(argument);
+#else
+			(void)argument;
+#endif
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BLITTER_VIS_MODE:
+#if E9K_HACK_BLITTER_VIS
+			blitter_setDebugVisMode((int)argument);
+#else
+			(void)argument;
+#endif
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BLITTER_VIS_BLINK:
+#if E9K_HACK_BLITTER_VIS
+			blitter_setDebugVisBlink(argument != 0u);
+#else
+			(void)argument;
+#endif
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_ENABLED:
+			custom_setCopperLineLimitEnabled(argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_START:
+			custom_setCopperLineLimitStart((int)argument);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_END:
+			custom_setCopperLineLimitEnd((int)argument);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BPLPTR_BLOCK_ALL:
+			custom_setBitplanePointerWriteBlockAllEnabled(argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BPLPTR1_BLOCK:
+			custom_setBitplanePointerWriteBlockEnabled(0, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BPLPTR2_BLOCK:
+			custom_setBitplanePointerWriteBlockEnabled(1, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BPLPTR3_BLOCK:
+			custom_setBitplanePointerWriteBlockEnabled(2, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BPLPTR4_BLOCK:
+			custom_setBitplanePointerWriteBlockEnabled(3, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BPLPTR5_BLOCK:
+			custom_setBitplanePointerWriteBlockEnabled(4, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BPLPTR6_BLOCK:
+			custom_setBitplanePointerWriteBlockEnabled(5, argument != 0u);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BPLPTR_LINE_LIMIT_START:
+			custom_setBitplanePointerWriteBlockLineLimitStart((int)argument);
+			break;
+		case E9K_DEBUG_OPTION_AMIGA_BPLPTR_LINE_LIMIT_END:
+			custom_setBitplanePointerWriteBlockLineLimitEnd((int)argument);
+			break;
+#if E9K_DEBUGGER_CUSTOM_LOGGER
+		case E9K_DEBUG_OPTION_AMIGA_CUSTOM_LOGGER:
+			custom_setCustomLoggerEnabled(argument != 0u);
+			break;
+#endif
 		default:
 			break;
 	}
@@ -938,6 +1242,9 @@ e9k_debug_add_breakpoint_fromPeripheral(uint32_t addr)
 E9K_DEBUG_EXPORT void
 e9k_vblank_notify(void)
 {
+#if E9K_HACK_BLITTER_VIS
+	blitter_debugFrameTick();
+#endif
 	if (e9k_debug_protectEnabledMask || e9k_debug_watchpointEnabledMask) {
 		e9k_debug_ensureMemhooks();
 	}
@@ -951,6 +1258,253 @@ e9k_vblank_notify(void)
 	if (e9k_debug_vblankCb) {
 		e9k_debug_vblankCb(e9k_debug_vblankUser);
 	}
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_ami_set_blitter_debug(int enabled)
+{
+#if E9K_HACK_BLITTER_VIS
+	blitter_setDebugWriteEnabled(enabled ? 1 : 0);
+#else
+	(void)enabled;
+#endif
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_ami_get_blitter_debug(void)
+{
+#if E9K_HACK_BLITTER_VIS
+	return blitter_getDebugWriteEnabled();
+#else
+	return 0;
+#endif
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_ami_blitter_vis_read_points(e9k_debug_ami_blitter_vis_point_t *out, size_t cap, uint32_t *outWidth, uint32_t *outHeight)
+{
+#if E9K_HACK_BLITTER_VIS
+	static uint32_t readLogCounter = 0;
+	int collectMode = ((blitter_getDebugVisMode() & E9K_DEBUG_BLITTER_VIS_MODE_COLLECT) != 0) ? 1 : 0;
+	uint32_t width = (uint32_t)retrow_crop;
+	uint32_t height = (uint32_t)retroh_crop;
+	if (outWidth) {
+		*outWidth = width;
+	}
+	if (outHeight) {
+		*outHeight = height;
+	}
+
+	size_t written = 0;
+	size_t drained = 0;
+	uint32_t sampleX = 0;
+	uint32_t sampleY = 0;
+	uint32_t sampleBlitId = 0;
+	int sampleValid = 0;
+	uint32_t minX = 0;
+	uint32_t minY = 0;
+	uint32_t maxX = 0;
+	uint32_t maxY = 0;
+	int boundsValid = 0;
+
+	if (width == 0 || height == 0) {
+		return 0;
+	}
+	if (collectMode) {
+		for (uint32_t y = 0; y < height; y++) {
+			for (uint32_t x = 0; x < width; x++) {
+				uae_u32 blitId = 0;
+				if (!drawing_blitterVisGetNativePixelBlitId((int)y, (int)x, &blitId)) {
+					continue;
+				}
+				if (!sampleValid) {
+					sampleValid = 1;
+					sampleX = x;
+					sampleY = y;
+					sampleBlitId = blitId;
+				}
+				if (!boundsValid) {
+					boundsValid = 1;
+					minX = maxX = x;
+					minY = maxY = y;
+				} else {
+					if (x < minX) {
+						minX = x;
+					}
+					if (x > maxX) {
+						maxX = x;
+					}
+					if (y < minY) {
+						minY = y;
+					}
+					if (y > maxY) {
+						maxY = y;
+					}
+				}
+				drained++;
+				if (out && written < cap) {
+					out[written].x = (uint16_t)x;
+					out[written].y = (uint16_t)y;
+					out[written].blitId = blitId;
+					written++;
+				}
+			}
+		}
+	} else {
+		for (uint32_t y = 0; y < height; y++) {
+			for (uint32_t x = 0; x < width; x++) {
+				uae_u32 blitId = 0;
+				if (!drawing_blitterVisGetNativePixelBlitId((int)y, (int)x, &blitId)) {
+					continue;
+				}
+				if (!sampleValid) {
+					sampleValid = 1;
+					sampleX = x;
+					sampleY = y;
+					sampleBlitId = blitId;
+				}
+				if (!boundsValid) {
+					boundsValid = 1;
+					minX = maxX = x;
+					minY = maxY = y;
+				} else {
+					if (x < minX) {
+						minX = x;
+					}
+					if (x > maxX) {
+						maxX = x;
+					}
+					if (y < minY) {
+						minY = y;
+					}
+					if (y > maxY) {
+						maxY = y;
+					}
+				}
+				if (out && written < cap) {
+					out[written].x = (uint16_t)x;
+					out[written].y = (uint16_t)y;
+					out[written].blitId = blitId;
+				}
+				written++;
+			}
+		}
+	}
+	readLogCounter++;
+	return written;
+#else
+	(void)out;
+	(void)cap;
+	if (outWidth) {
+		*outWidth = 0;
+	}
+	if (outHeight) {
+		*outHeight = 0;
+	}
+	return 0;
+#endif
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_ami_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap)
+{
+#if E9K_HACK_BLITTER_VIS
+	if (!out || cap < sizeof(*out)) {
+		return 0;
+	}
+	out->enabled = blitter_getDebugWriteEnabled() ? 1u : 0u;
+	out->mode = (uint32_t)blitter_getDebugVisMode();
+	out->blink = blitter_getDebugVisBlink() ? 1u : 0u;
+	out->livePhase = blitter_getDebugShowLivePhase() ? 1u : 0u;
+	out->activeCount = blitter_getDebugActiveCount();
+	out->writesThisFrame = blitter_getDebugWritesThisFrame();
+	out->frameCounter = blitter_getDebugFrameCounter();
+	out->fetchQueriesThisFrame = blitter_getDebugFetchQueriesThisFrame();
+	out->fetchHitsThisFrame = blitter_getDebugFetchHitsThisFrame();
+	out->drawMarkCallsFrame = drawing_blitterVisGetNativeMarkCallsFrame();
+	out->drawMarkCallsSnapshot = drawing_blitterVisGetNativeMarkCallsSnapshot();
+	return sizeof(*out);
+#else
+	(void)out;
+	(void)cap;
+	return 0;
+#endif
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_ami_get_video_line_count(void)
+{
+	if (retroh_crop <= 0) {
+		return 0;
+	}
+	return (int)retroh_crop;
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_ami_video_line_to_core_line(int videoLine)
+{
+	int lineCount = e9k_debug_ami_get_video_line_count();
+	if (videoLine < 0 || videoLine >= lineCount) {
+		return -1;
+	}
+	int nativeLine = videoLine + (int)retroy_crop;
+	return coord_native_to_amiga_y(nativeLine);
+}
+
+static int
+e9k_debug_absInt(int value)
+{
+	if (value < 0) {
+		return -value;
+	}
+	return value;
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_ami_core_line_to_video_line(int coreLine)
+{
+	if (coreLine < 0) {
+		return -1;
+	}
+	int lineCount = e9k_debug_ami_get_video_line_count();
+	if (lineCount <= 0) {
+		return -1;
+	}
+	int bestVideoLine = -1;
+	int bestDelta = 0x7fffffff;
+	for (int videoLine = 0; videoLine < lineCount; ++videoLine) {
+		int mappedCoreLine = e9k_debug_ami_video_line_to_core_line(videoLine);
+		if (mappedCoreLine < 0) {
+			continue;
+		}
+		int delta = e9k_debug_absInt(mappedCoreLine - coreLine);
+		if (delta < bestDelta) {
+			bestDelta = delta;
+			bestVideoLine = videoLine;
+			if (delta == 0) {
+				break;
+			}
+		}
+	}
+	return bestVideoLine;
+}
+
+void
+e9k_debug_ami_on_video_presented(void)
+{
+#if E9K_HACK_BLITTER_VIS
+	uint32_t decayFrames = blitter_getDebugVisDecayFrames();
+	int collectMode = ((blitter_getDebugVisMode() & E9K_DEBUG_BLITTER_VIS_MODE_COLLECT) != 0) ? 1 : 0;
+	if (blitter_getDebugWriteEnabled()) {
+		drawing_blitterVisSnapshotFrame();
+		if (collectMode) {
+			drawing_blitterVisClearFrame();
+		}
+	}
+	if (!collectMode) {
+		blitter_debugRestoreWritesOlderThan(decayFrames);
+	}
+#endif
 }
 
 E9K_DEBUG_EXPORT void

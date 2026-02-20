@@ -37,6 +37,7 @@
 #include "smoke_test.h"
 #include "ui_test.h"
 #include "shader_ui.h"
+#include "custom_log.h"
 #include "custom_ui.h"
 #include "memory_track_ui.h"
 #include "crt.h"
@@ -607,6 +608,7 @@ debugger_cleanup(void)
   if (mega_sprite_debug_is_open()) {
     mega_sprite_debug_toggle();
   }
+  custom_log_shutdown();
   libretro_host_shutdown();
   emu_geo_shutdown();
   addr2line_stop();
@@ -713,9 +715,6 @@ debugger_main(int argc, char **argv)
   target_ctor();
   debugger_ctor();
   signal_installHandlers();
- 
-  config_loadConfig();
-  debugger_captureBootSaveDirs();
   cli_parseArgs(argc, argv);
   if (cli_helpRequested()) {
     cli_printUsage(argv && argv[0] ? argv[0] : NULL);
@@ -737,6 +736,10 @@ debugger_main(int argc, char **argv)
     }
     return 2;
   }
+
+  config_loadConfig();
+  debugger_captureBootSaveDirs();
+
   if (debugger.cliDisableGlComposite) {
     e9ui->glCompositeEnabled = 0;
     debug_printf("gl-composite: disabled via command line");
@@ -756,13 +759,6 @@ debugger_main(int argc, char **argv)
   }
   if (!ui_test_bootstrap()) {
     return 1;
-  }
-  if (ui_test_getMode() != UI_TEST_MODE_NONE) {
-    config_loadConfig();
-    debugger_captureBootSaveDirs();
-    if (debugger.cliCoreSystemOverride) {
-      target_setTargetIndex(debugger.cliTargetIndex);
-    }
   }
   if (debugger.recordPath[0]) {
     input_record_setRecordPath(debugger.recordPath);

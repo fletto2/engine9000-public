@@ -32,6 +32,9 @@ int
 mega_sprite_debug_ownsWindowId(uint32_t windowId);
 
 void
+mega_sprite_debug_setMainWindowFocused(int focused);
+
+void
 mega_sprite_debug_persistConfig(FILE *file);
 
 int

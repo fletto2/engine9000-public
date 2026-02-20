@@ -36,6 +36,8 @@ happening, all ports should restrict window widths to be multiples of 16 pixels.
 
 #include <ctype.h>
 #include <assert.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include "options.h"
 #include "threaddep/thread.h"
@@ -61,6 +63,10 @@ happening, all ports should restrict window widths to be multiples of 16 pixels.
 
 #ifdef __LIBRETRO__
 #include "libretro-core.h"
+#endif
+
+#ifndef E9K_HACK_BLITTER_VIS
+#define E9K_HACK_BLITTER_VIS 0
 #endif
 
 //#define XLINECHECK
@@ -281,6 +287,498 @@ typedef void (*line_draw_func)(int, int, int);
 static uae_u8 linestate[LINESTATE_SIZE];
 
 uae_u8 line_data[(MAXVPOS + MAXVPOS_WRAPLINES) * 2][MAX_PLANES * MAX_WORDS_PER_LINE * 2];
+#if E9K_HACK_BLITTER_VIS
+#define DRAWING_BLITTER_VIS_SOURCE_LINE_COUNT ((MAXVPOS + MAXVPOS_WRAPLINES) * 2)
+#define DRAWING_BLITTER_VIS_NATIVE_LINE_COUNT ((MAXVPOS + MAXVPOS_WRAPLINES) * 2)
+#define DRAWING_BLITTER_VIS_SOURCE_PIXEL_MARGIN 256
+#define DRAWING_BLITTER_VIS_SOURCE_PIXEL_COUNT ((MAX_PIXELS_PER_LINE * 2) + 1 + (DRAWING_BLITTER_VIS_SOURCE_PIXEL_MARGIN * 2))
+#define DRAWING_BLITTER_VIS_SOURCE_PIXEL_BIAS (MAX_PIXELS_PER_LINE + DRAWING_BLITTER_VIS_SOURCE_PIXEL_MARGIN)
+#define DRAWING_BLITTER_VIS_SOURCE_INDEX_OFFSET (DRAWING_BLITTER_VIS_SOURCE_PIXEL_BIAS - MAX_PIXELS_PER_LINE)
+#define DRAWING_BLITTER_VIS_EDGE_NATIVE_PIXELS 32
+#define DRAWING_BLITTER_VIS_EDGE_SOURCE_PIXELS 64
+#define DRAWING_BLITTER_VIS_ANOMALY_LINE_TABLE_CAP 16384u
+#define DRAWING_BLITTER_VIS_ANOMALY_X_DELTA_THRESHOLD 0
+#define DRAWING_BLITTER_VIS_ANOMALY_Y_GAP_MAX 1024
+#define DRAWING_BLITTER_VIS_ANOMALY_WORD_SHIFT_PIXELS 16
+#define DRAWING_BLITTER_VIS_ANOMALY_MAX_LOGS_PER_FRAME 24u
+#define DRAWING_BLITTER_VIS_MIN_TRACK_TABLE_CAP 16384u
+#define DRAWING_BLITTER_VIS_SRC_MIN_TRACK_TABLE_CAP 16384u
+static uae_u32 drawing_blitterVisSourcePixelIds[DRAWING_BLITTER_VIS_SOURCE_LINE_COUNT][DRAWING_BLITTER_VIS_SOURCE_PIXEL_COUNT];
+static uae_u32 drawing_blitterVisNativePixelIds[DRAWING_BLITTER_VIS_NATIVE_LINE_COUNT][MAX_PIXELS_PER_LINE];
+static uae_u32 drawing_blitterVisNativePixelIdsSnapshot[DRAWING_BLITTER_VIS_NATIVE_LINE_COUNT][MAX_PIXELS_PER_LINE];
+static uint32_t drawing_blitterVisSourceMarkCallsFrame = 0;
+static uint32_t drawing_blitterVisNativeMarkCallsFrame = 0;
+static uint32_t drawing_blitterVisNativeMarkCallsSnapshot = 0;
+static int drawing_blitterVisSourceLineContext = -1;
+static int drawing_blitterVisNativeLineContext = -1;
+static int drawing_blitterVisResolvedSourceLine[LINESTATE_SIZE];
+static int drawing_blitterVisLastResolvedSourceLine = -1;
+
+typedef struct drawing_blitter_vis_line_stat_s
+{
+	uae_u32 blitId;
+	int y;
+	int minX;
+	int maxX;
+	uint32_t count;
+	int used;
+} drawing_blitter_vis_line_stat_t;
+
+static drawing_blitter_vis_line_stat_t drawing_blitterVisAnomalyLineTable[DRAWING_BLITTER_VIS_ANOMALY_LINE_TABLE_CAP];
+static drawing_blitter_vis_line_stat_t drawing_blitterVisAnomalyLineList[DRAWING_BLITTER_VIS_ANOMALY_LINE_TABLE_CAP];
+static uint32_t drawing_blitterVisAnomalyLineCount = 0;
+static uint32_t drawing_blitterVisAnomalyDroppedEntriesFrame = 0;
+static uint32_t drawing_blitterVisAnomalyFrameId = 0;
+typedef struct drawing_blitter_vis_min_track_s
+{
+	uae_u32 blitId;
+	int minX;
+	int minY;
+	int used;
+} drawing_blitter_vis_min_track_t;
+static drawing_blitter_vis_min_track_t drawing_blitterVisMinTrackTable[DRAWING_BLITTER_VIS_MIN_TRACK_TABLE_CAP];
+static uint32_t drawing_blitterVisMinDropLogsFrame = 0;
+typedef struct drawing_blitter_vis_src_min_track_s
+{
+	uae_u32 blitId;
+	int minX;
+	int minLine;
+	int used;
+} drawing_blitter_vis_src_min_track_t;
+static drawing_blitter_vis_src_min_track_t drawing_blitterVisSrcMinTrackTable[DRAWING_BLITTER_VIS_SRC_MIN_TRACK_TABLE_CAP];
+static uint32_t drawing_blitterVisSrcMinDropLogsFrame = 0;
+#endif
+
+#if E9K_HACK_BLITTER_VIS
+static uint32_t
+drawing_blitterVisMinTrackHash(uae_u32 blitId)
+{
+	uint32_t mixed = blitId * 2654435761u;
+	return mixed & (DRAWING_BLITTER_VIS_MIN_TRACK_TABLE_CAP - 1u);
+}
+
+static void
+drawing_blitterVisMinTrackReset(void)
+{
+	memset(drawing_blitterVisMinTrackTable, 0, sizeof(drawing_blitterVisMinTrackTable));
+	drawing_blitterVisMinDropLogsFrame = 0;
+}
+
+static drawing_blitter_vis_min_track_t *
+drawing_blitterVisMinTrackFind(uae_u32 blitId, int create)
+{
+	uint32_t index = drawing_blitterVisMinTrackHash(blitId);
+	for (uint32_t probe = 0; probe < DRAWING_BLITTER_VIS_MIN_TRACK_TABLE_CAP; ++probe) {
+		drawing_blitter_vis_min_track_t *entry = &drawing_blitterVisMinTrackTable[index];
+		if (!entry->used) {
+			if (!create) {
+				return NULL;
+			}
+			entry->used = 1;
+			entry->blitId = blitId;
+			entry->minX = 0;
+			entry->minY = -1;
+			return entry;
+		}
+		if (entry->blitId == blitId) {
+			return entry;
+		}
+		index = (index + 1u) & (DRAWING_BLITTER_VIS_MIN_TRACK_TABLE_CAP - 1u);
+	}
+	return NULL;
+}
+
+static uint32_t
+drawing_blitterVisSrcMinTrackHash(uae_u32 blitId)
+{
+	uint32_t mixed = blitId * 2246822519u;
+	return mixed & (DRAWING_BLITTER_VIS_SRC_MIN_TRACK_TABLE_CAP - 1u);
+}
+
+static void
+drawing_blitterVisSrcMinTrackReset(void)
+{
+	memset(drawing_blitterVisSrcMinTrackTable, 0, sizeof(drawing_blitterVisSrcMinTrackTable));
+	drawing_blitterVisSrcMinDropLogsFrame = 0;
+}
+
+static drawing_blitter_vis_src_min_track_t *
+drawing_blitterVisSrcMinTrackFind(uae_u32 blitId, int create)
+{
+	uint32_t index = drawing_blitterVisSrcMinTrackHash(blitId);
+	for (uint32_t probe = 0; probe < DRAWING_BLITTER_VIS_SRC_MIN_TRACK_TABLE_CAP; ++probe) {
+		drawing_blitter_vis_src_min_track_t *entry = &drawing_blitterVisSrcMinTrackTable[index];
+		if (!entry->used) {
+			if (!create) {
+				return NULL;
+			}
+			entry->used = 1;
+			entry->blitId = blitId;
+			entry->minX = 0;
+			entry->minLine = -1;
+			return entry;
+		}
+		if (entry->blitId == blitId) {
+			return entry;
+		}
+		index = (index + 1u) & (DRAWING_BLITTER_VIS_SRC_MIN_TRACK_TABLE_CAP - 1u);
+	}
+	return NULL;
+}
+
+static uint32_t
+drawing_blitterVisAnomalyHash(uae_u32 blitId, int y)
+{
+	uint32_t mixed = (blitId * 2654435761u) ^ ((uint32_t)y * 2246822519u);
+	return mixed & (DRAWING_BLITTER_VIS_ANOMALY_LINE_TABLE_CAP - 1u);
+}
+
+static int
+drawing_blitterVisAnomalyAbs(int value)
+{
+	if (value < 0) {
+		return -value;
+	}
+	return value;
+}
+
+static void
+drawing_blitterVisAnomalyReset(void)
+{
+	memset(drawing_blitterVisAnomalyLineTable, 0, sizeof(drawing_blitterVisAnomalyLineTable));
+	drawing_blitterVisAnomalyLineCount = 0;
+	drawing_blitterVisAnomalyDroppedEntriesFrame = 0;
+}
+
+static drawing_blitter_vis_line_stat_t *
+drawing_blitterVisAnomalyFindLine(uae_u32 blitId, int y, int create)
+{
+	uint32_t index = drawing_blitterVisAnomalyHash(blitId, y);
+	for (uint32_t probe = 0; probe < DRAWING_BLITTER_VIS_ANOMALY_LINE_TABLE_CAP; ++probe) {
+		drawing_blitter_vis_line_stat_t *entry = &drawing_blitterVisAnomalyLineTable[index];
+		if (!entry->used) {
+			if (!create) {
+				return NULL;
+			}
+			entry->used = 1;
+			entry->blitId = blitId;
+			entry->y = y;
+			entry->minX = 0;
+			entry->maxX = 0;
+			entry->count = 0;
+			drawing_blitterVisAnomalyLineCount++;
+			return entry;
+		}
+		if (entry->blitId == blitId && entry->y == y) {
+			return entry;
+		}
+		index = (index + 1u) & (DRAWING_BLITTER_VIS_ANOMALY_LINE_TABLE_CAP - 1u);
+	}
+	if (create) {
+		drawing_blitterVisAnomalyDroppedEntriesFrame++;
+	}
+	return NULL;
+}
+
+static void
+drawing_blitterVisAnomalyRecordRange(uae_u32 blitId, int y, int startX, int endX)
+{
+	if (endX <= startX) {
+		return;
+	}
+	drawing_blitter_vis_line_stat_t *entry = drawing_blitterVisAnomalyFindLine(blitId, y, 1);
+	if (!entry) {
+		return;
+	}
+	if (entry->count == 0) {
+		entry->minX = startX;
+		entry->maxX = endX - 1;
+	} else {
+		if (startX < entry->minX) {
+			entry->minX = startX;
+		}
+		if ((endX - 1) > entry->maxX) {
+			entry->maxX = endX - 1;
+		}
+	}
+	entry->count += (uint32_t)(endX - startX);
+}
+
+static int
+drawing_blitterVisAnomalyLineCompare(const void *lhs, const void *rhs)
+{
+	const drawing_blitter_vis_line_stat_t *left = (const drawing_blitter_vis_line_stat_t *)lhs;
+	const drawing_blitter_vis_line_stat_t *right = (const drawing_blitter_vis_line_stat_t *)rhs;
+	if (left->blitId < right->blitId) {
+		return -1;
+	}
+	if (left->blitId > right->blitId) {
+		return 1;
+	}
+	if (left->y < right->y) {
+		return -1;
+	}
+	if (left->y > right->y) {
+		return 1;
+	}
+	return 0;
+}
+
+static void
+drawing_blitterVisAnomalyFinalizeFrame(void)
+{
+	if (drawing_blitterVisAnomalyLineCount == 0 && drawing_blitterVisAnomalyDroppedEntriesFrame == 0) {
+		return;
+	}
+	drawing_blitterVisAnomalyReset();
+}
+
+static int
+drawing_blitterVisGetNativeWidth(void)
+{
+#ifdef __LIBRETRO__
+	if (retrow_crop > 0 && retrow_crop <= MAX_PIXELS_PER_LINE) {
+		return retrow_crop;
+	}
+#endif
+	return MAX_PIXELS_PER_LINE;
+}
+
+static int
+drawing_blitterVisGetNativeHeight(void)
+{
+#ifdef __LIBRETRO__
+	if (retroh_crop > 0 && retroh_crop <= DRAWING_BLITTER_VIS_NATIVE_LINE_COUNT) {
+		return retroh_crop;
+	}
+#endif
+	return DRAWING_BLITTER_VIS_NATIVE_LINE_COUNT;
+}
+
+void
+drawing_blitterVisClearSourceFrame(void)
+{
+	drawing_blitterVisAnomalyFrameId++;
+	memset(drawing_blitterVisSourcePixelIds, 0, sizeof(drawing_blitterVisSourcePixelIds));
+	memset(drawing_blitterVisResolvedSourceLine, 0xff, sizeof(drawing_blitterVisResolvedSourceLine));
+	drawing_blitterVisLastResolvedSourceLine = -1;
+	drawing_blitterVisMinTrackReset();
+	drawing_blitterVisSrcMinTrackReset();
+	drawing_blitterVisSourceMarkCallsFrame = 0;
+}
+
+void
+drawing_blitterVisClearFrame(void)
+{
+	memset(drawing_blitterVisNativePixelIds, 0, sizeof(drawing_blitterVisNativePixelIds));
+	drawing_blitterVisNativeMarkCallsFrame = 0;
+	drawing_blitterVisSourceLineContext = -1;
+	drawing_blitterVisNativeLineContext = -1;
+}
+
+void
+drawing_blitterVisClearAll(void)
+{
+	memset(drawing_blitterVisSourcePixelIds, 0, sizeof(drawing_blitterVisSourcePixelIds));
+	memset(drawing_blitterVisNativePixelIds, 0, sizeof(drawing_blitterVisNativePixelIds));
+	memset(drawing_blitterVisNativePixelIdsSnapshot, 0, sizeof(drawing_blitterVisNativePixelIdsSnapshot));
+	drawing_blitterVisSourceMarkCallsFrame = 0;
+	drawing_blitterVisNativeMarkCallsFrame = 0;
+	drawing_blitterVisNativeMarkCallsSnapshot = 0;
+	drawing_blitterVisSourceLineContext = -1;
+	drawing_blitterVisNativeLineContext = -1;
+	memset(drawing_blitterVisResolvedSourceLine, 0xff, sizeof(drawing_blitterVisResolvedSourceLine));
+	drawing_blitterVisLastResolvedSourceLine = -1;
+	drawing_blitterVisAnomalyFrameId = 0;
+	drawing_blitterVisAnomalyReset();
+	drawing_blitterVisMinTrackReset();
+	drawing_blitterVisSrcMinTrackReset();
+}
+
+void
+drawing_blitterVisSnapshotFrame(void)
+{
+	memcpy(
+		drawing_blitterVisNativePixelIdsSnapshot,
+		drawing_blitterVisNativePixelIds,
+		sizeof(drawing_blitterVisNativePixelIdsSnapshot)
+	);
+	drawing_blitterVisNativeMarkCallsSnapshot = drawing_blitterVisNativeMarkCallsFrame;
+}
+
+void
+drawing_blitterVisSetLineContext(int sourceLine, int nativeLine)
+{
+	drawing_blitterVisSourceLineContext = -1;
+	drawing_blitterVisNativeLineContext = -1;
+	if (sourceLine >= 0 && sourceLine < DRAWING_BLITTER_VIS_SOURCE_LINE_COUNT) {
+		drawing_blitterVisSourceLineContext = sourceLine;
+	}
+	if (nativeLine >= 0 && nativeLine < DRAWING_BLITTER_VIS_NATIVE_LINE_COUNT) {
+		drawing_blitterVisNativeLineContext = nativeLine;
+	}
+}
+
+void
+drawing_blitterVisMarkSourceRange(int lineno, int pixelStart, int pixelCount, uae_u32 blitId)
+{
+	if (lineno < 0 || lineno >= DRAWING_BLITTER_VIS_SOURCE_LINE_COUNT) {
+		return;
+	}
+	if (!blitId) {
+		return;
+	}
+	if (pixelCount <= 0) {
+		return;
+	}
+	int start = pixelStart + DRAWING_BLITTER_VIS_SOURCE_PIXEL_BIAS;
+	int end = pixelStart + pixelCount + DRAWING_BLITTER_VIS_SOURCE_PIXEL_BIAS;
+	if (end <= 0 || start >= DRAWING_BLITTER_VIS_SOURCE_PIXEL_COUNT) {
+		return;
+	}
+	if (start < 0) {
+		start = 0;
+	}
+	if (end > DRAWING_BLITTER_VIS_SOURCE_PIXEL_COUNT) {
+		end = DRAWING_BLITTER_VIS_SOURCE_PIXEL_COUNT;
+	}
+	int sourceMinX = start - DRAWING_BLITTER_VIS_SOURCE_PIXEL_BIAS;
+	drawing_blitter_vis_src_min_track_t *srcTrack = drawing_blitterVisSrcMinTrackFind(blitId, 1);
+	if (srcTrack) {
+		if (srcTrack->minLine < 0) {
+			srcTrack->minX = sourceMinX;
+			srcTrack->minLine = lineno;
+		} else if (sourceMinX < srcTrack->minX) {
+			srcTrack->minX = sourceMinX;
+			srcTrack->minLine = lineno;
+		}
+	}
+	drawing_blitterVisSourceMarkCallsFrame++;
+	for (int pixelX = start; pixelX < end; pixelX++) {
+		drawing_blitterVisSourcePixelIds[lineno][pixelX] = blitId;
+	}
+}
+
+void
+drawing_blitterVisMarkNativeRange(int pixelStart, int pixelCount, uae_u32 blitId)
+{
+	if (!blitId || pixelCount <= 0) {
+		return;
+	}
+	if (drawing_blitterVisNativeLineContext < 0 || drawing_blitterVisNativeLineContext >= DRAWING_BLITTER_VIS_NATIVE_LINE_COUNT) {
+		return;
+	}
+
+	int nativeY = drawing_blitterVisNativeLineContext;
+#ifdef __LIBRETRO__
+	nativeY -= (int)retroy_crop;
+#endif
+	int nativeHeight = drawing_blitterVisGetNativeHeight();
+	if (nativeY < 0 || nativeY >= nativeHeight) {
+		return;
+	}
+
+	int start = pixelStart;
+	int end = pixelStart + pixelCount;
+#ifdef __LIBRETRO__
+	start -= (int)retrox_crop;
+	end -= (int)retrox_crop;
+#endif
+	int nativeWidth = drawing_blitterVisGetNativeWidth();
+	if (end <= 0 || start >= nativeWidth) {
+		return;
+	}
+	if (start < 0) {
+		start = 0;
+	}
+	if (end > nativeWidth) {
+		end = nativeWidth;
+	}
+	if (start >= end) {
+		return;
+	}
+
+	drawing_blitter_vis_min_track_t *track = drawing_blitterVisMinTrackFind(blitId, 1);
+	if (track) {
+		if (track->minY < 0) {
+			track->minX = start;
+			track->minY = nativeY;
+		} else if (start < track->minX) {
+			track->minX = start;
+			track->minY = nativeY;
+		}
+	}
+
+	drawing_blitterVisNativeMarkCallsFrame++;
+	for (int pixelX = start; pixelX < end; pixelX++) {
+		drawing_blitterVisNativePixelIds[nativeY][pixelX] = blitId;
+	}
+}
+
+int
+drawing_blitterVisGetNativePixelBlitId(int pixelY, int pixelX, uae_u32 *blitId)
+{
+	if (blitId) {
+		*blitId = 0;
+	}
+	int nativeWidth = drawing_blitterVisGetNativeWidth();
+	int nativeHeight = drawing_blitterVisGetNativeHeight();
+	if (pixelY < 0 || pixelY >= nativeHeight) {
+		return 0;
+	}
+	if (pixelX < 0 || pixelX >= nativeWidth) {
+		return 0;
+	}
+	uae_u32 value = drawing_blitterVisNativePixelIdsSnapshot[pixelY][pixelX];
+	if (blitId) {
+		*blitId = value;
+	}
+	return value ? 1 : 0;
+}
+
+int
+drawing_blitterVisTakeNativePixelBlitId(int pixelY, int pixelX, uae_u32 *blitId)
+{
+	if (blitId) {
+		*blitId = 0;
+	}
+	int nativeWidth = drawing_blitterVisGetNativeWidth();
+	int nativeHeight = drawing_blitterVisGetNativeHeight();
+	if (pixelY < 0 || pixelY >= nativeHeight) {
+		return 0;
+	}
+	if (pixelX < 0 || pixelX >= nativeWidth) {
+		return 0;
+	}
+	uae_u32 value = drawing_blitterVisNativePixelIds[pixelY][pixelX];
+	if (!value) {
+		return 0;
+	}
+	drawing_blitterVisNativePixelIds[pixelY][pixelX] = 0;
+	if (blitId) {
+		*blitId = value;
+	}
+	return 1;
+}
+
+uint32_t
+drawing_blitterVisGetSourceMarkCallsFrame(void)
+{
+	return drawing_blitterVisSourceMarkCallsFrame;
+}
+
+uint32_t
+drawing_blitterVisGetNativeMarkCallsFrame(void)
+{
+	return drawing_blitterVisNativeMarkCallsFrame;
+}
+
+uint32_t
+drawing_blitterVisGetNativeMarkCallsSnapshot(void)
+{
+	return drawing_blitterVisNativeMarkCallsSnapshot;
+}
+#endif
 
 /* Centering variables.  */
 #ifdef __LIBRETRO__
@@ -2316,8 +2814,119 @@ static call_linetoscr pfield_do_linetoscr_normal, pfield_do_linetoscr_normal2;
 static call_linetoscr pfield_do_linetoscr_sprite, pfield_do_linetoscr_sprite2;
 static call_linetoscrb pfield_do_linetoscr_spriteonly;
 
+#if E9K_HACK_BLITTER_VIS
+static uae_u32
+drawing_blitterVisFindSourceBlitIdInRange(int sourceLine, int rangeStart, int rangeEnd)
+{
+	if (sourceLine < 0 || sourceLine >= DRAWING_BLITTER_VIS_SOURCE_LINE_COUNT) {
+		return 0;
+	}
+	if (rangeStart < 0) {
+		rangeStart = 0;
+	}
+	if (rangeEnd > DRAWING_BLITTER_VIS_SOURCE_PIXEL_COUNT) {
+		rangeEnd = DRAWING_BLITTER_VIS_SOURCE_PIXEL_COUNT;
+	}
+	if (rangeStart >= rangeEnd) {
+		return 0;
+	}
+	for (int sourceX = rangeStart; sourceX < rangeEnd; sourceX++) {
+		uae_u32 blitId = drawing_blitterVisSourcePixelIds[sourceLine][sourceX];
+		if (blitId != 0) {
+			return blitId;
+		}
+	}
+	return 0;
+}
+
+static void
+drawing_blitterVisProjectSourceToNativeRange(int sourceStart, int sourceEnd, int nativeStart, int nativeEnd)
+{
+	if (drawing_blitterVisSourceMarkCallsFrame == 0) {
+		return;
+	}
+	if (drawing_blitterVisSourceLineContext < 0 || drawing_blitterVisSourceLineContext >= DRAWING_BLITTER_VIS_SOURCE_LINE_COUNT) {
+		return;
+	}
+	if (sourceEnd <= sourceStart || nativeEnd <= nativeStart) {
+		return;
+	}
+
+	int sourceWidth = sourceEnd - sourceStart;
+	int nativeWidth = nativeEnd - nativeStart;
+	uae_u32 runBlitId = 0;
+	int runStart = 0;
+	int runCount = 0;
+	for (int nativeX = nativeStart; nativeX < nativeEnd; nativeX++) {
+		int relStart = nativeX - nativeStart;
+		int relEnd = relStart + 1;
+		int sourceRangeStart = sourceStart + (int)(((int64_t)relStart * (int64_t)sourceWidth) / nativeWidth);
+		int sourceRangeEnd = sourceStart + (int)((((int64_t)relEnd * (int64_t)sourceWidth) + nativeWidth - 1) / nativeWidth);
+		if (sourceRangeEnd <= sourceRangeStart) {
+			sourceRangeEnd = sourceRangeStart + 1;
+		}
+		int sourceStoreStart = sourceRangeStart + DRAWING_BLITTER_VIS_SOURCE_INDEX_OFFSET;
+		int sourceStoreEnd = sourceRangeEnd + DRAWING_BLITTER_VIS_SOURCE_INDEX_OFFSET;
+		int nativeFromLeft = nativeX - nativeStart;
+		int nativeFromRight = (nativeEnd - 1) - nativeX;
+		uae_u32 blitId = drawing_blitterVisFindSourceBlitIdInRange(
+			drawing_blitterVisSourceLineContext,
+			sourceStoreStart,
+			sourceStoreEnd
+		);
+		if (blitId == 0) {
+			int leftFallbackStart = sourceStoreStart;
+			int leftFallbackEnd = sourceStoreStart;
+			int rightFallbackStart = sourceStoreEnd;
+			int rightFallbackEnd = sourceStoreEnd;
+			if (nativeFromLeft < DRAWING_BLITTER_VIS_EDGE_NATIVE_PIXELS) {
+				leftFallbackStart -= DRAWING_BLITTER_VIS_EDGE_SOURCE_PIXELS;
+			}
+			if (nativeFromRight < DRAWING_BLITTER_VIS_EDGE_NATIVE_PIXELS) {
+				rightFallbackEnd += DRAWING_BLITTER_VIS_EDGE_SOURCE_PIXELS;
+			}
+			blitId = drawing_blitterVisFindSourceBlitIdInRange(
+				drawing_blitterVisSourceLineContext,
+				rightFallbackStart,
+				rightFallbackEnd
+			);
+			if (blitId == 0) {
+				blitId = drawing_blitterVisFindSourceBlitIdInRange(
+					drawing_blitterVisSourceLineContext,
+					leftFallbackStart,
+					leftFallbackEnd
+				);
+			}
+		}
+
+		if (blitId != 0 && runCount > 0 && runBlitId == blitId) {
+			runCount++;
+			continue;
+		}
+		if (runCount > 0) {
+			drawing_blitterVisMarkNativeRange(runStart - linetoscr_x_adjust_pixels, runCount, runBlitId);
+		}
+		if (blitId != 0) {
+			runBlitId = blitId;
+			runStart = nativeX;
+			runCount = 1;
+		} else {
+			runBlitId = 0;
+			runStart = 0;
+			runCount = 0;
+		}
+	}
+	if (runCount > 0) {
+		drawing_blitterVisMarkNativeRange(runStart - linetoscr_x_adjust_pixels, runCount, runBlitId);
+	}
+}
+#endif
+
 static void pfield_do_linetoscr(int start, int stop, int blank)
 {
+#if E9K_HACK_BLITTER_VIS
+	int sourceStart = src_pixel;
+#endif
 	int pixel = pfield_do_linetoscr_normal(src_pixel, start, stop);
 	if (exthblank || exthblank_force) {
 		pfield_do_fill_line(start, stop, 1);
@@ -2329,10 +2938,18 @@ static void pfield_do_linetoscr(int start, int stop, int blank)
 #endif
 		pfield_do_fill_line(start, stop, bb ? 1 : 0);
 	}
+#if E9K_HACK_BLITTER_VIS
+	if (!exthblank && !exthblank_force) {
+		drawing_blitterVisProjectSourceToNativeRange(sourceStart, pixel, start, stop);
+	}
+#endif
 	src_pixel = pixel;
 }
 static void pfield_do_linetoscr_spr(int start, int stop, int blank)
 {
+#if E9K_HACK_BLITTER_VIS
+	int sourceStart = src_pixel;
+#endif
 	int pixel;
 	if (extborder) {
 #if EXTBORDER_BLANK
@@ -2348,6 +2965,11 @@ static void pfield_do_linetoscr_spr(int start, int stop, int blank)
 			pfield_do_fill_line(start, stop, 1);
 		}
 	}
+#if E9K_HACK_BLITTER_VIS
+	if (!exthblank && !exthblank_force) {
+		drawing_blitterVisProjectSourceToNativeRange(sourceStart, pixel, start, stop);
+	}
+#endif
 	src_pixel = pixel;
 }
 static int pfield_do_nothing(int a, int b, int c)
@@ -3921,6 +4543,9 @@ static void pfield_draw_line(struct vidbuffer *vb, int lineno, int gfx_ypos, int
 	bool have_color_changes;
 	enum double_how dh;
 	int ls = linestate[lineno];
+#if E9K_HACK_BLITTER_VIS
+	int blitterVisSourceLine = lineno;
+#endif
 
 	dp_for_drawing = line_decisions + lineno;
 	dip_for_drawing = curr_drawinfo + lineno;
@@ -3948,6 +4573,20 @@ static void pfield_draw_line(struct vidbuffer *vb, int lineno, int gfx_ypos, int
 	case LINE_AS_PREVIOUS:
 		dp_for_drawing--;
 		dip_for_drawing--;
+#if E9K_HACK_BLITTER_VIS
+		if (drawing_blitterVisLastResolvedSourceLine >= 0
+			&& drawing_blitterVisLastResolvedSourceLine < DRAWING_BLITTER_VIS_SOURCE_LINE_COUNT) {
+			blitterVisSourceLine = drawing_blitterVisLastResolvedSourceLine;
+		} else {
+			blitterVisSourceLine = lineno - 1;
+			if (lineno > 0 && lineno - 1 < LINESTATE_SIZE) {
+				int resolvedLine = drawing_blitterVisResolvedSourceLine[lineno - 1];
+				if (resolvedLine >= 0 && resolvedLine < DRAWING_BLITTER_VIS_SOURCE_LINE_COUNT) {
+					blitterVisSourceLine = resolvedLine;
+				}
+			}
+		}
+#endif
 		linestate[lineno] = LINE_DONE_AS_PREVIOUS;
 		if (dp_for_drawing->plfleft < 0)
 			border = 1;
@@ -3972,6 +4611,19 @@ static void pfield_draw_line(struct vidbuffer *vb, int lineno, int gfx_ypos, int
 		linestate[lineno] = LINE_DONE;
 		break;
 	}
+
+#if E9K_HACK_BLITTER_VIS
+	if (blitterVisSourceLine < 0 || blitterVisSourceLine >= DRAWING_BLITTER_VIS_SOURCE_LINE_COUNT) {
+		blitterVisSourceLine = -1;
+	}
+	if (lineno >= 0 && lineno < LINESTATE_SIZE) {
+		drawing_blitterVisResolvedSourceLine[lineno] = blitterVisSourceLine;
+	}
+	if (blitterVisSourceLine >= 0) {
+		drawing_blitterVisLastResolvedSourceLine = blitterVisSourceLine;
+	}
+	drawing_blitterVisSetLineContext(blitterVisSourceLine, gfx_ypos);
+#endif
 
 	have_color_changes = is_color_changes(dip_for_drawing);
 	if (vb_state != dp_for_drawing->vb) {
@@ -5498,6 +6150,9 @@ void reset_drawing(void)
 	memset(spritepixels_buffer, 0, sizeof(spritepixels_buffer));
 	memset(line_data, 0, sizeof(line_data));
 	memset(ham_linebuf, 0, sizeof(ham_linebuf));
+#if E9K_HACK_BLITTER_VIS
+	drawing_blitterVisClearAll();
+#endif
 
 	init_hardware_for_drawing_frame();
 		

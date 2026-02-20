@@ -356,12 +356,12 @@ textbox_notifySubmit(textbox_state_t *st, e9ui_context_t *ctx)
 }
 
 static e9ui_component_t *
-textbox_findNextTextbox(e9ui_component_t *self)
+textbox_findNextTextbox(e9ui_context_t *ctx, e9ui_component_t *self)
 {
     if (!self) {
         return NULL;
     }
-    e9ui_component_t *root = e9ui_focusTraversalRoot(self);
+    e9ui_component_t *root = e9ui_focusTraversalRoot(ctx, self);
     if (!root) {
         return NULL;
     }
@@ -2269,7 +2269,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         }
         textbox_notifySubmit(st, ctx);
         {
-            e9ui_component_t *nextTextbox = textbox_findNextTextbox(self);
+            e9ui_component_t *nextTextbox = textbox_findNextTextbox(ctx, self);
             if (nextTextbox) {
                 e9ui_setFocus(ctx, nextTextbox);
             }

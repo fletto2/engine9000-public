@@ -28,9 +28,11 @@ int
 sprite_debug_is_window_id(uint32_t window_id);
 
 void
+sprite_debug_setMainWindowFocused(int focused);
+
+void
 sprite_debug_persistConfig(FILE *file);
 
 int
 sprite_debug_loadConfigProperty(const char *prop, const char *value);
-
 

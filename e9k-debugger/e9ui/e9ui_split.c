@@ -31,6 +31,19 @@ static SDL_Cursor *s_cursor_ns = NULL; // vertical sizing (splitter between stac
 static SDL_Cursor *s_cursor_ew = NULL; // horizontal sizing (splitter between side-by-side panes)
 static SDL_Cursor *s_cursor_arrow = NULL;
 
+static int
+e9ui_split_windowHasFocus(const e9ui_context_t *ctx)
+{
+  if (!ctx || !ctx->window) {
+    return 1;
+  }
+  SDL_Window *focusedWindow = SDL_GetKeyboardFocus();
+  if (!focusedWindow) {
+    return 1;
+  }
+  return focusedWindow == ctx->window ? 1 : 0;
+}
+
 void
 e9ui_split_resetCursors(void)
 {
@@ -306,7 +319,8 @@ e9ui_split_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_e
     int over = (mx >= s->rectGrab.x && mx < s->rectGrab.x + s->rectGrab.w &&
 		my >= s->rectGrab.y && my < s->rectGrab.y + s->rectGrab.h);
     s->hover = over;
-    if (over || s->dragging) {
+    int allowResizeCursor = e9ui_split_windowHasFocus(ctx);
+    if ((over || s->dragging) && allowResizeCursor) {
       if (ctx) {
 	ctx->cursorOverride = 1;
       }

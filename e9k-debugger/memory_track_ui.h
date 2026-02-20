@@ -24,6 +24,9 @@ uint32_t
 memory_track_ui_getWindowId(void);
 
 void
+memory_track_ui_setMainWindowFocused(int focused);
+
+void
 memory_track_ui_handleEvent(SDL_Event *ev);
 
 void

@@ -68,7 +68,7 @@ else ifeq ($(platform), classic_armv7_a7)
     SHARED := -shared -Wl,--version-script=$(CORE_DIR)/libretro/link.T -Wl,--no-undefined
     LDFLAGS += -lm -lpthread
     CFLAGS += -Ofast \
-	-flto=4 -fwhole-program -fuse-linker-plugin \
+	-flto -fwhole-program -fuse-linker-plugin \
 	-fdata-sections -ffunction-sections -Wl,--gc-sections \
 	-fno-stack-protector -fno-ident -fomit-frame-pointer \
 	-falign-functions=1 -falign-jumps=1 -falign-loops=1 \
@@ -95,7 +95,7 @@ else ifeq ($(platform), classic_armv8_a35)
    fpic := -fPIC
    SHARED := -shared -Wl,--version-script=$(CORE_DIR)/libretro/link.T -Wl,--no-undefined
    LDFLAGS += -lm -lrt -lpthread -ldl
-   CFLAGS += -Ofast -flto=4 \
+   CFLAGS += -Ofast -flto \
            -fmerge-all-constants -fno-math-errno -march=armv8-a \
            -marm -mtune=cortex-a35 -mfpu=neon-fp-armv8 -mfloat-abi=hard
    LDFLAGS += -static-libgcc -static-libstdc++
@@ -106,6 +106,8 @@ else ifeq ($(platform), osx)
    TARGET := $(TARGET_NAME)_libretro.dylib
    MINVERSION := -mmacosx-version-min=10.6
    fpic := -fPIC
+   CFLAGS += -fno-lto
+   LDFLAGS += -fno-lto
    CFLAGS += -flto   
    LDFLAGS := -flto
    SHARED := -dynamiclib
@@ -322,6 +324,8 @@ HAVE_CHD = 1
 HAVE_MPEG2 = 1
 
 CFLAGS += -std=gnu99 -DINLINE="inline" -D__LIBRETRO__ -MMD
+CFLAGS += -DE9K_HACK_BLITTER_VIS=1
+CFLAGS += -DE9K_DEBUGGER_CUSTOM_LOGGER=1
 
 # VFS
 ifneq ($(NO_LIBRETRO_VFS), 1)

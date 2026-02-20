@@ -1,0 +1,1416 @@
+/*
+ * COPYRIGHT © 2026 Enable Software Pty Ltd - All Rights Reserved
+ *
+ * https://github.com/alpine9000/engine9000-public
+ *
+ * See COPYING for license details
+ */
+
+#include <ctype.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <SDL.h>
+
+#include "config.h"
+#include "breakpoints.h"
+#include "custom_log.h"
+#include "debug.h"
+#include "debugger.h"
+#include "e9ui.h"
+#include "libretro_host.h"
+#include "amiga_custom_regs.h"
+#include "ui.h"
+
+#define CUSTOM_LOG_TITLE "ENGINE9000 DEBUGGER - CUSTOM LOG"
+#define CUSTOM_LOG_PAD 10
+#define CUSTOM_LOG_ROW_PAD_Y 2
+#define CUSTOM_LOG_COL_GAP 12
+#define CUSTOM_LOG_LINE_COL_W 112
+#define CUSTOM_LOG_NAME_COL_W 128
+#define CUSTOM_LOG_SRC_COL_W 75
+#define CUSTOM_LOG_ADDR_COL_W 120
+#define CUSTOM_LOG_VALUE_COL_W 109
+#define CUSTOM_LOG_FILTER_COUNT 6
+#define CUSTOM_LOG_FILTER_TEXT_MAX 128
+#define CUSTOM_LOG_FILTER_VPAD 3
+#define CUSTOM_LOG_FILTER_GAP_Y 6
+
+typedef enum custom_log_filter_index {
+    custom_log_filter_line = 0,
+    custom_log_filter_name = 1,
+    custom_log_filter_src = 2,
+    custom_log_filter_addr = 3,
+    custom_log_filter_value = 4,
+    custom_log_filter_desc = 5
+} custom_log_filter_index_t;
+
+typedef struct custom_log_state custom_log_state_t;
+
+typedef struct custom_log_filter_cb {
+    custom_log_state_t *ui;
+    int filterIndex;
+} custom_log_filter_cb_t;
+
+typedef struct custom_log_layout {
+    int winW;
+    int winH;
+    int lineHeight;
+    int filterHeight;
+    int rowsY;
+    int rowsH;
+    int colX[CUSTOM_LOG_FILTER_COUNT];
+    int colW[CUSTOM_LOG_FILTER_COUNT];
+} custom_log_layout_t;
+
+typedef struct custom_log_row_hit {
+    SDL_Rect nameRect;
+    SDL_Rect addrRect;
+    SDL_Rect valueRect;
+    uint32_t sourceAddr;
+    uint16_t regOffset;
+    uint16_t regValue;
+    uint8_t sourceIsCopper;
+} custom_log_row_hit_t;
+
+struct custom_log_state {
+    int open;
+    int closeRequested;
+    int warnedMissingOption;
+    SDL_Window *window;
+    SDL_Renderer *renderer;
+    e9ui_context_t ctx;
+    e9ui_component_t *filterRoot;
+    e9ui_component_t *filterTextboxes[CUSTOM_LOG_FILTER_COUNT];
+    custom_log_filter_cb_t filterCbs[CUSTOM_LOG_FILTER_COUNT];
+    uint32_t windowId;
+    int winX;
+    int winY;
+    int winW;
+    int winH;
+    int winHasSaved;
+    int mainWindowFocused;
+    int customLogWindowFocused;
+    int alwaysOnTopState;
+    int scrollRow;
+    e9k_debug_ami_custom_log_entry_t *entries;
+    size_t entryCount;
+    size_t entryCap;
+    uint32_t dropped;
+    uint64_t frameNo;
+    uint64_t framesCaptured;
+    uint64_t allocFailures;
+    char filters[CUSTOM_LOG_FILTER_COUNT][CUSTOM_LOG_FILTER_TEXT_MAX];
+    custom_log_row_hit_t *rowHits;
+    size_t rowHitCount;
+    size_t rowHitCap;
+};
+
+static custom_log_state_t custom_log_state = {0};
+
+static int
+custom_log_parseInt(const char *value, int *out)
+{
+    if (!value || !out) {
+        return 0;
+    }
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (!end || end == value) {
+        return 0;
+    }
+    if (parsed < INT_MIN || parsed > INT_MAX) {
+        return 0;
+    }
+    *out = (int)parsed;
+    return 1;
+}
+
+static int
+custom_log_measureLineHeight(void)
+{
+    TTF_Font *font = e9ui->ctx.font;
+    int lineHeight = font ? TTF_FontHeight(font) : 0;
+    if (lineHeight <= 0) {
+        lineHeight = 16;
+    }
+    return lineHeight;
+}
+
+static float
+custom_log_computeDpiScale(const e9ui_context_t *ctx)
+{
+    if (!ctx || !ctx->window || !ctx->renderer) {
+        return 1.0f;
+    }
+    int winW = 0;
+    int winH = 0;
+    int renW = 0;
+    int renH = 0;
+    SDL_GetWindowSize(ctx->window, &winW, &winH);
+    SDL_GetRendererOutputSize(ctx->renderer, &renW, &renH);
+    if (winW <= 0 || winH <= 0) {
+        return 1.0f;
+    }
+    float scaleX = (float)renW / (float)winW;
+    float scaleY = (float)renH / (float)winH;
+    float scale = scaleX > scaleY ? scaleX : scaleY;
+    return scale < 1.0f ? 1.0f : scale;
+}
+
+static int
+custom_log_measureFilterHeight(const custom_log_state_t *ui, int contentW)
+{
+    if (ui && ui->filterRoot && ui->filterRoot->preferredHeight) {
+        int height = ui->filterRoot->preferredHeight(ui->filterRoot, (e9ui_context_t *)&ui->ctx, contentW);
+        if (height > 0) {
+            return height;
+        }
+    }
+    return custom_log_measureLineHeight() + CUSTOM_LOG_FILTER_VPAD * 2;
+}
+
+static int
+custom_log_computeLayout(const custom_log_state_t *ui, custom_log_layout_t *out)
+{
+    if (!ui || !ui->renderer || !out) {
+        return 0;
+    }
+    int winW = 0;
+    int winH = 0;
+    SDL_GetRendererOutputSize(ui->renderer, &winW, &winH);
+    if (winW <= 0 || winH <= 0) {
+        return 0;
+    }
+    int lineHeight = custom_log_measureLineHeight();
+    int contentX = CUSTOM_LOG_PAD + 6;
+    int contentW = winW - CUSTOM_LOG_PAD * 2 - 12;
+    int filterHeight = custom_log_measureFilterHeight(ui, contentW);
+    int rowsY = CUSTOM_LOG_PAD + filterHeight + CUSTOM_LOG_FILTER_GAP_Y;
+    int rowsH = winH - CUSTOM_LOG_PAD - rowsY;
+    if (rowsH < lineHeight) {
+        rowsH = lineHeight;
+    }
+    int colLineW = CUSTOM_LOG_LINE_COL_W;
+    int colNameW = CUSTOM_LOG_NAME_COL_W;
+    int colSrcW = CUSTOM_LOG_SRC_COL_W;
+    int colAddrW = CUSTOM_LOG_ADDR_COL_W;
+    int colValueW = CUSTOM_LOG_VALUE_COL_W;
+    int colDescW = contentW - colLineW - colNameW - colSrcW - colAddrW - colValueW - CUSTOM_LOG_COL_GAP * 5;
+    if (colDescW < 48) {
+        colDescW = 48;
+    }
+
+    out->winW = winW;
+    out->winH = winH;
+    out->lineHeight = lineHeight;
+    out->filterHeight = filterHeight;
+    out->rowsY = rowsY;
+    out->rowsH = rowsH;
+    out->colX[custom_log_filter_line] = contentX;
+    out->colW[custom_log_filter_line] = colLineW;
+    out->colX[custom_log_filter_name] = out->colX[custom_log_filter_line] + colLineW + CUSTOM_LOG_COL_GAP;
+    out->colW[custom_log_filter_name] = colNameW;
+    out->colX[custom_log_filter_src] = out->colX[custom_log_filter_name] + colNameW + CUSTOM_LOG_COL_GAP;
+    out->colW[custom_log_filter_src] = colSrcW;
+    out->colX[custom_log_filter_addr] = out->colX[custom_log_filter_src] + colSrcW + CUSTOM_LOG_COL_GAP;
+    out->colW[custom_log_filter_addr] = colAddrW;
+    out->colX[custom_log_filter_value] = out->colX[custom_log_filter_addr] + colAddrW + CUSTOM_LOG_COL_GAP;
+    out->colW[custom_log_filter_value] = colValueW;
+    out->colX[custom_log_filter_desc] = out->colX[custom_log_filter_value] + colValueW + CUSTOM_LOG_COL_GAP;
+    out->colW[custom_log_filter_desc] = colDescW;
+    return 1;
+}
+
+static int
+custom_log_computeVisibleRows(const custom_log_state_t *ui)
+{
+    custom_log_layout_t layout;
+    if (!custom_log_computeLayout(ui, &layout)) {
+        return 1;
+    }
+    int rows = layout.rowsH / layout.lineHeight;
+    if (rows <= 0) {
+        rows = 1;
+    }
+    return rows;
+}
+
+static void
+custom_log_clampScroll(custom_log_state_t *ui, int visibleRows)
+{
+    if (!ui) {
+        return;
+    }
+    if (ui->scrollRow < 0) {
+        ui->scrollRow = 0;
+    }
+    (void)visibleRows;
+    size_t maxStart = 0;
+    if (ui->entryCount > 0) {
+        maxStart = ui->entryCount - 1;
+    }
+    if ((size_t)ui->scrollRow > maxStart) {
+        ui->scrollRow = (int)maxStart;
+    }
+}
+
+static void
+custom_log_adjustScroll(custom_log_state_t *ui, int deltaRows)
+{
+    if (!ui || deltaRows == 0) {
+        return;
+    }
+    long next = (long)ui->scrollRow + (long)deltaRows;
+    if (next < 0) {
+        next = 0;
+    }
+    if (next > INT_MAX) {
+        next = INT_MAX;
+    }
+    ui->scrollRow = (int)next;
+    custom_log_clampScroll(ui, custom_log_computeVisibleRows(ui));
+}
+
+static int
+custom_log_arrowScrollAmount(SDL_Keymod mods, int visibleRows)
+{
+    int amount = 1;
+    if ((mods & KMOD_CTRL) != 0 || (mods & KMOD_GUI) != 0) {
+        amount = visibleRows / 2;
+        if (amount < 1) {
+            amount = 1;
+        }
+    } else if ((mods & KMOD_SHIFT) != 0) {
+        amount = 4;
+    } else if ((mods & KMOD_ALT) != 0) {
+        amount = 16;
+    }
+    return amount;
+}
+
+static const char *
+custom_log_filterLabel(int index)
+{
+    switch (index) {
+    case custom_log_filter_line: return "LINE";
+    case custom_log_filter_name: return "NAME";
+    case custom_log_filter_src: return "SRC";
+    case custom_log_filter_addr: return "ADDR";
+    case custom_log_filter_value: return "VALUE";
+    case custom_log_filter_desc: return "DESC";
+    default:
+        break;
+    }
+    return "";
+}
+
+static int
+custom_log_filterColumnWidth(int index)
+{
+    switch (index) {
+    case custom_log_filter_line:
+        return CUSTOM_LOG_LINE_COL_W;
+    case custom_log_filter_name:
+        return CUSTOM_LOG_NAME_COL_W;
+    case custom_log_filter_src:
+        return CUSTOM_LOG_SRC_COL_W;
+    case custom_log_filter_addr:
+        return CUSTOM_LOG_ADDR_COL_W;
+    case custom_log_filter_value:
+        return CUSTOM_LOG_VALUE_COL_W;
+    case custom_log_filter_desc:
+    default:
+        break;
+    }
+    return -1;
+}
+
+static void
+custom_log_filterTextboxChanged(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    custom_log_filter_cb_t *cb = (custom_log_filter_cb_t *)user;
+    if (!cb || !cb->ui) {
+        return;
+    }
+    if (cb->filterIndex < 0 || cb->filterIndex >= CUSTOM_LOG_FILTER_COUNT) {
+        return;
+    }
+    e9ui_component_t *textbox = cb->ui->filterTextboxes[cb->filterIndex];
+    const char *text = e9ui_textbox_getText(textbox);
+    if (!text) {
+        text = "";
+    }
+    snprintf(cb->ui->filters[cb->filterIndex], CUSTOM_LOG_FILTER_TEXT_MAX, "%s", text);
+}
+
+static e9ui_component_t *
+custom_log_buildFilterRoot(custom_log_state_t *ui)
+{
+    if (!ui) {
+        return NULL;
+    }
+    e9ui_component_t *row = e9ui_hstack_make();
+    if (!row) {
+        return NULL;
+    }
+    for (int i = 0; i < CUSTOM_LOG_FILTER_COUNT; ++i) {
+        ui->filterCbs[i].ui = ui;
+        ui->filterCbs[i].filterIndex = i;
+        e9ui_component_t *textbox = e9ui_textbox_make(CUSTOM_LOG_FILTER_TEXT_MAX - 1,
+                                                      NULL,
+                                                      custom_log_filterTextboxChanged,
+                                                      &ui->filterCbs[i]);
+        if (!textbox) {
+            e9ui_childDestroy(row, &ui->ctx);
+            return NULL;
+        }
+        e9ui_textbox_setPlaceholder(textbox, custom_log_filterLabel(i));
+        e9ui_textbox_setText(textbox, ui->filters[i]);
+        ui->filterTextboxes[i] = textbox;
+        int width = custom_log_filterColumnWidth(i);
+        if (width > 0) {
+            e9ui_hstack_addFixed(row, textbox, width);
+        } else {
+            e9ui_hstack_addFlex(row, textbox);
+        }
+        if (i + 1 < CUSTOM_LOG_FILTER_COUNT) {
+            e9ui_component_t *gap = e9ui_spacer_make(CUSTOM_LOG_COL_GAP);
+            if (!gap) {
+                e9ui_childDestroy(row, &ui->ctx);
+                return NULL;
+            }
+            e9ui_hstack_addFixed(row, gap, CUSTOM_LOG_COL_GAP);
+        }
+    }
+    return row;
+}
+
+static int
+custom_log_containsInsensitive(const char *text, const char *needle)
+{
+    if (!text || !needle) {
+        return 0;
+    }
+    if (!needle[0]) {
+        return 1;
+    }
+    size_t needleLen = strlen(needle);
+    size_t textLen = strlen(text);
+    if (needleLen > textLen) {
+        return 0;
+    }
+    for (size_t i = 0; i + needleLen <= textLen; ++i) {
+        size_t j = 0;
+        for (; j < needleLen; ++j) {
+            int a = tolower((unsigned char)text[i + j]);
+            int b = tolower((unsigned char)needle[j]);
+            if (a != b) {
+                break;
+            }
+        }
+        if (j == needleLen) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static uint32_t
+custom_log_normalizeAddress(uint32_t addr)
+{
+    return addr & 0x00ffffffu;
+}
+
+static int
+custom_log_entryMatchesFilters(const custom_log_state_t *ui, const e9k_debug_ami_custom_log_entry_t *entry)
+{
+    if (!ui || !entry) {
+        return 0;
+    }
+
+    uint16_t regOffset = (uint16_t)(entry->reg & 0x1feu);
+    const char *name = amiga_custom_regs_nameForOffset(regOffset);
+    const char *desc = amiga_custom_regs_descriptionForOffset(regOffset);
+    const char *src = entry->sourceIsCopper ? "COP" : "CPU";
+    if (!name) {
+        name = "";
+    }
+    if (!desc) {
+        desc = "";
+    }
+    char lineBuf[16];
+    char addrBuf[16];
+    char valueBuf[16];
+    snprintf(lineBuf, sizeof(lineBuf), "%03u", (unsigned)entry->vpos);
+    snprintf(addrBuf, sizeof(addrBuf), "%06x", (unsigned)custom_log_normalizeAddress(entry->sourceAddr));
+    snprintf(valueBuf, sizeof(valueBuf), "%04x", (unsigned)(entry->value & 0xffffu));
+
+    if (!custom_log_containsInsensitive(lineBuf, ui->filters[custom_log_filter_line])) {
+        return 0;
+    }
+    if (!custom_log_containsInsensitive(name, ui->filters[custom_log_filter_name])) {
+        return 0;
+    }
+    if (!custom_log_containsInsensitive(src, ui->filters[custom_log_filter_src])) {
+        return 0;
+    }
+    if (!custom_log_containsInsensitive(addrBuf, ui->filters[custom_log_filter_addr])) {
+        return 0;
+    }
+    if (!custom_log_containsInsensitive(valueBuf, ui->filters[custom_log_filter_value])) {
+        return 0;
+    }
+    if (!custom_log_containsInsensitive(desc, ui->filters[custom_log_filter_desc])) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+custom_log_ensureRowHitCapacity(custom_log_state_t *ui, size_t needed)
+{
+    if (!ui) {
+        return 0;
+    }
+    if (needed <= ui->rowHitCap) {
+        return 1;
+    }
+    size_t nextCap = ui->rowHitCap ? ui->rowHitCap : 16u;
+    while (nextCap < needed) {
+        if (nextCap > (SIZE_MAX / 2u)) {
+            nextCap = needed;
+            break;
+        }
+        nextCap *= 2u;
+    }
+    custom_log_row_hit_t *next = (custom_log_row_hit_t *)realloc(ui->rowHits, nextCap * sizeof(*next));
+    if (!next) {
+        return 0;
+    }
+    ui->rowHits = next;
+    ui->rowHitCap = nextCap;
+    return 1;
+}
+
+static int
+custom_log_findAddressHit(const custom_log_state_t *ui, int x, int y, custom_log_row_hit_t *outHit)
+{
+    if (!ui) {
+        return 0;
+    }
+    for (size_t i = 0; i < ui->rowHitCount; ++i) {
+        const custom_log_row_hit_t *hit = &ui->rowHits[i];
+        if (x >= hit->addrRect.x && x < hit->addrRect.x + hit->addrRect.w &&
+            y >= hit->addrRect.y && y < hit->addrRect.y + hit->addrRect.h) {
+            if (outHit) {
+                *outHit = *hit;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+custom_log_findNameHit(const custom_log_state_t *ui, int x, int y, custom_log_row_hit_t *outHit)
+{
+    if (!ui) {
+        return 0;
+    }
+    for (size_t i = 0; i < ui->rowHitCount; ++i) {
+        const custom_log_row_hit_t *hit = &ui->rowHits[i];
+        if (x >= hit->nameRect.x && x < hit->nameRect.x + hit->nameRect.w &&
+            y >= hit->nameRect.y && y < hit->nameRect.y + hit->nameRect.h) {
+            if (outHit) {
+                *outHit = *hit;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+custom_log_findValueHit(const custom_log_state_t *ui, int x, int y, custom_log_row_hit_t *outHit)
+{
+    if (!ui) {
+        return 0;
+    }
+    for (size_t i = 0; i < ui->rowHitCount; ++i) {
+        const custom_log_row_hit_t *hit = &ui->rowHits[i];
+        if (x >= hit->valueRect.x && x < hit->valueRect.x + hit->valueRect.w &&
+            y >= hit->valueRect.y && y < hit->valueRect.y + hit->valueRect.h) {
+            if (outHit) {
+                *outHit = *hit;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+custom_log_isPaletteRegOffset(uint16_t regOffset)
+{
+    uint16_t normalized = (uint16_t)(regOffset & 0x01feu);
+    return normalized >= 0x0180u && normalized <= 0x01beu;
+}
+
+static SDL_Color
+custom_log_paletteSwatchColor(uint16_t value)
+{
+    uint8_t r = (uint8_t)(((value >> 8) & 0x0fu) * 17u);
+    uint8_t g = (uint8_t)(((value >> 4) & 0x0fu) * 17u);
+    uint8_t b = (uint8_t)((value & 0x0fu) * 17u);
+    SDL_Color color = { r, g, b, 255 };
+    return color;
+}
+
+static void
+custom_log_addOrEnableBreakpoint(uint32_t addr)
+{
+    uint32_t bpAddr = addr & 0x00ffffffu;
+    int changed = 0;
+    machine_breakpoint_t *existing = machine_findBreakpointByAddr(&debugger.machine, bpAddr);
+    if (existing) {
+        if (existing->enabled) {
+            if (machine_removeBreakpointByAddr(&debugger.machine, bpAddr)) {
+                libretro_host_debugRemoveBreakpoint(bpAddr);
+                changed = 1;
+            }
+        } else {
+            uint32_t enabledAddr = 0;
+            if (machine_setBreakpointEnabled(&debugger.machine, existing->number, 1, &enabledAddr)) {
+                libretro_host_debugAddBreakpoint(enabledAddr);
+                changed = 1;
+            }
+        }
+    } else {
+        machine_breakpoint_t *bp = machine_addBreakpoint(&debugger.machine, bpAddr, 1);
+        if (!bp) {
+            return;
+        }
+        breakpoints_resolveLocation(bp);
+        libretro_host_debugAddBreakpoint((uint32_t)bp->addr);
+        changed = 1;
+    }
+
+    if (changed) {
+        breakpoints_markDirty();
+        ui_refreshOnPause();
+    }
+}
+
+static void
+custom_log_drawTextClipped(custom_log_state_t *ui,
+                           TTF_Font *font,
+                           int x,
+                           int y,
+                           int width,
+                           const char *text,
+                           SDL_Color color)
+{
+    if (!ui || !ui->renderer || !font || !text || width <= 0) {
+        return;
+    }
+    int textW = 0;
+    int textH = 0;
+    SDL_Texture *tex = e9ui_text_cache_getText(ui->renderer, font, text, color, &textW, &textH);
+    if (!tex || textW <= 0 || textH <= 0) {
+        return;
+    }
+
+    SDL_Rect dst = { x, y, textW, textH };
+    int hadClip = SDL_RenderIsClipEnabled(ui->renderer) ? 1 : 0;
+    SDL_Rect prevClip = { 0, 0, 0, 0 };
+    if (hadClip) {
+        SDL_RenderGetClipRect(ui->renderer, &prevClip);
+    }
+    SDL_Rect clip = { x, y, width, textH };
+    SDL_RenderSetClipRect(ui->renderer, &clip);
+    SDL_RenderCopy(ui->renderer, tex, NULL, &dst);
+    if (hadClip) {
+        SDL_RenderSetClipRect(ui->renderer, &prevClip);
+    } else {
+        SDL_RenderSetClipRect(ui->renderer, NULL);
+    }
+}
+
+static void
+custom_log_drawTooltip(custom_log_state_t *ui,
+                       TTF_Font *font,
+                       int mouseX,
+                       int mouseY,
+                       const char *text,
+                       int showSwatch,
+                       SDL_Color swatchColor)
+{
+    if (!ui || !ui->renderer || !font || !text || !text[0]) {
+        return;
+    }
+
+    enum { CUSTOM_LOG_TOOLTIP_MAX_LINES = 64 };
+    const char *lines[CUSTOM_LOG_TOOLTIP_MAX_LINES];
+    int lineCount = 0;
+    const char *cursor = text;
+    while (*cursor && lineCount < CUSTOM_LOG_TOOLTIP_MAX_LINES) {
+        lines[lineCount++] = cursor;
+        const char *next = strchr(cursor, '\n');
+        if (!next) {
+            break;
+        }
+        cursor = next + 1;
+    }
+    if (lineCount <= 0) {
+        return;
+    }
+
+    int lineHeight = custom_log_measureLineHeight();
+    if (lineHeight <= 0) {
+        lineHeight = 16;
+    }
+
+    int maxTextW = 0;
+    int lineWidths[CUSTOM_LOG_TOOLTIP_MAX_LINES];
+    char lineBuf[256];
+    for (int i = 0; i < lineCount; ++i) {
+        const char *lineStart = lines[i];
+        const char *lineEnd = strchr(lineStart, '\n');
+        size_t lineLen = lineEnd ? (size_t)(lineEnd - lineStart) : strlen(lineStart);
+        if (lineLen >= sizeof(lineBuf)) {
+            lineLen = sizeof(lineBuf) - 1u;
+        }
+        memcpy(lineBuf, lineStart, lineLen);
+        lineBuf[lineLen] = '\0';
+
+        int lineW = 0;
+        int lineH = 0;
+        if (!lineBuf[0]) {
+            lineW = 0;
+            lineH = lineHeight;
+        } else {
+            TTF_SizeUTF8(font, lineBuf, &lineW, &lineH);
+        }
+        lineWidths[i] = lineW;
+        if (lineW > maxTextW) {
+            maxTextW = lineW;
+        }
+    }
+
+    const int padX = 8;
+    const int padY = 6;
+    const int swatchSize = lineHeight - 4;
+    const int swatchGap = 6;
+    if (showSwatch && lineCount > 1 && swatchSize > 0) {
+        int swatchLineWidth = lineWidths[1] + swatchGap + swatchSize;
+        if (swatchLineWidth > maxTextW) {
+            maxTextW = swatchLineWidth;
+        }
+    }
+    int tooltipW = maxTextW + padX * 2;
+    int tooltipH = lineCount * lineHeight + padY * 2;
+
+    int winW = 0;
+    int winH = 0;
+    SDL_GetRendererOutputSize(ui->renderer, &winW, &winH);
+    if (winW <= 0 || winH <= 0) {
+        return;
+    }
+
+    int tooltipX = mouseX + 14;
+    int tooltipY = mouseY + 18;
+    if (tooltipX + tooltipW > winW - 4) {
+        tooltipX = winW - tooltipW - 4;
+    }
+    if (tooltipY + tooltipH > winH - 4) {
+        tooltipY = winH - tooltipH - 4;
+    }
+    if (tooltipX < 4) {
+        tooltipX = 4;
+    }
+    if (tooltipY < 4) {
+        tooltipY = 4;
+    }
+
+    SDL_Rect bg = { tooltipX, tooltipY, tooltipW, tooltipH };
+    SDL_SetRenderDrawColor(ui->renderer, 20, 20, 24, 242);
+    SDL_RenderFillRect(ui->renderer, &bg);
+    SDL_SetRenderDrawColor(ui->renderer, 92, 92, 102, 255);
+    SDL_RenderDrawRect(ui->renderer, &bg);
+
+    SDL_Color textColor = { 232, 232, 236, 255 };
+    for (int i = 0; i < lineCount; ++i) {
+        const char *lineStart = lines[i];
+        const char *lineEnd = strchr(lineStart, '\n');
+        size_t lineLen = lineEnd ? (size_t)(lineEnd - lineStart) : strlen(lineStart);
+        if (lineLen >= sizeof(lineBuf)) {
+            lineLen = sizeof(lineBuf) - 1u;
+        }
+        memcpy(lineBuf, lineStart, lineLen);
+        lineBuf[lineLen] = '\0';
+        custom_log_drawTextClipped(ui,
+                                   font,
+                                   tooltipX + padX,
+                                   tooltipY + padY + i * lineHeight,
+                                   tooltipW - padX * 2,
+                                   lineBuf,
+                                   textColor);
+    }
+
+    if (showSwatch && lineCount > 1 && swatchSize > 0) {
+        int swatchX = tooltipX + padX + lineWidths[1] + swatchGap;
+        int swatchY = tooltipY + padY + lineHeight + (lineHeight - swatchSize) / 2;
+        SDL_Rect swatchRect = { swatchX, swatchY, swatchSize, swatchSize };
+        SDL_SetRenderDrawColor(ui->renderer, swatchColor.r, swatchColor.g, swatchColor.b, 255);
+        SDL_RenderFillRect(ui->renderer, &swatchRect);
+        SDL_SetRenderDrawColor(ui->renderer, 220, 220, 220, 255);
+        SDL_RenderDrawRect(ui->renderer, &swatchRect);
+    }
+}
+
+static void
+custom_log_captureWindowRect(void)
+{
+    custom_log_state_t *ui = &custom_log_state;
+    if (!ui->window) {
+        return;
+    }
+    SDL_GetWindowPosition(ui->window, &ui->winX, &ui->winY);
+    SDL_GetWindowSize(ui->window, &ui->winW, &ui->winH);
+    ui->winHasSaved = 1;
+}
+
+static void
+custom_log_refocusMain(void)
+{
+    SDL_Window *mainWin = e9ui->ctx.window;
+    if (!mainWin) {
+        return;
+    }
+    SDL_ShowWindow(mainWin);
+    SDL_RaiseWindow(mainWin);
+    SDL_SetWindowInputFocus(mainWin);
+    e9ui_component_t *geo = e9ui_findById(e9ui->root, "geo_view");
+    if (geo) {
+        e9ui_setFocus(&e9ui->ctx, geo);
+    }
+}
+
+static void
+custom_log_updateAlwaysOnTop(custom_log_state_t *ui)
+{
+#ifndef E9K_DISABLE_ALWAYS_ON_TOP
+    if (!ui || !ui->window) {
+        return;
+    }
+    int shouldStayOnTop = (ui->mainWindowFocused || ui->customLogWindowFocused) ? 1 : 0;
+    if (ui->alwaysOnTopState == shouldStayOnTop) {
+        return;
+    }
+    SDL_SetWindowAlwaysOnTop(ui->window, shouldStayOnTop ? SDL_TRUE : SDL_FALSE);
+    ui->alwaysOnTopState = shouldStayOnTop;
+#else
+    (void)ui;
+#endif
+}
+
+static void
+custom_log_applyEnabledOption(int enabled)
+{
+    custom_log_state_t *ui = &custom_log_state;
+    if (libretro_host_debugSetDebugOption(E9K_DEBUG_OPTION_AMIGA_CUSTOM_LOGGER,
+                                          enabled ? 1u : 0u,
+                                          NULL)) {
+        ui->warnedMissingOption = 0;
+        return;
+    }
+    if (!ui->warnedMissingOption) {
+        debug_error("custom log: core does not expose debug option API");
+        ui->warnedMissingOption = 1;
+    }
+}
+
+int
+custom_log_init(void)
+{
+    custom_log_state_t *ui = &custom_log_state;
+    if (ui->open) {
+        return 1;
+    }
+
+    SDL_Window *win = SDL_CreateWindow(CUSTOM_LOG_TITLE,
+                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                       540, 360,
+                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (!win) {
+        debug_error("custom log: SDL_CreateWindow failed: %s", SDL_GetError());
+        return 0;
+    }
+    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+    if (!ren) {
+        SDL_DestroyWindow(win);
+        debug_error("custom log: SDL_CreateRenderer failed: %s", SDL_GetError());
+        return 0;
+    }
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    if (ui->winHasSaved) {
+        SDL_SetWindowPosition(win, ui->winX, ui->winY);
+        SDL_SetWindowSize(win, ui->winW, ui->winH);
+    }
+
+    ui->window = win;
+    ui->renderer = ren;
+    ui->windowId = SDL_GetWindowID(win);
+    memset(&ui->ctx, 0, sizeof(ui->ctx));
+    ui->ctx.window = win;
+    ui->ctx.renderer = ren;
+    ui->ctx.font = e9ui->ctx.font;
+    ui->ctx.dpiScale = custom_log_computeDpiScale(&ui->ctx);
+    ui->closeRequested = 0;
+    ui->warnedMissingOption = 0;
+    ui->alwaysOnTopState = -1;
+    ui->scrollRow = 0;
+    ui->filterRoot = NULL;
+    memset(ui->filters, 0, sizeof(ui->filters));
+    for (int i = 0; i < CUSTOM_LOG_FILTER_COUNT; ++i) {
+        ui->filterTextboxes[i] = NULL;
+    }
+    ui->mainWindowFocused = 0;
+    if (e9ui && e9ui->ctx.window) {
+        uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
+        ui->mainWindowFocused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+    }
+    uint32_t customFlags = SDL_GetWindowFlags(win);
+    ui->customLogWindowFocused = (customFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+    custom_log_updateAlwaysOnTop(ui);
+    ui->filterRoot = custom_log_buildFilterRoot(ui);
+    if (!ui->filterRoot) {
+        if (ui->renderer) {
+            SDL_DestroyRenderer(ui->renderer);
+            ui->renderer = NULL;
+        }
+        if (ui->window) {
+            SDL_DestroyWindow(ui->window);
+            ui->window = NULL;
+        }
+        ui->windowId = 0;
+        memset(&ui->ctx, 0, sizeof(ui->ctx));
+        return 0;
+    }
+
+    ui->open = 1;
+    custom_log_applyEnabledOption(1);
+    return 1;
+}
+
+void
+custom_log_shutdown(void)
+{
+    custom_log_state_t *ui = &custom_log_state;
+    if (!ui->open) {
+        return;
+    }
+
+    custom_log_captureWindowRect();
+    config_saveConfig();
+    custom_log_applyEnabledOption(0);
+    if (ui->filterRoot) {
+        e9ui_childDestroy(ui->filterRoot, &ui->ctx);
+        ui->filterRoot = NULL;
+    }
+    for (int i = 0; i < CUSTOM_LOG_FILTER_COUNT; ++i) {
+        ui->filterTextboxes[i] = NULL;
+    }
+    e9ui_text_cache_clearRenderer(ui->renderer);
+    if (ui->renderer) {
+        SDL_DestroyRenderer(ui->renderer);
+        ui->renderer = NULL;
+    }
+    if (ui->window) {
+        SDL_DestroyWindow(ui->window);
+        ui->window = NULL;
+    }
+    if (ui->entries) {
+        free(ui->entries);
+        ui->entries = NULL;
+    }
+    if (ui->rowHits) {
+        free(ui->rowHits);
+        ui->rowHits = NULL;
+    }
+
+    ui->open = 0;
+    ui->closeRequested = 0;
+    ui->windowId = 0;
+    ui->warnedMissingOption = 0;
+    ui->scrollRow = 0;
+    ui->entryCount = 0;
+    ui->entryCap = 0;
+    ui->rowHitCount = 0;
+    ui->rowHitCap = 0;
+    ui->dropped = 0;
+    ui->frameNo = 0;
+    ui->framesCaptured = 0;
+    ui->allocFailures = 0;
+    memset(ui->filters, 0, sizeof(ui->filters));
+    ui->mainWindowFocused = 0;
+    ui->customLogWindowFocused = 0;
+    ui->alwaysOnTopState = 0;
+    memset(&ui->ctx, 0, sizeof(ui->ctx));
+    custom_log_refocusMain();
+}
+
+void
+custom_log_toggle(void)
+{
+    if (custom_log_isOpen()) {
+        custom_log_shutdown();
+        return;
+    }
+    (void)custom_log_init();
+}
+
+int
+custom_log_isOpen(void)
+{
+    return custom_log_state.open ? 1 : 0;
+}
+
+uint32_t
+custom_log_getWindowId(void)
+{
+    return custom_log_state.windowId;
+}
+
+void
+custom_log_setMainWindowFocused(int focused)
+{
+    custom_log_state_t *ui = &custom_log_state;
+    ui->mainWindowFocused = focused ? 1 : 0;
+    if (!ui->open) {
+        return;
+    }
+    custom_log_updateAlwaysOnTop(ui);
+}
+
+void
+custom_log_handleEvent(SDL_Event *ev)
+{
+    if (!ev || !custom_log_state.open) {
+        return;
+    }
+    custom_log_state_t *ui = &custom_log_state;
+    if (ui->closeRequested) {
+        return;
+    }
+    e9ui_component_t *filterRoot = ui->filterRoot;
+    ui->ctx.focusClickHandled = 0;
+    ui->ctx.cursorOverride = 0;
+    ui->ctx.focusRoot = ui->filterRoot;
+    ui->ctx.focusFullscreen = NULL;
+    if (ev->type == SDL_WINDOWEVENT && ev->window.event == SDL_WINDOWEVENT_CLOSE) {
+        ui->closeRequested = 1;
+        return;
+    }
+    if (ev->type == SDL_KEYDOWN && ev->key.keysym.sym == SDLK_ESCAPE) {
+        ui->closeRequested = 1;
+        return;
+    }
+    if (ev->type == SDL_MOUSEMOTION) {
+        int prevX = ui->ctx.mouseX;
+        int prevY = ui->ctx.mouseY;
+        ui->ctx.mousePrevX = prevX;
+        ui->ctx.mousePrevY = prevY;
+        int scaledX = e9ui_scale_coord(&ui->ctx, ev->motion.x);
+        int scaledY = e9ui_scale_coord(&ui->ctx, ev->motion.y);
+        ev->motion.x = scaledX;
+        ev->motion.y = scaledY;
+        ev->motion.xrel = scaledX - prevX;
+        ev->motion.yrel = scaledY - prevY;
+        ui->ctx.mouseX = scaledX;
+        ui->ctx.mouseY = scaledY;
+    } else if (ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP) {
+        int scaledX = e9ui_scale_coord(&ui->ctx, ev->button.x);
+        int scaledY = e9ui_scale_coord(&ui->ctx, ev->button.y);
+        ev->button.x = scaledX;
+        ev->button.y = scaledY;
+        ui->ctx.mouseX = scaledX;
+        ui->ctx.mouseY = scaledY;
+    } else if (ev->type == SDL_MOUSEWHEEL) {
+        int mouseX = 0;
+        int mouseY = 0;
+        SDL_GetMouseState(&mouseX, &mouseY);
+        ui->ctx.mouseX = e9ui_scale_coord(&ui->ctx, mouseX);
+        ui->ctx.mouseY = e9ui_scale_coord(&ui->ctx, mouseY);
+    }
+    if (ev->type == SDL_WINDOWEVENT) {
+        if (ev->window.event == SDL_WINDOWEVENT_RESIZED ||
+            ev->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+            ui->ctx.dpiScale = custom_log_computeDpiScale(&ui->ctx);
+            ui->winW = ev->window.data1;
+            ui->winH = ev->window.data2;
+            ui->winHasSaved = 1;
+            config_saveConfig();
+        } else if (ev->window.event == SDL_WINDOWEVENT_MOVED) {
+            ui->winX = ev->window.data1;
+            ui->winY = ev->window.data2;
+            ui->winHasSaved = 1;
+            config_saveConfig();
+        } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+            ui->customLogWindowFocused = 1;
+            custom_log_updateAlwaysOnTop(ui);
+        } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            ui->customLogWindowFocused = 0;
+            custom_log_updateAlwaysOnTop(ui);
+        }
+        return;
+    }
+    if (ev->type == SDL_KEYDOWN) {
+        SDL_Keymod mods = ev->key.keysym.mod;
+        int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+        if (!accel && ev->key.keysym.sym == SDLK_TAB && !e9ui_getFocus(&ui->ctx) && filterRoot) {
+            int reverse = (mods & KMOD_SHIFT) ? 1 : 0;
+            e9ui_component_t *next = e9ui_focusFindNext(filterRoot, NULL, reverse);
+            if (next) {
+                e9ui_setFocus(&ui->ctx, next);
+                return;
+            }
+        }
+    }
+    if (filterRoot) {
+        if (e9ui_event_process(filterRoot, &ui->ctx, ev)) {
+            return;
+        }
+        if (ev->type == SDL_MOUSEBUTTONDOWN &&
+            ev->button.button == SDL_BUTTON_LEFT &&
+            !ui->ctx.focusClickHandled) {
+            e9ui_setFocus(&ui->ctx, NULL);
+        }
+    }
+    if (ev->type == SDL_MOUSEWHEEL) {
+        int wheelY = ev->wheel.y;
+        if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+            wheelY = -wheelY;
+        }
+        if (wheelY != 0) {
+            const int linesPerTick = 1;
+            custom_log_adjustScroll(ui, wheelY * linesPerTick);
+        }
+        return;
+    }
+    if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT) {
+        custom_log_row_hit_t hitRow;
+        if (custom_log_findAddressHit(ui, ev->button.x, ev->button.y, &hitRow)) {
+            if (!hitRow.sourceIsCopper) {
+                custom_log_addOrEnableBreakpoint(custom_log_normalizeAddress(hitRow.sourceAddr));
+            }
+        }
+        return;
+    }
+    if (ev->type == SDL_KEYDOWN) {
+        SDL_Keycode key = ev->key.keysym.sym;
+        SDL_Keymod mods = ev->key.keysym.mod;
+        int visibleRows = custom_log_computeVisibleRows(ui);
+        int step = custom_log_arrowScrollAmount(mods, visibleRows);
+        switch (key) {
+        case SDLK_UP:
+            custom_log_adjustScroll(ui, -step);
+            return;
+        case SDLK_DOWN:
+            custom_log_adjustScroll(ui, step);
+            return;
+        case SDLK_PAGEUP:
+            custom_log_adjustScroll(ui, -visibleRows);
+            return;
+        case SDLK_PAGEDOWN:
+            custom_log_adjustScroll(ui, visibleRows);
+            return;
+        case SDLK_HOME:
+            ui->scrollRow = 0;
+            return;
+        case SDLK_END:
+            ui->scrollRow = INT_MAX;
+            custom_log_clampScroll(ui, visibleRows);
+            return;
+        default:
+            break;
+        }
+    }
+}
+
+void
+custom_log_render(void)
+{
+    custom_log_state_t *ui = &custom_log_state;
+    if (!ui->open || !ui->renderer) {
+        return;
+    }
+    if (ui->closeRequested) {
+        custom_log_shutdown();
+        return;
+    }
+
+    SDL_SetRenderDrawColor(ui->renderer, 12, 12, 12, 255);
+    SDL_RenderClear(ui->renderer);
+    TTF_Font *font = e9ui->ctx.font;
+    if (!font) {
+        SDL_RenderPresent(ui->renderer);
+        return;
+    }
+
+    custom_log_layout_t layout;
+    if (!custom_log_computeLayout(ui, &layout)) {
+        SDL_RenderPresent(ui->renderer);
+        return;
+    }
+
+    int winW = layout.winW;
+    int lineHeight = layout.lineHeight;
+    int visibleRows = custom_log_computeVisibleRows(ui);
+    custom_log_clampScroll(ui, visibleRows);
+    ui->rowHitCount = 0;
+    if (visibleRows > 0) {
+        (void)custom_log_ensureRowHitCapacity(ui, (size_t)visibleRows);
+    }
+    ui->ctx.font = font;
+    ui->ctx.window = ui->window;
+    ui->ctx.renderer = ui->renderer;
+    ui->ctx.winW = layout.winW;
+    ui->ctx.winH = layout.winH;
+    ui->ctx.focusRoot = ui->filterRoot;
+    ui->ctx.focusFullscreen = NULL;
+    if (ui->filterRoot && ui->filterRoot->layout) {
+        int filterX = layout.colX[custom_log_filter_line];
+        int filterW = layout.colX[custom_log_filter_desc] + layout.colW[custom_log_filter_desc] - filterX;
+        if (filterW < 0) {
+            filterW = 0;
+        }
+        e9ui_rect_t filterBounds = {
+            filterX,
+            CUSTOM_LOG_PAD,
+            filterW,
+            layout.filterHeight
+        };
+        ui->filterRoot->layout(ui->filterRoot, &ui->ctx, filterBounds);
+    }
+    if (ui->filterRoot && ui->filterRoot->render) {
+        ui->filterRoot->render(ui->filterRoot, &ui->ctx);
+    }
+
+    SDL_Rect rowsClip = {
+        CUSTOM_LOG_PAD,
+        layout.rowsY,
+        winW - CUSTOM_LOG_PAD * 2,
+        layout.rowsH
+    };
+    if (rowsClip.w > 0 && rowsClip.h > 0) {
+        SDL_RenderSetClipRect(ui->renderer, &rowsClip);
+    }
+
+    SDL_Color rowColor = { 220, 220, 224, 255 };
+    int drawnRows = 0;
+    size_t scanIndex = (size_t)ui->scrollRow;
+    while (scanIndex < ui->entryCount && drawnRows < visibleRows) {
+        const e9k_debug_ami_custom_log_entry_t *entry = &ui->entries[scanIndex];
+        scanIndex++;
+        if (!custom_log_entryMatchesFilters(ui, entry)) {
+            continue;
+        }
+
+        int y = layout.rowsY + drawnRows * lineHeight;
+        if ((drawnRows & 1) != 0) {
+            SDL_SetRenderDrawColor(ui->renderer, 16, 16, 20, 255);
+            SDL_Rect rowBg = { CUSTOM_LOG_PAD, y, winW - CUSTOM_LOG_PAD * 2, lineHeight };
+            SDL_RenderFillRect(ui->renderer, &rowBg);
+        }
+        uint16_t regOffset = (uint16_t)(entry->reg & 0x1feu);
+        const char *name = amiga_custom_regs_nameForOffset(regOffset);
+        const char *desc = amiga_custom_regs_descriptionForOffset(regOffset);
+        uint32_t regColorRgb = amiga_custom_regs_colorForOffset(regOffset);
+        SDL_Color regColor = {
+            (uint8_t)((regColorRgb >> 16) & 0xffu),
+            (uint8_t)((regColorRgb >> 8) & 0xffu),
+            (uint8_t)(regColorRgb & 0xffu),
+            255
+        };
+        SDL_Color srcColor = entry->sourceIsCopper
+            ? (SDL_Color){ 110, 212, 118, 255 }
+            : (SDL_Color){ 222, 92, 92, 255 };
+        uint32_t normalizedAddr = custom_log_normalizeAddress(entry->sourceAddr);
+        machine_breakpoint_t *bp = machine_findBreakpointByAddr(&debugger.machine, normalizedAddr);
+        SDL_Color addrColor = (bp && bp->enabled)
+            ? (SDL_Color){ 110, 212, 118, 255 }
+            : rowColor;
+        const char *src = entry->sourceIsCopper ? "COP" : "CPU";
+        if (!name) {
+            name = "";
+        }
+        if (!desc) {
+            desc = "";
+        }
+
+        char lineBuf[16];
+        char addrBuf[16];
+        char valueBuf[16];
+        snprintf(lineBuf, sizeof(lineBuf), "%03u", (unsigned)entry->vpos);
+        snprintf(addrBuf, sizeof(addrBuf), "%06x", (unsigned)normalizedAddr);
+        snprintf(valueBuf, sizeof(valueBuf), "%04x", (unsigned)(entry->value & 0xffffu));
+
+        custom_log_drawTextClipped(ui, font,
+                                   layout.colX[custom_log_filter_line], y, layout.colW[custom_log_filter_line],
+                                   lineBuf, rowColor);
+        custom_log_drawTextClipped(ui, font,
+                                   layout.colX[custom_log_filter_name], y, layout.colW[custom_log_filter_name],
+                                   name, regColor);
+        custom_log_drawTextClipped(ui, font,
+                                   layout.colX[custom_log_filter_src], y, layout.colW[custom_log_filter_src],
+                                   src, srcColor);
+        custom_log_drawTextClipped(ui, font,
+                                   layout.colX[custom_log_filter_addr], y, layout.colW[custom_log_filter_addr],
+                                   addrBuf, addrColor);
+        custom_log_drawTextClipped(ui, font,
+                                   layout.colX[custom_log_filter_value], y, layout.colW[custom_log_filter_value],
+                                   valueBuf, rowColor);
+        custom_log_drawTextClipped(ui, font,
+                                   layout.colX[custom_log_filter_desc], y, layout.colW[custom_log_filter_desc],
+                                   desc, regColor);
+
+        if (ui->rowHitCount < ui->rowHitCap) {
+            custom_log_row_hit_t *hit = &ui->rowHits[ui->rowHitCount++];
+            hit->nameRect.x = layout.colX[custom_log_filter_name];
+            hit->nameRect.y = y;
+            hit->nameRect.w = layout.colW[custom_log_filter_name];
+            hit->nameRect.h = lineHeight;
+            hit->addrRect.x = layout.colX[custom_log_filter_addr];
+            hit->addrRect.y = y;
+            hit->addrRect.w = layout.colW[custom_log_filter_addr];
+            hit->addrRect.h = lineHeight;
+            hit->valueRect.x = layout.colX[custom_log_filter_value];
+            hit->valueRect.y = y;
+            hit->valueRect.w = layout.colW[custom_log_filter_value];
+            hit->valueRect.h = lineHeight;
+            hit->sourceAddr = normalizedAddr;
+            hit->regOffset = regOffset;
+            hit->regValue = (uint16_t)(entry->value & 0xffffu);
+            hit->sourceIsCopper = entry->sourceIsCopper ? 1u : 0u;
+        }
+        drawnRows++;
+    }
+    SDL_RenderSetClipRect(ui->renderer, NULL);
+
+    custom_log_row_hit_t hoverRow;
+    if (custom_log_findValueHit(ui, ui->ctx.mouseX, ui->ctx.mouseY, &hoverRow)) {
+        const char *tooltip = amiga_custom_regs_valueTooltipForOffset(hoverRow.regOffset, hoverRow.regValue);
+        int showSwatch = custom_log_isPaletteRegOffset(hoverRow.regOffset);
+        SDL_Color swatchColor = custom_log_paletteSwatchColor(hoverRow.regValue);
+        custom_log_drawTooltip(ui,
+                               font,
+                               ui->ctx.mouseX,
+                               ui->ctx.mouseY,
+                               tooltip,
+                               showSwatch,
+                               swatchColor);
+    } else if (custom_log_findNameHit(ui, ui->ctx.mouseX, ui->ctx.mouseY, &hoverRow)) {
+        char tooltip[64];
+        uint32_t regAddr = amiga_custom_regs_addressFromOffset(hoverRow.regOffset) & 0x00ffffffu;
+        snprintf(tooltip, sizeof(tooltip), "Address: 0x%06X", (unsigned)regAddr);
+        custom_log_drawTooltip(ui,
+                               font,
+                               ui->ctx.mouseX,
+                               ui->ctx.mouseY,
+                               tooltip,
+                               0,
+                               (SDL_Color){ 0, 0, 0, 255 });
+    }
+
+    SDL_RenderPresent(ui->renderer);
+}
+
+void
+custom_log_persistConfig(FILE *file)
+{
+    custom_log_state_t *ui = &custom_log_state;
+    if (!file) {
+        return;
+    }
+    if (ui->open) {
+        custom_log_captureWindowRect();
+    }
+    if (!ui->winHasSaved) {
+        return;
+    }
+    fprintf(file, "comp.custom_log.win_x=%d\n", ui->winX);
+    fprintf(file, "comp.custom_log.win_y=%d\n", ui->winY);
+    fprintf(file, "comp.custom_log.win_w=%d\n", ui->winW);
+    fprintf(file, "comp.custom_log.win_h=%d\n", ui->winH);
+}
+
+int
+custom_log_loadConfigProperty(const char *prop, const char *value)
+{
+    custom_log_state_t *ui = &custom_log_state;
+    if (!prop || !value) {
+        return 0;
+    }
+    int intValue = 0;
+    if (strcmp(prop, "win_x") == 0) {
+        if (!custom_log_parseInt(value, &intValue)) {
+            return 0;
+        }
+        ui->winX = intValue;
+    } else if (strcmp(prop, "win_y") == 0) {
+        if (!custom_log_parseInt(value, &intValue)) {
+            return 0;
+        }
+        ui->winY = intValue;
+    } else if (strcmp(prop, "win_w") == 0) {
+        if (!custom_log_parseInt(value, &intValue)) {
+            return 0;
+        }
+        ui->winW = intValue;
+    } else if (strcmp(prop, "win_h") == 0) {
+        if (!custom_log_parseInt(value, &intValue)) {
+            return 0;
+        }
+        ui->winH = intValue;
+    } else {
+        return 0;
+    }
+    ui->winHasSaved = 1;
+    return 1;
+}
+
+void
+custom_log_captureFrame(const e9k_debug_ami_custom_log_entry_t *entries,
+                        size_t count,
+                        uint32_t dropped,
+                        uint64_t frameNo)
+{
+    custom_log_state_t *ui = &custom_log_state;
+    ui->frameNo = frameNo;
+    ui->dropped = dropped;
+    ui->framesCaptured++;
+
+    if (!entries || count == 0) {
+        ui->entryCount = 0;
+        return;
+    }
+
+    if (count > ui->entryCap) {
+        e9k_debug_ami_custom_log_entry_t *next =
+            (e9k_debug_ami_custom_log_entry_t *)realloc(ui->entries, count * sizeof(*next));
+        if (!next) {
+            ui->allocFailures++;
+            ui->entryCount = 0;
+            return;
+        }
+        ui->entries = next;
+        ui->entryCap = count;
+    }
+
+    memcpy(ui->entries, entries, count * sizeof(*entries));
+    ui->entryCount = count;
+}

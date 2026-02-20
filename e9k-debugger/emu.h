@@ -17,9 +17,9 @@ typedef struct {
   int (*mapKeyToJoypad)(SDL_Keycode key, unsigned *id);
   void (*createOverlays)(e9ui_component_t* comp, e9ui_component_t* button_stack);
   void (*render)(e9ui_context_t *ctx, SDL_Rect* dst);
+  void (*destroy)(void);
 } emu_system_iface_t;
 
 e9ui_component_t *
 emu_makeComponent(void);
-
 

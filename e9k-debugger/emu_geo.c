@@ -705,6 +705,7 @@ const emu_system_iface_t emu_geo_iface = {
   .mapKeyToJoypad = emu_geo_mapKeyToJoypad,
   .createOverlays = emu_geo_createOverlays,
   .render = emu_geo_render,
+  .destroy = NULL,
 };
 
 void

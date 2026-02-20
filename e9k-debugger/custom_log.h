@@ -1,0 +1,51 @@
+/*
+ * COPYRIGHT © 2026 Enable Software Pty Ltd - All Rights Reserved
+ *
+ * https://github.com/alpine9000/engine9000-public
+ *
+ * See COPYING for license details
+ */
+
+#pragma once
+
+#include <SDL.h>
+#include <stdio.h>
+#include <stdint.h>
+
+#include "e9k-lib.h"
+
+int
+custom_log_init(void);
+
+void
+custom_log_shutdown(void);
+
+void
+custom_log_toggle(void);
+
+int
+custom_log_isOpen(void);
+
+uint32_t
+custom_log_getWindowId(void);
+
+void
+custom_log_handleEvent(SDL_Event *ev);
+
+void
+custom_log_setMainWindowFocused(int focused);
+
+void
+custom_log_render(void);
+
+void
+custom_log_persistConfig(FILE *file);
+
+int
+custom_log_loadConfigProperty(const char *prop, const char *value);
+
+void
+custom_log_captureFrame(const e9k_debug_ami_custom_log_entry_t *entries,
+                        size_t count,
+                        uint32_t dropped,
+                        uint64_t frameNo);

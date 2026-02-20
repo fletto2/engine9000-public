@@ -33,6 +33,21 @@ e9ui_child_containsComponent_(const e9ui_component_t *root, const e9ui_component
 }
 
 static void
+e9ui_child_clearFocusIfContained_(e9ui_component_t *root, e9ui_context_t *ctx)
+{
+  if (!root || !ctx) {
+    return;
+  }
+  e9ui_component_t *focus = e9ui_getFocus(ctx);
+  if (!focus) {
+    return;
+  }
+  if (e9ui_child_containsComponent_(root, focus)) {
+    e9ui_setFocus(ctx, NULL);
+  }
+}
+
+static void
 e9ui_child_containerDestroyAndFree_(e9ui_component_child_t *container, e9ui_context_t *ctx)
 {
   if (!container) return;
@@ -68,6 +83,7 @@ static void
 e9ui_child_destroyTree_(e9ui_component_t *self, e9ui_context_t *ctx)
 {
   if (!self) return;
+  e9ui_child_clearFocusIfContained_(self, ctx);
   e9ui_child_destroyAll_(self, ctx);
 
   if (self->dtor) {

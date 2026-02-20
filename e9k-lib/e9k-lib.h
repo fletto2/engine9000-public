@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum e9k_debug_option
@@ -25,7 +26,23 @@ typedef enum e9k_debug_option
     E9K_DEBUG_OPTION_AMIGA_AUDIO1 = 19,
     E9K_DEBUG_OPTION_AMIGA_AUDIO2 = 20,
     E9K_DEBUG_OPTION_AMIGA_AUDIO3 = 21,
-    E9K_DEBUG_OPTION_AMIGA_BPLCON1_DELAY_SCROLL = 22
+    E9K_DEBUG_OPTION_AMIGA_BPLCON1_DELAY_SCROLL = 22,
+    E9K_DEBUG_OPTION_AMIGA_BLITTER_VIS_DECAY = 23,
+    E9K_DEBUG_OPTION_AMIGA_BLITTER_VIS_MODE = 24,
+    E9K_DEBUG_OPTION_AMIGA_BLITTER_VIS_BLINK = 25,
+    E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_ENABLED = 26,
+    E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_START = 27,
+    E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_END = 28,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR_BLOCK_ALL = 29,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR1_BLOCK = 30,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR2_BLOCK = 31,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR3_BLOCK = 32,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR4_BLOCK = 33,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR5_BLOCK = 34,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR6_BLOCK = 35,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR_LINE_LIMIT_START = 36,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR_LINE_LIMIT_END = 37,
+    E9K_DEBUG_OPTION_AMIGA_CUSTOM_LOGGER = 38
 } e9k_debug_option_t;
 
 #define E9K_CHECKPOINT_COUNT 64
@@ -38,6 +55,42 @@ typedef struct e9k_debug_checkpoint {
     uint64_t minimum;
     uint64_t maximum;
 } e9k_debug_checkpoint_t;
+
+typedef struct e9k_debug_ami_blitter_vis_point {
+    uint16_t x;
+    uint16_t y;
+    uint32_t blitId;
+} e9k_debug_ami_blitter_vis_point_t;
+
+typedef struct e9k_debug_ami_blitter_vis_stats {
+    uint32_t enabled;
+    uint32_t mode;
+    uint32_t blink;
+    uint32_t livePhase;
+    uint32_t activeCount;
+    uint32_t writesThisFrame;
+    uint32_t frameCounter;
+    uint32_t fetchQueriesThisFrame;
+    uint32_t fetchHitsThisFrame;
+    uint32_t drawMarkCallsFrame;
+    uint32_t drawMarkCallsSnapshot;
+} e9k_debug_ami_blitter_vis_stats_t;
+
+typedef struct e9k_debug_ami_custom_log_entry {
+    uint16_t vpos;
+    uint16_t hpos;
+    uint16_t reg;
+    uint16_t value;
+    uint32_t sourceAddr;
+    uint8_t sourceIsCopper;
+    uint8_t reserved[3];
+} e9k_debug_ami_custom_log_entry_t;
+
+typedef void (*e9k_debug_ami_custom_log_frame_callback_t)(const e9k_debug_ami_custom_log_entry_t *entries,
+                                                          size_t count,
+                                                          uint32_t dropped,
+                                                          uint64_t frameNo,
+                                                          void *user);
 
 
 #define E9K_WATCHPOINT_COUNT 64

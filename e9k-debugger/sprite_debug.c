@@ -61,6 +61,9 @@ typedef struct sprite_debug_state {
     int open;
     int hist_x0_anchor;
     uint32_t window_id;
+    int always_on_top_state;
+    int main_window_focused;
+    int sprite_window_focused;
 } sprite_debug_state_t;
 
 static sprite_debug_state_t s_dbg = {0};
@@ -93,6 +96,22 @@ sprite_debug_captureWindowRect(void)
     SDL_GetWindowPosition(s_dbg.window, &s_dbg.winX, &s_dbg.winY);
     SDL_GetWindowSize(s_dbg.window, &s_dbg.winW, &s_dbg.winH);
     s_dbg.winHasSaved = 1;
+}
+
+static void
+sprite_debug_updateAlwaysOnTop(void)
+{
+#ifndef E9K_DISABLE_ALWAYS_ON_TOP
+    if (!s_dbg.window) {
+        return;
+    }
+    int shouldStayOnTop = (s_dbg.main_window_focused || s_dbg.sprite_window_focused) ? 1 : 0;
+    if (s_dbg.always_on_top_state == shouldStayOnTop) {
+        return;
+    }
+    SDL_SetWindowAlwaysOnTop(s_dbg.window, shouldStayOnTop ? SDL_TRUE : SDL_FALSE);
+    s_dbg.always_on_top_state = shouldStayOnTop;
+#endif
 }
 
 static void
@@ -395,9 +414,15 @@ sprite_debug_toggle(void)
                         SDL_SetWindowSize(s_dbg.window, lw, lh);
                     }
                 }
-#ifndef E9K_DISABLE_ALWAYS_ON_TOP
-                SDL_SetWindowAlwaysOnTop(s_dbg.window, SDL_TRUE);
-#endif
+                s_dbg.always_on_top_state = -1;
+                s_dbg.main_window_focused = 0;
+                if (e9ui && e9ui->ctx.window) {
+                    uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
+                    s_dbg.main_window_focused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+                }
+                uint32_t spriteFlags = SDL_GetWindowFlags(s_dbg.window);
+                s_dbg.sprite_window_focused = (spriteFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+                sprite_debug_updateAlwaysOnTop();
                 s_dbg.texture = SDL_CreateTexture(s_dbg.renderer, SDL_PIXELFORMAT_ARGB8888,
                                                   SDL_TEXTUREACCESS_STREAMING, lw, lh);
                 s_dbg.tex_w = lw;
@@ -438,6 +463,9 @@ sprite_debug_toggle(void)
         s_dbg.hist_x0_anchor = -1;
         s_dbg.open = 0;
         s_dbg.window_id = 0;
+        s_dbg.always_on_top_state = 0;
+        s_dbg.main_window_focused = 0;
+        s_dbg.sprite_window_focused = 0;
         sprite_debug_refocusMain();
     }
 }
@@ -474,6 +502,12 @@ sprite_debug_handleWindowEvent(const SDL_Event *ev)
         s_dbg.winY = ev->window.data2;
         s_dbg.winHasSaved = 1;
         config_saveConfig();
+    } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+        s_dbg.sprite_window_focused = 1;
+        sprite_debug_updateAlwaysOnTop();
+    } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+        s_dbg.sprite_window_focused = 0;
+        sprite_debug_updateAlwaysOnTop();
     }
 }
 
@@ -484,6 +518,16 @@ sprite_debug_is_window_id(uint32_t window_id)
         return 0;
     }
     return s_dbg.window_id == window_id;
+}
+
+void
+sprite_debug_setMainWindowFocused(int focused)
+{
+    s_dbg.main_window_focused = focused ? 1 : 0;
+    if (!s_dbg.open) {
+        return;
+    }
+    sprite_debug_updateAlwaysOnTop();
 }
 
 void
