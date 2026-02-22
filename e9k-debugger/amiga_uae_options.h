@@ -20,6 +20,12 @@ amiga_uaeClearPuaeOptions(void);
 int
 amiga_uaeUaeOptionsDirty(void);
 
+int
+amiga_uaeHasRestartRequiredDirty(void);
+
+int
+amiga_uaeHasFloppyDirty(void);
+
 const char *
 amiga_uaeGetPuaeOptionValue(const char *key);
 
@@ -31,6 +37,9 @@ amiga_uaeGetFloppyPath(int drive);
 
 void
 amiga_uaeSetFloppyPath(int drive, const char *path);
+
+void
+amiga_uaeClearFloppyDirty(int drive);
 
 const char *
 amiga_uaeGetHardDriveFolderPath(void);

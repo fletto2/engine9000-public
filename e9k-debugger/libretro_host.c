@@ -98,6 +98,7 @@ typedef size_t (*e9k_debug_ami_blitter_vis_read_stats_fn_t)(e9k_debug_ami_blitte
 typedef int (*e9k_debug_ami_get_video_line_count_fn_t)(void);
 typedef int (*e9k_debug_ami_video_line_to_core_line_fn_t)(int videoLine);
 typedef int (*e9k_debug_ami_core_line_to_video_line_fn_t)(int coreLine);
+typedef bool (*e9k_debug_ami_set_floppy_path_fn_t)(int drive, const char *path);
 typedef void (*e9k_debug_set_breakpoint_callback_fn_t)(void (*cb)(uint32_t addr));
 typedef void (*e9k_debug_set_source_location_resolver_fn_t)(int (*resolver)(uint32_t pc24, uint64_t *out_location, void *user), void *user);
 typedef void (*e9k_debug_set_debug_option_fn_t)(e9k_debug_option_t option, uint32_t argument, void *user);
@@ -221,6 +222,7 @@ typedef struct  {
     e9k_debug_ami_get_video_line_count_fn_t debugAmiGetVideoLineCount;
     e9k_debug_ami_video_line_to_core_line_fn_t debugAmiVideoLineToCoreLine;
     e9k_debug_ami_core_line_to_video_line_fn_t debugAmiCoreLineToVideoLine;
+    e9k_debug_ami_set_floppy_path_fn_t debugAmiSetFloppyPath;
     uint8_t *stateData;
     size_t stateSize;
     uint32_t inputMask[LIBRETRO_HOST_MAX_PORTS];
@@ -2214,6 +2216,19 @@ libretro_host_debugAmiCoreLineToVideoLine(int core_line, int *out_video_line)
         *out_video_line = video_line;
     }
     return true;
+}
+
+bool
+libretro_host_debugAmiSetFloppyPath(int drive, const char *path)
+{
+    if (!libretro_host.debugAmiSetFloppyPath) {
+        libretro_host.debugAmiSetFloppyPath = (e9k_debug_ami_set_floppy_path_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_set_floppy_path");
+    }
+    if (!libretro_host.debugAmiSetFloppyPath) {
+        return false;
+    }
+    return libretro_host.debugAmiSetFloppyPath(drive, path ? path : "");
 }
 
 bool

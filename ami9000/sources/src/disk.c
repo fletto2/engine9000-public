@@ -810,6 +810,28 @@ static void drive_image_free (drive *drv)
 	drv->pcdecodedfile = NULL;
 }
 
+static void
+disk_copyTcharz(TCHAR *dst, size_t dstCount, const TCHAR *src)
+{
+	size_t len = 0;
+
+	if (!dst || dstCount == 0) {
+		return;
+	}
+	if (!src) {
+		dst[0] = 0;
+		return;
+	}
+	if (dst == src) {
+		return;
+	}
+	while (src[len] && (len + 1) < dstCount) {
+		len++;
+	}
+	memmove(dst, src, len * sizeof(TCHAR));
+	dst[len] = 0;
+}
+
 static int drive_insert (drive * drv, struct uae_prefs *p, int dnum, const TCHAR *fname, bool fake, bool writeprotected);
 
 static void reset_drive_gui (int num)
@@ -1420,20 +1442,15 @@ static int drive_insert (drive *drv, struct uae_prefs *p, int dnum, const TCHAR 
 	if (!fake) {
 		inprec_recorddiskchange (dnum, fname_in, drv->wrprot);
 
-		if (currprefs.floppyslots[dnum].df != fname_in) {
-			_tcsncpy (currprefs.floppyslots[dnum].df, fname_in, 255);
-			currprefs.floppyslots[dnum].df[255] = 0;
-		}
+		disk_copyTcharz (currprefs.floppyslots[dnum].df,
+			sizeof currprefs.floppyslots[dnum].df / sizeof currprefs.floppyslots[dnum].df[0],
+			fname_in);
 		currprefs.floppyslots[dnum].forcedwriteprotect = forcedwriteprotect;
-		// Avoid undefined behavior (and ASan aborts) if caller passes our own buffer.
-		// Original:
-		// _tcsncpy (changed_prefs.floppyslots[dnum].df, fname_in, 255);
-		if (changed_prefs.floppyslots[dnum].df != fname_in) {
-			_tcsncpy (changed_prefs.floppyslots[dnum].df, fname_in, 255);
-		}
-		changed_prefs.floppyslots[dnum].df[255] = 0;
+		disk_copyTcharz (changed_prefs.floppyslots[dnum].df,
+			sizeof changed_prefs.floppyslots[dnum].df / sizeof changed_prefs.floppyslots[dnum].df[0],
+			fname_in);
 		changed_prefs.floppyslots[dnum].forcedwriteprotect = forcedwriteprotect;
-		_tcscpy (drv->newname, fname_in);
+		disk_copyTcharz (drv->newname, sizeof drv->newname / sizeof drv->newname[0], fname_in);
 		drv->newnamewriteprotected = forcedwriteprotect;
 		gui_filename (dnum, outname);
 	}
@@ -3372,9 +3389,11 @@ static void disk_insert_2 (int num, const TCHAR *name, bool forced, bool forcedw
 	if (!_tcscmp (currprefs.floppyslots[num].df, name))
 		return;
 	drv->dskeject = false;
-	_tcscpy(drv->newname, name);
+	disk_copyTcharz (drv->newname, sizeof drv->newname / sizeof drv->newname[0], name);
 	drv->newnamewriteprotected = forcedwriteprotect;
-	_tcscpy (currprefs.floppyslots[num].df, name);
+	disk_copyTcharz (currprefs.floppyslots[num].df,
+		sizeof currprefs.floppyslots[num].df / sizeof currprefs.floppyslots[num].df[0],
+		name);
 	currprefs.floppyslots[num].forcedwriteprotect = forcedwriteprotect;
 	DISK_history_add (name, -1, HISTORY_FLOPPY, 0);
 	if (name[0] == 0) {

@@ -135,11 +135,17 @@ static int
 target_amiga_needsRestart(void)
 {
     int  configChanged = target_amiga_restartNeededForAmiga(&debugger.config.amiga, &debugger.settingsEdit.amiga);
-    if (amiga_uaeUaeOptionsDirty()) {
+    if (amiga_uaeHasRestartRequiredDirty()) {
       configChanged = 1;
+    } else if (amiga_uaeHasFloppyDirty()) {
+      if (target == target_amiga() && libretro_host_isRunning()) {
+        configChanged = 1;
+      }
     }
-    if (settings_coreOptionsDirty) {
-      configChanged = 1;
+    if (settings_coreOptionsNeedsRestart()) {
+      if (target == target_amiga() && libretro_host_isRunning()) {
+        configChanged = 1;
+      }
     }
     int okBefore = target_amiga_configIsOkForAmiga(&debugger.config.amiga);
     int okAfter = target_amiga_configIsOkForAmiga(&debugger.settingsEdit.amiga);
@@ -322,11 +328,32 @@ target_amiga_coreOptionsHasGeneral(const core_options_modal_state_t *st)
   return 0;  
 }
 
+static int
+target_amiga_coreOptionNeedsRestart(const char *key)
+{
+  static const char *saveOnlyKeys[] = {
+    "puae_video_options_display",
+    "puae_audio_options_display",
+    "puae_mapping_options_display",
+    "puae_model_options_display"
+  };
+  if (!key || !*key) {
+    return 1;
+  }
+  for (size_t i = 0; i < sizeof(saveOnlyKeys) / sizeof(saveOnlyKeys[0]); ++i) {
+    if (strcmp(key, saveOnlyKeys[i]) == 0) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 static void
 target_amiga_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_state_t *st)
 {
   (void)ctx;
   int anyChange = 0;
+  int anyRestartChange = 0;
   
   for (size_t i = 0; i < st->entryCount; ++i) {
     const char *key = st->entries[i].key;
@@ -346,16 +373,22 @@ target_amiga_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_state
       }
       amiga_uaeSetPuaeOptionValue(key, NULL);
       anyChange = 1;
+      if (target_amiga_coreOptionNeedsRestart(key)) {
+        anyRestartChange = 1;
+      }
     } else {
       if (existing && core_options_stringsEqual(existing, desired)) {
 	continue;
       }
       amiga_uaeSetPuaeOptionValue(key, desired);
       anyChange = 1;
+      if (target_amiga_coreOptionNeedsRestart(key)) {
+        anyRestartChange = 1;
+      }
     }
   }
   if (anyChange) {
-    settings_markCoreOptionsDirty();
+    settings_markCoreOptionsDirtyWithRestart(anyRestartChange);
   }
   if (anyChange && e9ui->settingsSaveButton) {
     e9ui_button_setGlowPulse(e9ui->settingsSaveButton, 1);
@@ -500,7 +533,13 @@ target_amiga_settingsFloppyChanged(e9ui_context_t *ctx, e9ui_component_t *comp, 
     (void)ctx;
     (void)comp;
     int drive = (int)(intptr_t)user;
-    amiga_uaeSetFloppyPath(drive, text ? text : "");
+    const char *path = text ? text : "";
+    amiga_uaeSetFloppyPath(drive, path);
+    if (target == target_amiga() && libretro_host_isRunning()) {
+        if (libretro_host_debugAmiSetFloppyPath(drive, path)) {
+            amiga_uaeClearFloppyDirty(drive);
+        }
+    }
     settings_updateSaveLabel();
 }
 

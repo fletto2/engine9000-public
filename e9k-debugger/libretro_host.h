@@ -222,6 +222,9 @@ bool
 libretro_host_debugAmiCoreLineToVideoLine(int core_line, int *out_video_line);
 
 bool
+libretro_host_debugAmiSetFloppyPath(int drive, const char *path);
+
+bool
 libretro_host_getSerializeSize(size_t *out_size);
 
 bool

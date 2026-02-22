@@ -4843,11 +4843,190 @@ static void update_variables(void)
 }
 
 /*****************************************************************************/
+static void
+e9k_debug_ami_sync_floppy_dc_slot(int drive, const char *path)
+{
+   if (!dc || drive < 0 || drive > 1)
+   {
+      return;
+   }
+
+   if (dc->files[drive])
+   {
+      free(dc->files[drive]);
+      dc->files[drive] = NULL;
+   }
+   if (dc->labels[drive])
+   {
+      free(dc->labels[drive]);
+      dc->labels[drive] = NULL;
+   }
+   dc->types[drive] = DC_IMAGE_TYPE_NONE;
+
+   if (!string_is_empty(path))
+   {
+      char image_label[RETRO_PATH_MAX];
+      image_label[0] = '\0';
+      fill_pathname(image_label, path_basename(path), "", sizeof(image_label));
+      dc->files[drive]  = strdup(path);
+      dc->labels[drive] = strdup(image_label);
+      dc->types[drive]  = dc_get_image_type(path);
+   }
+
+   unsigned count = 0;
+   for (unsigned i = 0; i < DC_MAX_SIZE; i++)
+   {
+      if (dc->files[i] || dc->types[i] != DC_IMAGE_TYPE_NONE)
+      {
+         count = i + 1;
+      }
+   }
+   dc->count = count;
+
+   if (dc->count == 0)
+   {
+      dc->index = -1;
+      dc->eject_state = true;
+      return;
+   }
+
+   if (!string_is_empty(path) && drive < (int)dc->count && dc->files[drive])
+   {
+      dc->index = drive;
+      dc->eject_state = false;
+      return;
+   }
+
+   if (dc->index < 0 || (unsigned)dc->index >= dc->count || !dc->files[dc->index])
+   {
+      for (unsigned i = 0; i < dc->count; i++)
+      {
+         if (dc->files[i])
+         {
+            dc->index = (int)i;
+            break;
+         }
+      }
+   }
+}
+
+bool
+e9k_debug_ami_set_floppy_path(int drive, const char *path)
+{
+   if (!libretro_runloop_active)
+   {
+      return false;
+   }
+
+   if (drive < 0 || drive > 1)
+   {
+      return false;
+   }
+
+   char path_copy[RETRO_PATH_MAX];
+   path_copy[0] = '\0';
+   if (path && *path)
+   {
+      strlcpy(path_copy, path, sizeof(path_copy));
+   }
+
+   const char *src = path_copy;
+   if (!string_is_empty(src) && !path_is_valid(src))
+   {
+      return false;
+   }
+
+   bool config_changed = false;
+
+   if (changed_prefs.nr_floppies < 1)
+   {
+      changed_prefs.nr_floppies = 1;
+      config_changed = true;
+   }
+   if (currprefs.floppyslots[0].dfxtype < 0 || changed_prefs.floppyslots[0].dfxtype < 0)
+   {
+      changed_prefs.floppyslots[0].dfxtype = DRV_35_DD;
+      config_changed = true;
+   }
+
+   if (drive == 1)
+   {
+      int desired_type = string_is_empty(src) ? DRV_NONE : DRV_35_DD;
+      if (changed_prefs.floppyslots[1].dfxtype != desired_type)
+      {
+         changed_prefs.floppyslots[1].dfxtype = desired_type;
+         config_changed = true;
+      }
+      if (!string_is_empty(src) && changed_prefs.nr_floppies < 2)
+      {
+         changed_prefs.nr_floppies = 2;
+         config_changed = true;
+      }
+      if (string_is_empty(src) && changed_prefs.nr_floppies > 1)
+      {
+         changed_prefs.nr_floppies = 1;
+         config_changed = true;
+      }
+   }
+
+   if (config_changed)
+   {
+      set_config_changed();
+      device_check_config();
+   }
+
+   if (!string_is_empty(src))
+   {
+      for (unsigned i = 0; i < MAX_FLOPPY_DRIVES; i++)
+      {
+         if ((int)i == drive)
+         {
+            continue;
+         }
+         if (string_is_empty(changed_prefs.floppyslots[i].df))
+         {
+            continue;
+         }
+         if (strcmp(changed_prefs.floppyslots[i].df, src))
+         {
+            continue;
+         }
+         floppy_close_redirect((int8_t)i);
+         changed_prefs.floppyslots[i].df[0] = 0;
+         disk_eject(i);
+      }
+   }
+
+   if (string_is_empty(src))
+   {
+      floppy_close_redirect((int8_t)drive);
+      changed_prefs.floppyslots[drive].df[0] = 0;
+      disk_eject((unsigned)drive);
+   }
+   else
+   {
+      strlcpy(changed_prefs.floppyslots[drive].df, src, sizeof(changed_prefs.floppyslots[drive].df));
+      floppy_open_redirect((int8_t)drive);
+      disk_insert_wp((unsigned)drive, changed_prefs.floppyslots[drive].df,
+         changed_prefs.floppyslots[drive].forcedwriteprotect);
+   }
+
+   e9k_debug_ami_sync_floppy_dc_slot(drive, src);
+
+   return true;
+}
+
 /* Disk Control */
 bool retro_disk_set_eject_state(bool ejected)
 {
    if (dc)
    {
+      if (dc->index < 0 || (unsigned)dc->index >= dc->count)
+      {
+         dc->eject_state = ejected;
+         return true;
+      }
+
       if (dc->eject_state == ejected)
          return true;
       else
@@ -4926,7 +5105,7 @@ static bool retro_disk_get_eject_state(void)
 
 static unsigned retro_disk_get_image_index(void)
 {
-   if (dc)
+   if (dc && dc->index >= 0)
       return dc->index;
 
    return 0;

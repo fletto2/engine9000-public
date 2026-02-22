@@ -76,17 +76,37 @@ settings_focusFirstVisibleTextbox(e9ui_context_t *ctx)
 
 static int settings_pendingRebuild = 0;
 int settings_coreOptionsDirty = 0;
+static int settings_coreOptionsRestartDirty = 0;
+
+void
+settings_markCoreOptionsDirtyWithRestart(int restartRequired);
 
 void
 settings_markCoreOptionsDirty(void)
 {
+    settings_markCoreOptionsDirtyWithRestart(1);
+}
+
+void
+settings_markCoreOptionsDirtyWithRestart(int restartRequired)
+{
     settings_coreOptionsDirty = 1;
+    if (restartRequired) {
+        settings_coreOptionsRestartDirty = 1;
+    }
 }
 
 void
 settings_clearCoreOptionsDirty(void)
 {
     settings_coreOptionsDirty = 0;
+    settings_coreOptionsRestartDirty = 0;
+}
+
+int
+settings_coreOptionsNeedsRestart(void)
+{
+    return settings_coreOptionsRestartDirty ? 1 : 0;
 }
 
 // TODO

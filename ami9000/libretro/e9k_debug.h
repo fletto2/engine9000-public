@@ -106,6 +106,9 @@ e9k_debug_ami_video_line_to_core_line(int videoLine);
 int
 e9k_debug_ami_core_line_to_video_line(int coreLine);
 
+bool
+e9k_debug_ami_set_floppy_path(int drive, const char *path);
+
 void
 e9k_debug_reapply_memhooks(void);
 

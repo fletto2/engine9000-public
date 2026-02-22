@@ -25,7 +25,13 @@ typedef struct amiga_uae_kv {
 static amiga_uae_kv_t *amiga_uae_entries = NULL;
 static size_t amiga_uae_entryCount = 0;
 static size_t amiga_uae_entryCap = 0;
-static int amiga_uae_dirty = 0;
+enum {
+    AMIGA_UAE_DIRTY_FLOPPY0 = 1 << 0,
+    AMIGA_UAE_DIRTY_FLOPPY1 = 1 << 1,
+    AMIGA_UAE_DIRTY_HD0 = 1 << 2,
+    AMIGA_UAE_DIRTY_PUAE = 1 << 3
+};
+static int amiga_uae_dirtyMask = 0;
 static char amiga_uae_loadedPath[PATH_MAX];
 static char amiga_uae_floppy0[PATH_MAX];
 static char amiga_uae_floppy1[PATH_MAX];
@@ -324,7 +330,7 @@ amiga_uaeClearPuaeOptions(void)
     amiga_uae_entries = NULL;
     amiga_uae_entryCount = 0;
     amiga_uae_entryCap = 0;
-    amiga_uae_dirty = 0;
+    amiga_uae_dirtyMask = 0;
     amiga_uae_loadedPath[0] = '\0';
     amiga_uae_floppy0[0] = '\0';
     amiga_uae_floppy1[0] = '\0';
@@ -334,7 +340,21 @@ amiga_uaeClearPuaeOptions(void)
 int
 amiga_uaeUaeOptionsDirty(void)
 {
-    return amiga_uae_dirty ? 1 : 0;
+    return amiga_uae_dirtyMask ? 1 : 0;
+}
+
+int
+amiga_uaeHasRestartRequiredDirty(void)
+{
+    const int restartMask = AMIGA_UAE_DIRTY_HD0;
+    return (amiga_uae_dirtyMask & restartMask) ? 1 : 0;
+}
+
+int
+amiga_uaeHasFloppyDirty(void)
+{
+    const int floppyMask = AMIGA_UAE_DIRTY_FLOPPY0 | AMIGA_UAE_DIRTY_FLOPPY1;
+    return (amiga_uae_dirtyMask & floppyMask) ? 1 : 0;
 }
 
 bool
@@ -349,7 +369,7 @@ amiga_uaeLoadUaeOptions(const char *uaePath)
 
     FILE *f = fopen(uaePath, "r");
     if (!f) {
-        amiga_uae_dirty = 0;
+        amiga_uae_dirtyMask = 0;
         return true;
     }
     char line[8192];
@@ -389,7 +409,7 @@ amiga_uaeLoadUaeOptions(const char *uaePath)
         ent->value = alloc_strdup(value);
     }
     fclose(f);
-    amiga_uae_dirty = 0;
+    amiga_uae_dirtyMask = 0;
     return true;
 }
 
@@ -414,7 +434,7 @@ amiga_uaeSetPuaeOptionValue(const char *key, const char *value)
     }
     if (!value) {
         amiga_uaeRemoveEntry(key);
-        amiga_uae_dirty = 1;
+        amiga_uae_dirtyMask |= AMIGA_UAE_DIRTY_PUAE;
         return;
     }
     amiga_uae_kv_t *ent = amiga_uaeGetOrAddEntry(key);
@@ -423,7 +443,7 @@ amiga_uaeSetPuaeOptionValue(const char *key, const char *value)
     }
     alloc_free(ent->value);
     ent->value = alloc_strdup(value);
-    amiga_uae_dirty = 1;
+    amiga_uae_dirtyMask |= AMIGA_UAE_DIRTY_PUAE;
 }
 
 const char *
@@ -450,7 +470,7 @@ amiga_uaeSetHardDriveFolderPath(const char *path)
     const char *src = path ? path : "";
     strncpy(amiga_uae_hd0Folder, src, sizeof(amiga_uae_hd0Folder) - 1);
     amiga_uae_hd0Folder[sizeof(amiga_uae_hd0Folder) - 1] = '\0';
-    amiga_uae_dirty = 1;
+    amiga_uae_dirtyMask |= AMIGA_UAE_DIRTY_HD0;
 }
 
 void
@@ -463,11 +483,22 @@ amiga_uaeSetFloppyPath(int drive, const char *path)
     if (drive == 0) {
         strncpy(amiga_uae_floppy0, src, sizeof(amiga_uae_floppy0) - 1);
         amiga_uae_floppy0[sizeof(amiga_uae_floppy0) - 1] = '\0';
+        amiga_uae_dirtyMask |= AMIGA_UAE_DIRTY_FLOPPY0;
     } else {
         strncpy(amiga_uae_floppy1, src, sizeof(amiga_uae_floppy1) - 1);
         amiga_uae_floppy1[sizeof(amiga_uae_floppy1) - 1] = '\0';
+        amiga_uae_dirtyMask |= AMIGA_UAE_DIRTY_FLOPPY1;
     }
-    amiga_uae_dirty = 1;
+}
+
+void
+amiga_uaeClearFloppyDirty(int drive)
+{
+    if (drive == 0) {
+        amiga_uae_dirtyMask &= ~AMIGA_UAE_DIRTY_FLOPPY0;
+    } else if (drive == 1) {
+        amiga_uae_dirtyMask &= ~AMIGA_UAE_DIRTY_FLOPPY1;
+    }
 }
 
 bool
@@ -584,7 +615,7 @@ amiga_uaeWriteUaeOptionsToFile(const char *uaePath)
         remove(tmpPath);
         return false;
     }
-    amiga_uae_dirty = 0;
+    amiga_uae_dirtyMask = 0;
     return true;
 }
 

@@ -59,7 +59,13 @@ void
 settings_markCoreOptionsDirty(void);
 
 void
+settings_markCoreOptionsDirtyWithRestart(int restartRequired);
+
+void
 settings_clearCoreOptionsDirty(void);
+
+int
+settings_coreOptionsNeedsRestart(void);
 
 void
 settings_pathChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *text, void *user);
