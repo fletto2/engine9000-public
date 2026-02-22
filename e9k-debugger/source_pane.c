@@ -231,6 +231,34 @@ source_pane_isAbsolutePath(const char *path)
 }
 
 static void
+source_pane_copyPath(char *out, size_t out_cap, const char *path)
+{
+    if (!out || out_cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!path || !path[0]) {
+        return;
+    }
+    strncpy(out, path, out_cap - 1);
+    out[out_cap - 1] = '\0';
+}
+
+static int
+source_pane_pathExistsFile(const char *path)
+{
+    if (!path || !path[0]) {
+        return 0;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return 0;
+    }
+    fclose(f);
+    return 1;
+}
+
+static void
 source_pane_resolveSourcePath(const char *path, char *out, size_t out_cap)
 {
     if (!out || out_cap == 0) {
@@ -240,15 +268,35 @@ source_pane_resolveSourcePath(const char *path, char *out, size_t out_cap)
     if (!path || !path[0]) {
         return;
     }
+    const char *src = debugger.libretro.sourceDir;
     if (source_pane_isAbsolutePath(path)) {
-        strncpy(out, path, out_cap - 1);
-        out[out_cap - 1] = '\0';
+        if (source_pane_pathExistsFile(path) || !src || !src[0]) {
+            source_pane_copyPath(out, out_cap, path);
+            return;
+        }
+
+        const char *base = source_pane_basename(path);
+        if (base && base[0]) {
+            char candidate[PATH_MAX];
+            size_t src_len = strlen(src);
+            int need_sep = 1;
+            if (src_len > 0) {
+                char c = src[src_len - 1];
+                if (c == '/' || c == '\\') {
+                    need_sep = 0;
+                }
+            }
+            snprintf(candidate, sizeof(candidate), "%s%s%s", src, need_sep ? "/" : "", base);
+            if (source_pane_pathExistsFile(candidate)) {
+                source_pane_copyPath(out, out_cap, candidate);
+                return;
+            }
+        }
+        source_pane_copyPath(out, out_cap, path);
         return;
     }
-    const char *src = debugger.libretro.sourceDir;
     if (!src || !src[0]) {
-        strncpy(out, path, out_cap - 1);
-        out[out_cap - 1] = '\0';
+        source_pane_copyPath(out, out_cap, path);
         return;
     }
     size_t src_len = strlen(src);
@@ -5171,9 +5219,6 @@ void source_pane_markNeedsRefresh(e9ui_component_t *comp)
     if (!st->scrollLocked) {
         source_pane_clearFunctionScrollLock(st);
     }
-    st->sourceFilesLoaded = 0;
-    st->sourceFunctionsLoaded = 0;
-    st->asmSymbolsLoaded = 0;
 }
 
 void

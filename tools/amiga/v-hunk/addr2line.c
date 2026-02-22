@@ -794,8 +794,10 @@ int main(int argc,char *argv[])
   else {  /* interactive mode */
     char buf[80];
 
-    while (fgets(buf,80,stdin))
+    while (fgets(buf,80,stdin)) {
       print_line_info(secid,buf);
+      fflush(stdout);
+    }
   }
 
   return EXIT_SUCCESS;

@@ -259,6 +259,9 @@ addr2line_readLine(char **out)
     if (addr2line.outRead == INVALID_HANDLE_VALUE) {
         return 0;
     }
+    const DWORD waitStepMs = 1;
+    const DWORD waitMaxMs = 2000;
+    DWORD waitedMs = 0;
     for (;;) {
         for (size_t i = 0; i < addr2line.bufLen; ++i) {
             if (addr2line.buf[i] == '\n') {
@@ -282,6 +285,21 @@ addr2line_readLine(char **out)
         if (addr2line.bufLen >= sizeof(addr2line.buf) - 1) {
             addr2line.bufLen = 0;
         }
+        DWORD bytesAvailable = 0;
+        if (!PeekNamedPipe(addr2line.outRead, NULL, 0, NULL, &bytesAvailable, NULL)) {
+            return 0;
+        }
+        if (bytesAvailable == 0) {
+            if (!addr2line_processIsAlive()) {
+                return 0;
+            }
+            if (waitedMs >= waitMaxMs) {
+                return 0;
+            }
+            Sleep(waitStepMs);
+            waitedMs += waitStepMs;
+            continue;
+        }
         DWORD bytesRead = 0;
         BOOL ok = ReadFile(
             addr2line.outRead,
@@ -294,6 +312,7 @@ addr2line_readLine(char **out)
             return 0;
         }
         addr2line.bufLen += (size_t)bytesRead;
+        waitedMs = 0;
     }
 }
 

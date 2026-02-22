@@ -43,7 +43,11 @@ typedef struct target_amiga_toolchain_preset_state {
     int updating;
 } target_amiga_toolchain_preset_state_t;
 
+#if defined(_WIN32)
+static const char target_amiga_toolchainPrefixVasm[] = ".\\system\\v-hunk-";
+#else
 static const char target_amiga_toolchainPrefixVasm[] = "./system/v-hunk-";
+#endif
 static const char target_amiga_toolchainPrefixGcc[] = "m68k-amigaos-";
 
 static void

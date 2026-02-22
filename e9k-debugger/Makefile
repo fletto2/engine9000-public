@@ -62,6 +62,11 @@ BUILD_DIR = build
 W64_TARGET = e9k-debugger.exe
 W64_ADDITIONAL_TARGET = dist/e9kd/e9k-debugger.exe
 W64_BUILD_DIR = build-w64
+RELEASE_DIR = releases
+RELEASE_MINOR_FILE = $(RELEASE_DIR)/release_minor.txt
+RELEASE_PACKAGE_NAME = e9k-debugger
+RELEASE_W64_DLLS = libfreetype-6.dll libpng16-16.dll libreadline8.dll libssp-0.dll libtermcap-0.dll libwinpthread-1.dll SDL2_image.dll SDL2_ttf.dll SDL2.dll zlib1.dll
+RELEASE_SYSTEM_FILES = v-hunk-addr2line.exe v-hunk-objdump.exe ami9000.dll geo9000.dll
 W64_CFLAGS = -flto -O2 -Wall -Wextra -std=c99 -MMD -MP
 W64_CFLAGS += $(BASE_INCLUDES)
 W64_CFLAGS +=  -D_THREAD_SAFE
@@ -153,6 +158,56 @@ $(W64_TARGET): $(W64_OBJS)
 
 w64: $(W64_TARGET)
 
+release: release-w64
+
+release-w64: w64
+	@$(MAKE) release-w64-package
+
+release-w64-package:
+	@mkdir -p $(RELEASE_DIR)
+	@temp_dir=`mktemp -d "$(RELEASE_DIR)/tmp.release.XXXXXX"`; \
+	if [ ! -d "$$temp_dir" ]; then \
+		echo "Failed to create temporary release directory"; \
+		exit 1; \
+	fi; \
+	trap 'rm -rf "$$temp_dir"' EXIT INT TERM; \
+	package_dir="$$temp_dir/$(RELEASE_PACKAGE_NAME)"; \
+	mkdir -p "$$package_dir/system"; \
+	for file in e9k-debugger.exe $(RELEASE_W64_DLLS); do \
+		if [ ! -f "dist/e9kd/$$file" ]; then \
+			echo "Missing file: dist/e9kd/$$file"; \
+			exit 1; \
+		fi; \
+		cp "dist/e9kd/$$file" "$$package_dir/$$file"; \
+	done; \
+	if [ ! -d assets ]; then \
+		echo "Missing directory: e9k-debugger/assets"; \
+		exit 1; \
+	fi; \
+	cp -R assets "$$package_dir/assets"; \
+	find "$$package_dir/assets" -type f ! \( -iname '*.png' -o -iname '*.ttf' -o -iname '*.ico' \) -delete; \
+	for file in $(RELEASE_SYSTEM_FILES); do \
+		if [ ! -f "system/$$file" ]; then \
+			echo "Missing file: e9k-debugger/system/$$file"; \
+			exit 1; \
+		fi; \
+		cp "system/$$file" "$$package_dir/system/$$file"; \
+	done; \
+	if [ ! -f "../README.md" ]; then \
+		echo "Missing file: ../README.md"; \
+		exit 1; \
+	fi; \
+	cp ../README.md "$$package_dir/README.md"; \
+	current_minor=0; \
+	if [ -f "$(RELEASE_MINOR_FILE)" ]; then \
+		current_minor=`cat "$(RELEASE_MINOR_FILE)"`; \
+	fi; \
+	next_minor=`expr "$$current_minor" + 1`; \
+	zip_name="e9k-debugger-v0.$$next_minor.zip"; \
+	( cd "$$temp_dir" && zip -r "../$$zip_name" "$(RELEASE_PACKAGE_NAME)" ); \
+	echo "$$next_minor" > "$(RELEASE_MINOR_FILE)"; \
+	echo "Created $(RELEASE_DIR)/$$zip_name"
+
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -207,7 +262,7 @@ bundle: $(TARGET)
 		'</dict>' \
 		'</plist>' > $(BUNDLE_DIR)/Info.plist
 
-.PHONY: all clean macos-app
+.PHONY: all w64 release release-w64 release-w64-package clean bundle macos-app
 
 -include $(DEPS)
 -include $(W64_DEPS)

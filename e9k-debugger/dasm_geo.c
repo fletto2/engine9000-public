@@ -195,10 +195,19 @@ dasm_geo_preloadText(void)
     debug_error("dasm: objdump not found in PATH: %s", objdump);
     return dasm_preloadFromCore();
   }
-  char cmd[PATH_MAX + 256];
-  snprintf(cmd, sizeof(cmd),
-	   "%s -d -z -j .text --start-address=0x%llx --stop-address=0x%llx %s",
-	   objdumpExe, (unsigned long long)lo, (unsigned long long)hi, elf);
+  char args[256];
+  int argsLen = snprintf(args, sizeof(args),
+                         "-d -z -j .text --start-address=0x%llx --stop-address=0x%llx",
+                         (unsigned long long)lo, (unsigned long long)hi);
+  if (argsLen < 0 || (size_t)argsLen >= sizeof(args)) {
+    debug_error("dasm: failed to build objdump arguments");
+    return dasm_preloadFromCore();
+  }
+  char cmd[PATH_MAX * 2];
+  if (!debugger_platform_formatToolCommand(cmd, sizeof(cmd), objdumpExe, args, elf, 0)) {
+    debug_error("dasm: failed to build objdump command");
+    return dasm_preloadFromCore();
+  }
   FILE *pipe = popen(cmd, "r");
   if (!pipe) {
     debug_error("dasm: failed to run %s: %s", objdumpExe, strerror(errno));

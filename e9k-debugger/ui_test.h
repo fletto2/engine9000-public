@@ -134,7 +134,7 @@ ui_test_hasFailed(void)
 static inline int
 ui_test_getExitCode(void)
 {
-    return 0;
+    return -1;
 }
 
 static inline int

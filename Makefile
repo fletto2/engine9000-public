@@ -11,7 +11,7 @@ ifeq ($(HOST_OS),Darwin)
 LIBRETRO_PLATFORM := osx
 endif
 
-.PHONY: all w64 clean test mega9000 mega9000-w64 mega9000-clean mega9000-support update-public
+.PHONY: all w64 release-w64 clean test mega9000 mega9000-w64 mega9000-clean mega9000-support update-public
 
 all:
 	$(MAKE) $(JOBS) -C ami9000 platform=$(LIBRETRO_PLATFORM)
@@ -28,6 +28,9 @@ w64:
 	$(MAKE) $(JOBS) -C e9k-debugger w64
 	$(MAKE) $(JOBS) -C tools/amiga/adf9000 w64 CC=$(MINGW_CC)
 	$(MAKE) $(JOBS) -C tools/amiga/v-hunk w64 CC=$(MINGW_CC)
+
+release-w64: w64
+	$(MAKE) -C e9k-debugger release-w64-package
 
 clean:
 	$(MAKE) $(JOBS) -C ami9000 platform=win CC=$(MINGW_CC) clean

@@ -133,13 +133,57 @@ debugger_platform_formatToolCommand(char *out,
     if (!out || cap == 0 || !toolPath || !*toolPath || !targetPath || !*targetPath) {
         return 0;
     }
-    (void)suppressStderr;
     out[0] = '\0';
     const char *args = (toolArgs && *toolArgs) ? toolArgs : NULL;
+    int toolNeedsQuotes = (strchr(toolPath, ' ') != NULL || strchr(toolPath, '\t') != NULL) ? 1 : 0;
+    int isTraceTool = 0;
+    if (strstr(toolPath, "objdump") != NULL || strstr(toolPath, "addr2line") != NULL) {
+        isTraceTool = 1;
+    }
     if (args) {
-        snprintf(out, cap, "%s %s \"%s\"", toolPath, args, targetPath);
+        if (suppressStderr) {
+            if (isTraceTool) {
+                if (toolNeedsQuotes) {
+                    snprintf(out, cap, "\"%s\" %s \"%s\"", toolPath, args, targetPath);
+                } else {
+                    snprintf(out, cap, "%s %s \"%s\"", toolPath, args, targetPath);
+                }
+            } else {
+                if (toolNeedsQuotes) {
+                    snprintf(out, cap, "\"%s\" %s \"%s\" 2>nul", toolPath, args, targetPath);
+                } else {
+                    snprintf(out, cap, "%s %s \"%s\" 2>nul", toolPath, args, targetPath);
+                }
+            }
+        } else {
+            if (toolNeedsQuotes) {
+                snprintf(out, cap, "\"%s\" %s \"%s\"", toolPath, args, targetPath);
+            } else {
+                snprintf(out, cap, "%s %s \"%s\"", toolPath, args, targetPath);
+            }
+        }
     } else {
-        snprintf(out, cap, "%s \"%s\"", toolPath, targetPath);
+        if (suppressStderr) {
+            if (isTraceTool) {
+                if (toolNeedsQuotes) {
+                    snprintf(out, cap, "\"%s\" \"%s\"", toolPath, targetPath);
+                } else {
+                    snprintf(out, cap, "%s \"%s\"", toolPath, targetPath);
+                }
+            } else {
+                if (toolNeedsQuotes) {
+                    snprintf(out, cap, "\"%s\" \"%s\" 2>nul", toolPath, targetPath);
+                } else {
+                    snprintf(out, cap, "%s \"%s\" 2>nul", toolPath, targetPath);
+                }
+            }
+        } else {
+            if (toolNeedsQuotes) {
+                snprintf(out, cap, "\"%s\" \"%s\"", toolPath, targetPath);
+            } else {
+                snprintf(out, cap, "%s \"%s\"", toolPath, targetPath);
+            }
+        }
     }
     return out[0] != '\0';
 }
@@ -150,6 +194,18 @@ debugger_platform_finalizeToolBinary(char *toolPath, size_t cap)
     if (!toolPath || !*toolPath || cap == 0) {
         return 0;
     }
+
+    for (char *p = toolPath; *p; ++p) {
+        if (*p == '/') {
+            *p = '\\';
+        }
+    }
+    if (toolPath[0] == '.' && toolPath[1] == '\\') {
+        // already normalized
+    } else if (toolPath[0] == '.' && toolPath[1] == '/' && toolPath[2] != '\0') {
+        toolPath[1] = '\\';
+    }
+
     size_t len = strlen(toolPath);
     if (len >= 4) {
         const char *suffix = toolPath + len - 4;
