@@ -63,17 +63,12 @@ typedef struct custom_ui_state {
     int suppressAudioCallbacks;
     int audioEnabled[CUSTOM_UI_AMIGA_AUDIO_CHANNEL_COUNT];
     int warnedMissingOption;
-    SDL_Window *window;
-    SDL_Renderer *renderer;
-    uint32_t windowId;
+    e9ui_window_t *windowHost;
     int winX;
     int winY;
     int winW;
     int winH;
     int winHasSaved;
-    int mainWindowFocused;
-    int customWindowFocused;
-    int alwaysOnTopState;
     e9ui_context_t ctx;
     e9ui_component_t *root;
     e9ui_component_t *fullscreen;
@@ -135,6 +130,10 @@ typedef struct custom_ui_seek_row_state {
     int rowPadding;
 } custom_ui_seek_row_state_t;
 
+typedef struct custom_ui_embedded_body_state {
+    custom_ui_state_t *ui;
+} custom_ui_embedded_body_state_t;
+
 static custom_ui_state_t custom_ui_state = {
     .blitterEnabled = 1,
     .blitterDebugEnabled = 0,
@@ -179,33 +178,108 @@ static void
 custom_ui_captureWindowRect(void)
 {
     custom_ui_state_t *ui = &custom_ui_state;
-    if (!ui->window) {
+    if (!ui || !ui->windowHost) {
         return;
     }
-    SDL_GetWindowPosition(ui->window, &ui->winX, &ui->winY);
-    SDL_GetWindowSize(ui->window, &ui->winW, &ui->winH);
+    if (e9ui_windowIsEmbedded(ui->windowHost)) {
+        e9ui_rect_t rect = e9ui_windowGetEmbeddedRect(ui->windowHost);
+        const e9ui_context_t *scaleCtx = e9ui ? &e9ui->ctx : &ui->ctx;
+        if (rect.w > 0 && rect.h > 0) {
+            ui->winX = e9ui_unscale_px(scaleCtx, rect.x);
+            ui->winY = e9ui_unscale_px(scaleCtx, rect.y);
+            ui->winW = e9ui_unscale_px(scaleCtx, rect.w);
+            ui->winH = e9ui_unscale_px(scaleCtx, rect.h);
+            ui->winHasSaved = 1;
+        }
+        return;
+    }
+    SDL_Window *window = e9ui_windowGetSdlWindow(ui->windowHost);
+    if (!window) {
+        return;
+    }
+    SDL_GetWindowPosition(window, &ui->winX, &ui->winY);
+    SDL_GetWindowSize(window, &ui->winW, &ui->winH);
     ui->winHasSaved = 1;
 }
 
 static int
 custom_ui_clampCopperLine(int line);
 
+static e9ui_window_backend_t
+custom_ui_windowBackend(void)
+{
+    return e9ui_window_backend_embedded;
+}
+
+static e9ui_rect_t
+custom_ui_embeddedDefaultRect(const e9ui_context_t *ctx)
+{
+    e9ui_rect_t rect = {
+        e9ui_scale_px(ctx, 64),
+        e9ui_scale_px(ctx, 64),
+        e9ui_scale_px(ctx, 560),
+        e9ui_scale_px(ctx, 560)
+    };
+    return rect;
+}
+
+static e9ui_rect_t
+custom_ui_embeddedRectFromSaved(const custom_ui_state_t *ui, const e9ui_context_t *ctx)
+{
+    e9ui_rect_t rect = custom_ui_embeddedDefaultRect(ctx);
+    if (!ui || !ui->winHasSaved || ui->winW <= 0 || ui->winH <= 0) {
+        return rect;
+    }
+    rect.x = e9ui_scale_px(ctx, ui->winX);
+    rect.y = e9ui_scale_px(ctx, ui->winY);
+    rect.w = e9ui_scale_px(ctx, ui->winW);
+    rect.h = e9ui_scale_px(ctx, ui->winH);
+    return rect;
+}
+
+static void
+custom_ui_embeddedClampRectToMainWindow(e9ui_rect_t *rect, const e9ui_context_t *ctx)
+{
+    if (!rect || !ctx) {
+        return;
+    }
+    int minW = e9ui_scale_px(ctx, 420);
+    int minH = e9ui_scale_px(ctx, 420);
+    if (rect->w < minW) {
+        rect->w = minW;
+    }
+    if (rect->h < minH) {
+        rect->h = minH;
+    }
+    int winW = ctx->winW > 0 ? ctx->winW : 0;
+    int winH = ctx->winH > 0 ? ctx->winH : 0;
+    if (winW > 0 && rect->w > winW) {
+        rect->w = winW;
+    }
+    if (winH > 0 && rect->h > winH) {
+        rect->h = winH;
+    }
+}
+
+static int
+custom_ui_isEmbeddedBackend(const custom_ui_state_t *ui)
+{
+    if (!ui || !ui->windowHost) {
+        return 0;
+    }
+    return e9ui_windowIsEmbedded(ui->windowHost);
+}
+
 static void
 custom_ui_updateAlwaysOnTop(custom_ui_state_t *ui)
 {
-#ifndef E9K_DISABLE_ALWAYS_ON_TOP
-    if (!ui || !ui->window) {
+    if (!ui) {
         return;
     }
-    int shouldStayOnTop = (ui->mainWindowFocused || ui->customWindowFocused) ? 1 : 0;
-    if (ui->alwaysOnTopState == shouldStayOnTop) {
+    if (custom_ui_isEmbeddedBackend(ui)) {
         return;
     }
-    SDL_SetWindowAlwaysOnTop(ui->window, shouldStayOnTop ? SDL_TRUE : SDL_FALSE);
-    ui->alwaysOnTopState = shouldStayOnTop;
-#else
-    (void)ui;
-#endif
+    e9ui_windowUpdateAlwaysOnTop(ui->windowHost);
 }
 
 static float
@@ -1901,6 +1975,100 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
     return scrollRoot;
 }
 
+static void
+custom_ui_prepareFrame(custom_ui_state_t *ui, const e9ui_context_t *frameCtx)
+{
+    if (!ui) {
+        return;
+    }
+    if (frameCtx) {
+        ui->ctx = *frameCtx;
+    }
+    if (ui->pendingRemove && ui->root) {
+        e9ui_childRemove(ui->root, ui->pendingRemove, &ui->ctx);
+        ui->pendingRemove = NULL;
+    }
+    custom_ui_syncBlitterDebugCheckbox(ui);
+    custom_ui_tickBlitterVisDecayTextbox(ui);
+    custom_ui_tickCopperLimitTextboxes(ui);
+    custom_ui_tickBplptrLineLimitTextboxes(ui);
+}
+
+static int
+custom_ui_embeddedBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)self;
+    (void)ctx;
+    (void)availW;
+    return 0;
+}
+
+static void
+custom_ui_embeddedBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+    custom_ui_embedded_body_state_t *st = (custom_ui_embedded_body_state_t *)self->state;
+    if (!st || !st->ui || !st->ui->root || !st->ui->root->layout) {
+        return;
+    }
+    st->ui->root->layout(st->ui->root, ctx, bounds);
+}
+
+static void
+custom_ui_embeddedBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !ctx) {
+        return;
+    }
+    custom_ui_embedded_body_state_t *st = (custom_ui_embedded_body_state_t *)self->state;
+    if (!st || !st->ui || !st->ui->root) {
+        return;
+    }
+    custom_ui_prepareFrame(st->ui, ctx);
+    if (st->ui->root->render) {
+        st->ui->root->render(st->ui->root, ctx);
+    }
+}
+
+static e9ui_component_t *
+custom_ui_makeEmbeddedBodyHost(custom_ui_state_t *ui)
+{
+    if (!ui || !ui->root) {
+        return NULL;
+    }
+    e9ui_component_t *host = (e9ui_component_t *)alloc_calloc(1, sizeof(*host));
+    if (!host) {
+        return NULL;
+    }
+    custom_ui_embedded_body_state_t *st = (custom_ui_embedded_body_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!st) {
+        alloc_free(host);
+        return NULL;
+    }
+    st->ui = ui;
+    host->name = "custom_ui_embedded_body";
+    host->state = st;
+    host->preferredHeight = custom_ui_embeddedBodyPreferredHeight;
+    host->layout = custom_ui_embeddedBodyLayout;
+    host->render = custom_ui_embeddedBodyRender;
+    e9ui_child_add(host, ui->root, alloc_strdup("custom_ui_root"));
+    return host;
+}
+
+static void
+custom_ui_embeddedWindowCloseRequested(e9ui_window_t *window, void *user)
+{
+    (void)window;
+    custom_ui_state_t *ui = (custom_ui_state_t *)user;
+    if (!ui) {
+        return;
+    }
+    ui->closeRequested = 1;
+}
+
 int
 custom_ui_init(void)
 {
@@ -1909,42 +2077,10 @@ custom_ui_init(void)
         return 1;
     }
 
-    SDL_Window *win = SDL_CreateWindow(CUSTOM_UI_TITLE,
-                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                       560, 560,
-                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-    if (!win) {
-        debug_error("custom ui: SDL_CreateWindow failed: %s", SDL_GetError());
+    ui->windowHost = e9ui_windowCreate(custom_ui_windowBackend());
+    if (!ui->windowHost) {
         return 0;
     }
-    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
-    if (!ren) {
-        SDL_DestroyWindow(win);
-        debug_error("custom ui: SDL_CreateRenderer failed: %s", SDL_GetError());
-        return 0;
-    }
-    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    if (ui->winHasSaved) {
-        SDL_SetWindowPosition(win, ui->winX, ui->winY);
-        SDL_SetWindowSize(win, ui->winW, ui->winH);
-    }
-
-    ui->window = win;
-    ui->renderer = ren;
-    ui->windowId = SDL_GetWindowID(win);
-    ui->ctx.window = win;
-    ui->ctx.renderer = ren;
-    ui->ctx.font = e9ui->ctx.font;
-    ui->ctx.dpiScale = custom_ui_computeDpiScale(&ui->ctx);
-    ui->alwaysOnTopState = -1;
-    ui->mainWindowFocused = 0;
-    if (e9ui && e9ui->ctx.window) {
-        uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
-        ui->mainWindowFocused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-    }
-    uint32_t customFlags = SDL_GetWindowFlags(win);
-    ui->customWindowFocused = (customFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-    custom_ui_updateAlwaysOnTop(ui);
     ui->closeRequested = 0;
     ui->warnedMissingOption = 0;
     ui->suppressBlitterDebugCallbacks = 0;
@@ -2003,6 +2139,71 @@ custom_ui_init(void)
         custom_ui_shutdown();
         return 0;
     }
+    if (custom_ui_isEmbeddedBackend(ui)) {
+        e9ui_rect_t rect = custom_ui_embeddedRectFromSaved(ui, &e9ui->ctx);
+        custom_ui_embeddedClampRectToMainWindow(&rect, &e9ui->ctx);
+        if (!ui->winHasSaved) {
+            int winW = e9ui->ctx.winW > 0 ? e9ui->ctx.winW : 1280;
+            int winH = e9ui->ctx.winH > 0 ? e9ui->ctx.winH : 720;
+            rect.x = (winW - rect.w) / 2;
+            rect.y = (winH - rect.h) / 2;
+            custom_ui_embeddedClampRectToMainWindow(&rect, &e9ui->ctx);
+        }
+        e9ui_component_t *embeddedBodyHost = custom_ui_makeEmbeddedBodyHost(ui);
+        if (!embeddedBodyHost) {
+            custom_ui_shutdown();
+            return 0;
+        }
+        if (!e9ui_windowOpenEmbedded(ui->windowHost,
+                                     CUSTOM_UI_TITLE,
+                                     rect,
+                                     embeddedBodyHost,
+                                     custom_ui_embeddedWindowCloseRequested,
+                                     ui,
+                                     &e9ui->ctx)) {
+            e9ui_childDestroy(embeddedBodyHost, &e9ui->ctx);
+            custom_ui_shutdown();
+            return 0;
+        }
+        ui->ctx = e9ui->ctx;
+    } else {
+        if (!e9ui_windowOpenSdl(ui->windowHost,
+                                CUSTOM_UI_TITLE,
+                                SDL_WINDOWPOS_CENTERED,
+                                SDL_WINDOWPOS_CENTERED,
+                                560,
+                                560,
+                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI)) {
+            debug_error("custom ui: SDL_CreateWindow failed: %s", SDL_GetError());
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        if (!e9ui_windowCreateSdlRenderer(ui->windowHost, -1, SDL_RENDERER_ACCELERATED)) {
+            debug_error("custom ui: SDL_CreateRenderer failed: %s", SDL_GetError());
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        SDL_Window *win = e9ui_windowGetSdlWindow(ui->windowHost);
+        SDL_Renderer *ren = e9ui_windowGetSdlRenderer(ui->windowHost);
+        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+        if (ui->winHasSaved) {
+            SDL_SetWindowPosition(win, ui->winX, ui->winY);
+            SDL_SetWindowSize(win, ui->winW, ui->winH);
+        }
+
+        ui->ctx.window = win;
+        ui->ctx.renderer = ren;
+        ui->ctx.font = e9ui->ctx.font;
+        ui->ctx.dpiScale = custom_ui_computeDpiScale(&ui->ctx);
+        if (e9ui && e9ui->ctx.window) {
+            uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
+            e9ui_windowSetMainWindowFocused(ui->windowHost, (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0);
+        }
+        e9ui_windowRefreshSelfFocusedFromFlags(ui->windowHost);
+        custom_ui_updateAlwaysOnTop(ui);
+    }
 
     custom_ui_applyAllOptions();
     ui->open = 1;
@@ -2016,27 +2217,25 @@ custom_ui_shutdown(void)
     if (!ui->open) {
         return;
     }
-    if (ui->root) {
+    int embedded = custom_ui_isEmbeddedBackend(ui);
+    if (ui->root && !embedded) {
         e9ui_childDestroy(ui->root, &ui->ctx);
         ui->root = NULL;
     }
-    e9ui_text_cache_clearRenderer(ui->renderer);
-    if (ui->renderer) {
-        SDL_DestroyRenderer(ui->renderer);
-        ui->renderer = NULL;
+    SDL_Renderer *renderer = e9ui_windowGetSdlRenderer(ui->windowHost);
+    if (renderer) {
+        e9ui_text_cache_clearRenderer(renderer);
     }
-    if (ui->window) {
-        SDL_DestroyWindow(ui->window);
-        ui->window = NULL;
+    if (ui->windowHost) {
+        e9ui_windowDestroy(ui->windowHost);
+        ui->windowHost = NULL;
     }
+    ui->root = NULL;
+    ui->fullscreen = NULL;
     ui->open = 0;
     ui->closeRequested = 0;
-    ui->windowId = 0;
     ui->warnedMissingOption = 0;
     ui->pendingRemove = NULL;
-    ui->mainWindowFocused = 0;
-    ui->customWindowFocused = 0;
-    ui->alwaysOnTopState = 0;
     memset(&ui->ctx, 0, sizeof(ui->ctx));
     custom_ui_refocusMain();
 }
@@ -2060,14 +2259,14 @@ custom_ui_isOpen(void)
 uint32_t
 custom_ui_getWindowId(void)
 {
-    return custom_ui_state.windowId;
+    return e9ui_windowGetWindowId(custom_ui_state.windowHost);
 }
 
 void
 custom_ui_setMainWindowFocused(int focused)
 {
     custom_ui_state_t *ui = &custom_ui_state;
-    ui->mainWindowFocused = focused ? 1 : 0;
+    e9ui_windowSetMainWindowFocused(ui->windowHost, focused);
     if (!ui->open) {
         return;
     }
@@ -2245,10 +2444,10 @@ custom_ui_handleEvent(SDL_Event *ev)
             ui->winHasSaved = 1;
             config_saveConfig();
         } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-            ui->customWindowFocused = 1;
+            e9ui_windowSetSelfFocused(ui->windowHost, 1);
             custom_ui_updateAlwaysOnTop(ui);
         } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-            ui->customWindowFocused = 0;
+            e9ui_windowSetSelfFocused(ui->windowHost, 0);
             custom_ui_updateAlwaysOnTop(ui);
         } else if (ev->window.event == SDL_WINDOWEVENT_MOVED) {
             ui->winX = ev->window.data1;
@@ -2287,31 +2486,45 @@ void
 custom_ui_render(void)
 {
     custom_ui_state_t *ui = &custom_ui_state;
-    if (!ui->open || !ui->renderer || !ui->root) {
+    if (!ui->open || !ui->root) {
         return;
     }
     if (ui->closeRequested) {
         custom_ui_shutdown();
         return;
     }
-    if (ui->pendingRemove && ui->root) {
-        e9ui_childRemove(ui->root, ui->pendingRemove, &ui->ctx);
-        ui->pendingRemove = NULL;
+    if (custom_ui_isEmbeddedBackend(ui)) {
+        int prevHasSaved = ui->winHasSaved;
+        int prevX = ui->winX;
+        int prevY = ui->winY;
+        int prevW = ui->winW;
+        int prevH = ui->winH;
+        custom_ui_captureWindowRect();
+        if (!prevHasSaved ||
+            ui->winX != prevX ||
+            ui->winY != prevY ||
+            ui->winW != prevW ||
+            ui->winH != prevH) {
+            config_saveConfig();
+        }
+        return;
     }
-    custom_ui_syncBlitterDebugCheckbox(ui);
-    custom_ui_tickBlitterVisDecayTextbox(ui);
-    custom_ui_tickCopperLimitTextboxes(ui);
-    custom_ui_tickBplptrLineLimitTextboxes(ui);
+    SDL_Window *window = e9ui_windowGetSdlWindow(ui->windowHost);
+    SDL_Renderer *renderer = e9ui_windowGetSdlRenderer(ui->windowHost);
+    if (!renderer) {
+        return;
+    }
+    custom_ui_prepareFrame(ui, NULL);
 
     ui->ctx.font = e9ui->ctx.font;
-    ui->ctx.window = ui->window;
-    ui->ctx.renderer = ui->renderer;
+    ui->ctx.window = window;
+    ui->ctx.renderer = renderer;
 
-    SDL_SetRenderDrawColor(ui->renderer, 12, 12, 12, 255);
-    SDL_RenderClear(ui->renderer);
+    SDL_SetRenderDrawColor(renderer, 12, 12, 12, 255);
+    SDL_RenderClear(renderer);
     int winW = 0;
     int winH = 0;
-    SDL_GetRendererOutputSize(ui->renderer, &winW, &winH);
+    SDL_GetRendererOutputSize(renderer, &winW, &winH);
     ui->ctx.winW = winW;
     ui->ctx.winH = winH;
 
@@ -2323,7 +2536,7 @@ custom_ui_render(void)
     if (root && root->render) {
         root->render(root, &ui->ctx);
     }
-    SDL_RenderPresent(ui->renderer);
+    SDL_RenderPresent(renderer);
 }
 
 void

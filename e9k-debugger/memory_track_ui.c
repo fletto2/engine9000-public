@@ -60,6 +60,10 @@ typedef struct memory_track_table_state {
     memory_track_ui_t *ui;
 } memory_track_table_state_t;
 
+typedef struct memory_track_embedded_body_state {
+    memory_track_ui_t *ui;
+} memory_track_embedded_body_state_t;
+
 typedef struct memory_track_ranges {
     target_memory_range_t ranges[MEMORY_TRACK_UI_MAX_RANGES];
     size_t count;
@@ -72,11 +76,13 @@ struct memory_track_ui {
     int alwaysOnTopState;
     int mainWindowFocused;
     int memoryTrackWindowFocused;
+    e9ui_window_t *windowHost;
     SDL_Window *window;
     SDL_Renderer *renderer;
     uint32_t windowId;
     e9ui_context_t ctx;
     e9ui_component_t *root;
+    e9ui_component_t *embeddedBodyHost;
     e9ui_component_t *pendingRemove;
     e9ui_component_t *protectModal;
     e9ui_component_t *protectCbBlock;
@@ -87,6 +93,7 @@ struct memory_track_ui {
     int protectRadioUpdating;
     e9ui_component_t *fullscreen;
     e9ui_component_t *headerRow;
+    e9ui_component_t *hscroll;
     e9ui_component_t *scroll;
     e9ui_component_t *table;
     e9ui_component_t *modeBtn8;
@@ -173,6 +180,94 @@ struct memory_track_ui {
 
 static memory_track_ui_t memory_track_ui_state = {0};
 
+static e9ui_window_backend_t
+memory_track_ui_windowBackend(void)
+{
+    return e9ui_window_backend_embedded;
+}
+
+static int
+memory_track_ui_isEmbeddedBackend(const memory_track_ui_t *ui)
+{
+    if (!ui || !ui->windowHost) {
+        return 0;
+    }
+    return e9ui_windowIsEmbedded(ui->windowHost);
+}
+
+static void
+memory_track_ui_captureWindowRect(memory_track_ui_t *ui)
+{
+    if (!ui || !ui->windowHost) {
+        return;
+    }
+    if (memory_track_ui_isEmbeddedBackend(ui)) {
+        e9ui_rect_t rect = e9ui_windowGetEmbeddedRect(ui->windowHost);
+        const e9ui_context_t *scaleCtx = e9ui ? &e9ui->ctx : &ui->ctx;
+        if (rect.w > 0 && rect.h > 0) {
+            e9ui->layout.memTrackWinX = e9ui_unscale_px(scaleCtx, rect.x);
+            e9ui->layout.memTrackWinY = e9ui_unscale_px(scaleCtx, rect.y);
+            e9ui->layout.memTrackWinW = e9ui_unscale_px(scaleCtx, rect.w);
+            e9ui->layout.memTrackWinH = e9ui_unscale_px(scaleCtx, rect.h);
+        }
+        return;
+    }
+    if (!ui->window) {
+        return;
+    }
+    SDL_GetWindowPosition(ui->window, &e9ui->layout.memTrackWinX, &e9ui->layout.memTrackWinY);
+    SDL_GetWindowSize(ui->window, &e9ui->layout.memTrackWinW, &e9ui->layout.memTrackWinH);
+}
+
+static e9ui_rect_t
+memory_track_ui_embeddedDefaultRect(const e9ui_context_t *ctx)
+{
+    e9ui_rect_t rect = {
+        e9ui_scale_px(ctx, 96),
+        e9ui_scale_px(ctx, 96),
+        e9ui_scale_px(ctx, 900),
+        e9ui_scale_px(ctx, 600)
+    };
+    return rect;
+}
+
+static e9ui_rect_t
+memory_track_ui_embeddedRectFromSaved(const e9ui_context_t *ctx)
+{
+    e9ui_rect_t rect = memory_track_ui_embeddedDefaultRect(ctx);
+    if (e9ui->layout.memTrackWinW > 0 && e9ui->layout.memTrackWinH > 0) {
+        rect.w = e9ui_scale_px(ctx, e9ui->layout.memTrackWinW);
+        rect.h = e9ui_scale_px(ctx, e9ui->layout.memTrackWinH);
+    }
+    if (e9ui->layout.memTrackWinX >= 0 && e9ui->layout.memTrackWinY >= 0) {
+        rect.x = e9ui_scale_px(ctx, e9ui->layout.memTrackWinX);
+        rect.y = e9ui_scale_px(ctx, e9ui->layout.memTrackWinY);
+    }
+    return rect;
+}
+
+static void
+memory_track_ui_embeddedClampRectSize(e9ui_rect_t *rect, const e9ui_context_t *ctx)
+{
+    if (!rect || !ctx) {
+        return;
+    }
+    int minW = e9ui_scale_px(ctx, 520);
+    int minH = e9ui_scale_px(ctx, 420);
+    if (rect->w < minW) {
+        rect->w = minW;
+    }
+    if (rect->h < minH) {
+        rect->h = minH;
+    }
+    if (ctx->winW > 0 && rect->w > ctx->winW) {
+        rect->w = ctx->winW;
+    }
+    if (ctx->winH > 0 && rect->h > ctx->winH) {
+        rect->h = ctx->winH;
+    }
+}
+
 static void
 memory_track_ui_destroyAddressLinks(memory_track_ui_t *ui);
 static void
@@ -203,19 +298,11 @@ memory_track_ui_refocusMain(void)
 static void
 memory_track_ui_updateAlwaysOnTop(memory_track_ui_t *ui)
 {
-#ifndef E9K_DISABLE_ALWAYS_ON_TOP
-    if (!ui || !ui->window) {
-        return;
-    }
-    int shouldStayOnTop = (ui->mainWindowFocused || ui->memoryTrackWindowFocused) ? 1 : 0;
-    if (ui->alwaysOnTopState == shouldStayOnTop) {
-        return;
-    }
-    SDL_SetWindowAlwaysOnTop(ui->window, shouldStayOnTop ? SDL_TRUE : SDL_FALSE);
-    ui->alwaysOnTopState = shouldStayOnTop;
-#else
     (void)ui;
-#endif
+    if (!ui || !ui->windowHost) {
+        return;
+    }
+    e9ui_windowUpdateAlwaysOnTop(ui->windowHost);
 }
 
 static void
@@ -1904,20 +1991,73 @@ memory_track_ui_updateMetrics(memory_track_ui_t *ui, int winW)
     ui->trendButtonGap = e9ui_scale_px(&ui->ctx, 4);
     ui->trendWidth = ui->trendButtonWidth * 3 + ui->trendButtonGap * 2;
 
-    int availableW = winW - pad * 2 - ui->addressWidth - ui->modeWidth - ui->filterButtonWidth -
-                     ui->filterButtonGap - ui->trendWidth - gap * 3;
     int columns = 1;
-    if (availableW > ui->columnWidth) {
-        columns = 1 + (availableW - ui->columnWidth) / (ui->columnWidth + gap);
-    }
-    if (columns < 1) {
-        columns = 1;
+    if (memory_track_ui_isEmbeddedBackend(ui)) {
+        int widthColumns = 1;
+        int availableW = winW - pad * 2 - ui->addressWidth - gap;
+        if (availableW > ui->columnWidth) {
+            widthColumns = 1 + (availableW - ui->columnWidth) / (ui->columnWidth + gap);
+        }
+        if (widthColumns < 1) {
+            widthColumns = 1;
+        }
+        int logicalColumns = widthColumns;
+        if ((int)ui->frameTextsCount > logicalColumns) {
+            logicalColumns = (int)ui->frameTextsCount;
+        }
+        if ((int)ui->filterTextsCount > logicalColumns) {
+            logicalColumns = (int)ui->filterTextsCount;
+        }
+        if (prevColumns > 0) {
+            columns = prevColumns;
+        } else {
+            columns = logicalColumns;
+        }
+    } else {
+        int availableW = winW - pad * 2 - ui->addressWidth - gap;
+        if (availableW > ui->columnWidth) {
+            columns = 1 + (availableW - ui->columnWidth) / (ui->columnWidth + gap);
+        }
+        if (columns < 1) {
+            columns = 1;
+        }
+        if (prevColumns > 0 && columns < prevColumns) {
+            columns = prevColumns;
+        }
     }
     ui->columnCount = columns;
     if (columns != prevColumns || ui->addressWidth != prevAddressWidth || ui->columnWidth != prevColumnWidth) {
         ui->needsRebuild = 1;
         ui->needsRefresh = 1;
     }
+}
+
+static int
+memory_track_ui_contentWidthPx(memory_track_ui_t *ui)
+{
+    if (!ui) {
+        return 0;
+    }
+    int gap = ui->columnGap;
+    int dataColsW = 0;
+    if (ui->columnCount > 0) {
+        dataColsW = ui->columnCount * ui->columnWidth + (ui->columnCount - 1) * gap;
+    }
+    int rowDataW = ui->addressWidth + gap + dataColsW;
+    int resetW = e9ui_scale_px(&ui->ctx, 80);
+    int controlsW = ui->addressWidth + gap + ui->modeWidth + gap +
+                    ui->filterButtonWidth + ui->filterButtonGap +
+                    ui->trendWidth + gap + resetW;
+    int tableW = ui->padding * 2 + rowDataW;
+    int controlsBoxW = controlsW + ui->padding * 2;
+    int maxW = rowDataW;
+    if (controlsBoxW > maxW) {
+        maxW = controlsBoxW;
+    }
+    if (tableW > maxW) {
+        maxW = tableW;
+    }
+    return maxW;
 }
 
 static void
@@ -1942,6 +2082,25 @@ memory_track_ui_updateContentHeight(memory_track_ui_t *ui, TTF_Font *font)
     if (ui->scroll) {
         e9ui_scroll_setContentHeightPx(ui->scroll, ui->contentHeight);
     }
+}
+
+static size_t
+memory_track_ui_frameLowerBound(const memory_track_frame_data_t *frame, uint32_t address)
+{
+    if (!frame || !frame->entries || frame->entryCount == 0) {
+        return 0;
+    }
+    size_t lo = 0;
+    size_t hi = frame->entryCount;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (frame->entries[mid].address < address) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
 }
 
 static int
@@ -2014,6 +2173,15 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
     int pad = ui->padding;
     int startX = rect.x + pad;
     int startY = rect.y + pad;
+    SDL_Rect clipRect = { 0, 0, 0, 0 };
+    SDL_bool clipEnabled = SDL_RenderIsClipEnabled(ctx->renderer);
+    if (clipEnabled) {
+        SDL_RenderGetClipRect(ctx->renderer, &clipRect);
+    } else {
+        clipRect = rect;
+    }
+    int clipTop = clipRect.y;
+    int clipBottom = clipRect.y + clipRect.h;
     if (ui->error[0]) {
         int textW = 0;
         int textH = 0;
@@ -2026,8 +2194,7 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
         return;
     }
 
-    int columnsX = startX + ui->addressWidth + ui->columnGap + ui->modeWidth + ui->columnGap +
-                   ui->filterButtonWidth + ui->filterButtonGap + ui->trendWidth + ui->columnGap;
+    int columnsX = startX + ui->addressWidth + ui->columnGap;
     if (ui->addressCount == 0) {
         int textW = 0;
         int textH = 0;
@@ -2058,7 +2225,44 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
         ui->frameIndices[frameIndex] = 0;
     }
 
-    for (size_t rowIndex = 0; rowIndex < ui->addressCount; ++rowIndex) {
+    if (ui->rowHeight <= 0) {
+        return;
+    }
+
+    int firstVisibleRow = 0;
+    int lastVisibleRowExclusive = (int)ui->addressCount;
+    if (clipTop > startY) {
+        firstVisibleRow = (clipTop - startY) / ui->rowHeight;
+    }
+    if (clipBottom > startY) {
+        lastVisibleRowExclusive = (clipBottom - startY + ui->rowHeight - 1) / ui->rowHeight;
+    } else {
+        lastVisibleRowExclusive = 0;
+    }
+    if (firstVisibleRow < 0) {
+        firstVisibleRow = 0;
+    }
+    if (lastVisibleRowExclusive < 0) {
+        lastVisibleRowExclusive = 0;
+    }
+    if (firstVisibleRow > (int)ui->addressCount) {
+        firstVisibleRow = (int)ui->addressCount;
+    }
+    if (lastVisibleRowExclusive > (int)ui->addressCount) {
+        lastVisibleRowExclusive = (int)ui->addressCount;
+    }
+    if (firstVisibleRow >= lastVisibleRowExclusive) {
+        return;
+    }
+
+    uint32_t firstVisibleAddress = ui->addresses[(size_t)firstVisibleRow];
+    for (size_t colIndex = 0; colIndex < ui->frameCount; ++colIndex) {
+        memory_track_frame_data_t *frame = &ui->frames[colIndex];
+        ui->frameIndices[colIndex] = memory_track_ui_frameLowerBound(frame, firstVisibleAddress);
+    }
+
+    startY += firstVisibleRow * ui->rowHeight;
+    for (size_t rowIndex = (size_t)firstVisibleRow; rowIndex < (size_t)lastVisibleRowExclusive; ++rowIndex) {
         uint32_t address = ui->addresses[rowIndex];
         if (ui->addressLinks && rowIndex < ui->addressLinksCount &&
             rowIndex < ui->addressLinksCap) {
@@ -2260,13 +2464,6 @@ memory_track_ui_buildFrameRow(memory_track_ui_t *ui)
     }
     e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
 
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->modeWidth), ui->modeWidth);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->filterButtonWidth), ui->filterButtonWidth);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->filterButtonGap), ui->filterButtonGap);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->trendWidth), ui->trendWidth);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
-
     if (ui->columnCount > (int)ui->frameInputsCap) {
         size_t newCap = ui->frameInputsCap ? ui->frameInputsCap : 4;
         while (newCap < (size_t)ui->columnCount) {
@@ -2391,13 +2588,6 @@ memory_track_ui_buildFilterRow(memory_track_ui_t *ui)
     int gap = ui->columnGap;
     e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->addressWidth), ui->addressWidth);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->modeWidth), ui->modeWidth);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->filterButtonWidth), ui->filterButtonWidth);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->filterButtonGap), ui->filterButtonGap);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->trendWidth), ui->trendWidth);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
-
     if (ui->columnCount > (int)ui->filterInputsCap) {
         size_t newCap = ui->filterInputsCap ? ui->filterInputsCap : 4;
         while (newCap < (size_t)ui->columnCount) {
@@ -2439,13 +2629,19 @@ memory_track_ui_buildFilterRow(memory_track_ui_t *ui)
 static e9ui_component_t *
 memory_track_ui_buildRoot(memory_track_ui_t *ui)
 {
+    e9ui_component_t *root = e9ui_stack_makeVertical();
+    if (!root) {
+        return NULL;
+    }
     e9ui_component_t *stack = e9ui_stack_makeVertical();
     if (!stack) {
+        e9ui_childDestroy(root, &ui->ctx);
         return NULL;
     }
     e9ui_component_t *controls = memory_track_ui_buildControlRow(ui);
     if (!controls) {
         e9ui_childDestroy(stack, &ui->ctx);
+        e9ui_childDestroy(root, &ui->ctx);
         return NULL;
     }
     e9ui_component_t *controls_box = e9ui_box_make(controls);
@@ -2454,6 +2650,7 @@ memory_track_ui_buildRoot(memory_track_ui_t *ui)
     if (!filters) {
         e9ui_childDestroy(controls_box, &ui->ctx);
         e9ui_childDestroy(stack, &ui->ctx);
+        e9ui_childDestroy(root, &ui->ctx);
         return NULL;
     }
     e9ui_component_t *frames = memory_track_ui_buildFrameRow(ui);
@@ -2461,6 +2658,7 @@ memory_track_ui_buildRoot(memory_track_ui_t *ui)
         e9ui_childDestroy(controls_box, &ui->ctx);
         e9ui_childDestroy(filters, &ui->ctx);
         e9ui_childDestroy(stack, &ui->ctx);
+        e9ui_childDestroy(root, &ui->ctx);
         return NULL;
     }
 
@@ -2470,6 +2668,7 @@ memory_track_ui_buildRoot(memory_track_ui_t *ui)
         e9ui_childDestroy(filters, &ui->ctx);
         e9ui_childDestroy(frames, &ui->ctx);
         e9ui_childDestroy(stack, &ui->ctx);
+        e9ui_childDestroy(root, &ui->ctx);
         return NULL;
     }
     ui->table = table;
@@ -2480,14 +2679,28 @@ memory_track_ui_buildRoot(memory_track_ui_t *ui)
         e9ui_childDestroy(filters, &ui->ctx);
         e9ui_childDestroy(frames, &ui->ctx);
         e9ui_childDestroy(stack, &ui->ctx);
+        e9ui_childDestroy(root, &ui->ctx);
         return NULL;
     }
+    ui->hscroll = e9ui_scroll_make(stack);
+    if (!ui->hscroll) {
+        e9ui_childDestroy(ui->scroll, &ui->ctx);
+        ui->scroll = NULL;
+        e9ui_childDestroy(controls_box, &ui->ctx);
+        e9ui_childDestroy(filters, &ui->ctx);
+        e9ui_childDestroy(frames, &ui->ctx);
+        e9ui_childDestroy(stack, &ui->ctx);
+        e9ui_childDestroy(root, &ui->ctx);
+        return NULL;
+    }
+    e9ui_scroll_setContentWidthPx(ui->hscroll, memory_track_ui_contentWidthPx(ui));
     ui->headerRow = controls_box;
     e9ui_stack_addFixed(stack, controls_box);
     e9ui_stack_addFixed(stack, filters);
     e9ui_stack_addFixed(stack, frames);
     e9ui_stack_addFlex(stack, ui->scroll);
-    return stack;
+    e9ui_stack_addFlex(root, ui->hscroll);
+    return root;
 }
 
 static void
@@ -2499,15 +2712,164 @@ memory_track_ui_rebuildRoot(memory_track_ui_t *ui)
     memory_track_ui_storeFrameTexts(ui);
     memory_track_ui_storeFilterTexts(ui);
     if (ui->root) {
-        e9ui_childDestroy(ui->root, &ui->ctx);
+        if (memory_track_ui_isEmbeddedBackend(ui) && ui->embeddedBodyHost) {
+            e9ui_childRemove(ui->embeddedBodyHost, ui->root, &ui->ctx);
+        } else {
+            e9ui_childDestroy(ui->root, &ui->ctx);
+        }
     }
     ui->root = NULL;
     ui->headerRow = NULL;
+    ui->hscroll = NULL;
     ui->scroll = NULL;
     ui->table = NULL;
     ui->root = memory_track_ui_buildRoot(ui);
+    if (ui->root && memory_track_ui_isEmbeddedBackend(ui) && ui->embeddedBodyHost) {
+        e9ui_child_add(ui->embeddedBodyHost, ui->root, alloc_strdup("memory_track_ui_root"));
+    }
     ui->needsRebuild = 0;
     ui->needsRefresh = 1;
+}
+
+static int
+memory_track_ui_embeddedBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)self;
+    (void)ctx;
+    (void)availW;
+    return 0;
+}
+
+static void
+memory_track_ui_embeddedBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+    memory_track_embedded_body_state_t *st = (memory_track_embedded_body_state_t *)self->state;
+    memory_track_ui_t *ui = st ? st->ui : NULL;
+    if (!ui) {
+        return;
+    }
+    if (ctx) {
+        ui->ctx = *ctx;
+        ui->ctx.window = ctx->window;
+        ui->ctx.renderer = ctx->renderer;
+        ui->ctx.font = e9ui->ctx.font;
+        ui->ctx.winW = bounds.w;
+        ui->ctx.winH = bounds.h;
+    }
+    memory_track_ui_updateMetrics(ui, bounds.w);
+    if (ui->needsRebuild) {
+        memory_track_ui_rebuildRoot(ui);
+    }
+    e9ui_component_t *root = ui->fullscreen ? ui->fullscreen : ui->root;
+    if (root && root->layout) {
+        root->layout(root, ctx, bounds);
+    }
+}
+
+static void
+memory_track_ui_embeddedBodyDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    memory_track_embedded_body_state_t *st = (memory_track_embedded_body_state_t *)self->state;
+    alloc_free(st);
+    self->state = NULL;
+}
+
+static void
+memory_track_ui_embeddedBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !ctx || !self->state) {
+        return;
+    }
+    memory_track_embedded_body_state_t *st = (memory_track_embedded_body_state_t *)self->state;
+    memory_track_ui_t *ui = st ? st->ui : NULL;
+    if (!ui || !ui->open) {
+        return;
+    }
+    ui->ctx = *ctx;
+    ui->ctx.window = ctx->window;
+    ui->ctx.renderer = ctx->renderer;
+    ui->ctx.font = e9ui->ctx.font;
+    ui->ctx.winW = self->bounds.w;
+    ui->ctx.winH = self->bounds.h;
+    ui->ctx.mouseX = ctx->mouseX;
+    ui->ctx.mouseY = ctx->mouseY;
+    ui->ctx.mousePrevX = ctx->mousePrevX;
+    ui->ctx.mousePrevY = ctx->mousePrevY;
+    ui->ctx.focusRoot = ui->root;
+    ui->ctx.focusFullscreen = ui->fullscreen;
+
+    if (ui->pendingRemove && ui->root) {
+        e9ui_childRemove(ui->root, ui->pendingRemove, &ui->ctx);
+        ui->pendingRemove = NULL;
+    }
+    memory_track_ui_updateMetrics(ui, self->bounds.w);
+    if (ui->needsRebuild) {
+        memory_track_ui_rebuildRoot(ui);
+        if (!ui->root) {
+            ui->closeRequested = 1;
+            return;
+        }
+    }
+    if (ui->needsRefresh) {
+        (void)memory_track_ui_collectData(ui, ui->columnCount);
+        ui->needsRefresh = 0;
+    }
+    TTF_Font *font = e9ui->theme.text.source ? e9ui->theme.text.source : ui->ctx.font;
+    memory_track_ui_updateContentHeight(ui, font);
+
+    e9ui_component_t *root = ui->fullscreen ? ui->fullscreen : ui->root;
+    if (root && root->layout) {
+        root->layout(root, &ui->ctx, self->bounds);
+    }
+    if (root && root->render) {
+        root->render(root, &ui->ctx);
+    }
+}
+
+static e9ui_component_t *
+memory_track_ui_makeEmbeddedBodyHost(memory_track_ui_t *ui)
+{
+    if (!ui || !ui->root) {
+        return NULL;
+    }
+    e9ui_component_t *host = (e9ui_component_t *)alloc_calloc(1, sizeof(*host));
+    if (!host) {
+        return NULL;
+    }
+    memory_track_embedded_body_state_t *st =
+        (memory_track_embedded_body_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!st) {
+        alloc_free(host);
+        return NULL;
+    }
+    st->ui = ui;
+    host->name = "memory_track_ui_embedded_body";
+    host->state = st;
+    host->preferredHeight = memory_track_ui_embeddedBodyPreferredHeight;
+    host->layout = memory_track_ui_embeddedBodyLayout;
+    host->render = memory_track_ui_embeddedBodyRender;
+    host->dtor = memory_track_ui_embeddedBodyDtor;
+    e9ui_child_add(host, ui->root, alloc_strdup("memory_track_ui_root"));
+    return host;
+}
+
+static void
+memory_track_ui_embeddedWindowCloseRequested(e9ui_window_t *window, void *user)
+{
+    (void)window;
+    memory_track_ui_t *ui = (memory_track_ui_t *)user;
+    if (!ui) {
+        return;
+    }
+    ui->closeRequested = 1;
 }
 
 static float
@@ -2538,57 +2900,125 @@ memory_track_ui_init(void)
     if (ui->open) {
         return 1;
     }
-    int wantW = (e9ui->layout.memTrackWinW > 0 ? e9ui->layout.memTrackWinW : 900);
-    int wantH = (e9ui->layout.memTrackWinH > 0 ? e9ui->layout.memTrackWinH : 600);
-    SDL_Window *win = SDL_CreateWindow(MEMORY_TRACK_UI_TITLE,
-                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                       wantW, wantH,
-                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-    if (!win) {
-        debug_error("memory track ui: SDL_CreateWindow failed: %s", SDL_GetError());
+    ui->windowHost = e9ui_windowCreate(memory_track_ui_windowBackend());
+    if (!ui->windowHost) {
         return 0;
-    }
-    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!ren) {
-        SDL_DestroyWindow(win);
-        debug_error("memory track ui: SDL_CreateRenderer failed: %s", SDL_GetError());
-        return 0;
-    }
-    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    ui->window = win;
-    ui->renderer = ren;
-    ui->windowId = SDL_GetWindowID(win);
-    ui->ctx.window = win;
-    ui->ctx.renderer = ren;
-    ui->ctx.font = e9ui->ctx.font;
-    ui->ctx.dpiScale = memory_track_ui_computeDpiScale(&ui->ctx);
-    ui->alwaysOnTopState = -1;
-    ui->mainWindowFocused = 0;
-    if (e9ui && e9ui->ctx.window) {
-        uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
-        ui->mainWindowFocused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-    }
-    uint32_t memTrackFlags = SDL_GetWindowFlags(win);
-    ui->memoryTrackWindowFocused = (memTrackFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-    memory_track_ui_updateAlwaysOnTop(ui);
-    if (e9ui->layout.memTrackWinX >= 0 && e9ui->layout.memTrackWinY >= 0) {
-        SDL_SetWindowPosition(win, e9ui->layout.memTrackWinX, e9ui->layout.memTrackWinY);
     }
     ui->closeRequested = 0;
     ui->needsRefresh = 1;
     ui->accessSize = 2;
     ui->requireAllColumns = 1;
     ui->trendFilterMode = MEMORY_TRACK_UI_TREND_ALL;
-    {
-        int winW = 0;
-        int winH = 0;
-        SDL_GetRendererOutputSize(ui->renderer, &winW, &winH);
-        memory_track_ui_updateMetrics(ui, winW);
+    ui->window = NULL;
+    ui->renderer = NULL;
+    ui->windowId = 0;
+    ui->ctx.font = e9ui->ctx.font;
+    ui->alwaysOnTopState = -1;
+    ui->mainWindowFocused = 0;
+    ui->memoryTrackWindowFocused = 0;
+    int embeddedBackend = memory_track_ui_isEmbeddedBackend(ui);
+    e9ui_rect_t embeddedRect = { 0, 0, 0, 0 };
+    if (embeddedBackend) {
+        embeddedRect = memory_track_ui_embeddedRectFromSaved(&e9ui->ctx);
+        memory_track_ui_embeddedClampRectSize(&embeddedRect, &e9ui->ctx);
+        ui->ctx = e9ui->ctx;
+        ui->ctx.font = e9ui->ctx.font;
+        int estimatedBodyW = embeddedRect.w - e9ui_scale_px(&e9ui->ctx, 8);
+        if (estimatedBodyW <= 0) {
+            estimatedBodyW = embeddedRect.w;
+        }
+        memory_track_ui_updateMetrics(ui, estimatedBodyW);
+        ui->needsRebuild = 0;
     }
     ui->root = memory_track_ui_buildRoot(ui);
     if (!ui->root) {
         memory_track_ui_shutdown();
         return 0;
+    }
+    if (embeddedBackend) {
+        e9ui_rect_t rect = embeddedRect;
+        if (e9ui->layout.memTrackWinX < 0 || e9ui->layout.memTrackWinY < 0) {
+            int winW = e9ui->ctx.winW > 0 ? e9ui->ctx.winW : 1280;
+            int winH = e9ui->ctx.winH > 0 ? e9ui->ctx.winH : 720;
+            rect.x = (winW - rect.w) / 2;
+            rect.y = (winH - rect.h) / 2;
+        }
+        ui->embeddedBodyHost = memory_track_ui_makeEmbeddedBodyHost(ui);
+        if (!ui->embeddedBodyHost) {
+            memory_track_ui_shutdown();
+            return 0;
+        }
+        if (!e9ui_windowOpenEmbedded(ui->windowHost,
+                                     MEMORY_TRACK_UI_TITLE,
+                                     rect,
+                                     ui->embeddedBodyHost,
+                                     memory_track_ui_embeddedWindowCloseRequested,
+                                     ui,
+                                     &e9ui->ctx)) {
+            ui->root = NULL;
+            e9ui_childDestroy(ui->embeddedBodyHost, &e9ui->ctx);
+            ui->embeddedBodyHost = NULL;
+            memory_track_ui_shutdown();
+            return 0;
+        }
+        ui->window = e9ui->ctx.window;
+        ui->renderer = e9ui->ctx.renderer;
+        ui->ctx = e9ui->ctx;
+    } else {
+        int wantW = (e9ui->layout.memTrackWinW > 0 ? e9ui->layout.memTrackWinW : 900);
+        int wantH = (e9ui->layout.memTrackWinH > 0 ? e9ui->layout.memTrackWinH : 600);
+        if (!e9ui_windowOpenSdl(ui->windowHost,
+                                MEMORY_TRACK_UI_TITLE,
+                                SDL_WINDOWPOS_CENTERED,
+                                SDL_WINDOWPOS_CENTERED,
+                                wantW,
+                                wantH,
+                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI)) {
+            debug_error("memory track ui: SDL_CreateWindow failed: %s", SDL_GetError());
+            e9ui_childDestroy(ui->root, &e9ui->ctx);
+            ui->root = NULL;
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        if (!e9ui_windowCreateSdlRenderer(ui->windowHost,
+                                          -1,
+                                          SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC)) {
+            debug_error("memory track ui: SDL_CreateRenderer failed: %s", SDL_GetError());
+            e9ui_childDestroy(ui->root, &e9ui->ctx);
+            ui->root = NULL;
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        SDL_Window *win = e9ui_windowGetSdlWindow(ui->windowHost);
+        SDL_Renderer *ren = e9ui_windowGetSdlRenderer(ui->windowHost);
+        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+        ui->window = win;
+        ui->renderer = ren;
+        ui->windowId = e9ui_windowGetWindowId(ui->windowHost);
+        ui->ctx.window = win;
+        ui->ctx.renderer = ren;
+        ui->ctx.font = e9ui->ctx.font;
+        ui->ctx.dpiScale = memory_track_ui_computeDpiScale(&ui->ctx);
+        if (e9ui && e9ui->ctx.window) {
+            uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
+            ui->mainWindowFocused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+            e9ui_windowSetMainWindowFocused(ui->windowHost, ui->mainWindowFocused);
+        }
+        uint32_t memTrackFlags = SDL_GetWindowFlags(win);
+        ui->memoryTrackWindowFocused = (memTrackFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+        e9ui_windowSetSelfFocused(ui->windowHost, ui->memoryTrackWindowFocused);
+        memory_track_ui_updateAlwaysOnTop(ui);
+        if (e9ui->layout.memTrackWinX >= 0 && e9ui->layout.memTrackWinY >= 0) {
+            SDL_SetWindowPosition(win, e9ui->layout.memTrackWinX, e9ui->layout.memTrackWinY);
+        }
+        {
+            int winW = 0;
+            int winH = 0;
+            SDL_GetRendererOutputSize(ui->renderer, &winW, &winH);
+            memory_track_ui_updateMetrics(ui, winW);
+        }
     }
     ui->needsRebuild = 0;
     memory_track_ui_setError(ui, NULL);
@@ -2609,32 +3039,25 @@ memory_track_ui_shutdown(void)
     if (ui->filterInputs && ui->filterInputsCount) {
         memory_track_ui_storeFilterTexts(ui);
     }
-    if (ui->root) {
+    int embedded = memory_track_ui_isEmbeddedBackend(ui);
+    if (ui->root && !embedded) {
         e9ui_childDestroy(ui->root, &ui->ctx);
         ui->root = NULL;
     }
-    if (ui->window) {
-        int winX = 0;
-        int winY = 0;
-        int winW = 0;
-        int winH = 0;
-        SDL_GetWindowPosition(ui->window, &winX, &winY);
-        SDL_GetWindowSize(ui->window, &winW, &winH);
-        e9ui->layout.memTrackWinX = winX;
-        e9ui->layout.memTrackWinY = winY;
-        e9ui->layout.memTrackWinW = winW;
-        e9ui->layout.memTrackWinH = winH;
-        config_saveConfig();
-    }
+    memory_track_ui_captureWindowRect(ui);
+    config_saveConfig();
     e9ui_text_cache_clearRenderer(ui->renderer);
-    if (ui->renderer) {
-        SDL_DestroyRenderer(ui->renderer);
-        ui->renderer = NULL;
+    if (embedded) {
+        ui->root = NULL;
+        ui->embeddedBodyHost = NULL;
     }
-    if (ui->window) {
-        SDL_DestroyWindow(ui->window);
-        ui->window = NULL;
+    if (ui->windowHost) {
+        e9ui_windowDestroy(ui->windowHost);
+        ui->windowHost = NULL;
     }
+    ui->renderer = NULL;
+    ui->window = NULL;
+    ui->embeddedBodyHost = NULL;
     memory_track_ui_clearData(ui);
     alloc_free(ui->frameInputs);
     ui->frameInputs = NULL;
@@ -2695,6 +3118,7 @@ memory_track_ui_shutdown(void)
     ui->memoryTrackWindowFocused = 0;
     ui->windowId = 0;
     ui->headerRow = NULL;
+    ui->hscroll = NULL;
     ui->scroll = NULL;
     ui->table = NULL;
     ui->columnCount = 0;
@@ -2713,7 +3137,7 @@ memory_track_ui_isOpen(void)
 uint32_t
 memory_track_ui_getWindowId(void)
 {
-    return memory_track_ui_state.windowId;
+    return e9ui_windowGetWindowId(memory_track_ui_state.windowHost);
 }
 
 void
@@ -2721,6 +3145,7 @@ memory_track_ui_setMainWindowFocused(int focused)
 {
     memory_track_ui_t *ui = &memory_track_ui_state;
     ui->mainWindowFocused = focused ? 1 : 0;
+    e9ui_windowSetMainWindowFocused(ui->windowHost, focused);
     if (!ui->open) {
         return;
     }
@@ -2734,6 +3159,9 @@ memory_track_ui_handleEvent(SDL_Event *ev)
         return;
     }
     memory_track_ui_t *ui = &memory_track_ui_state;
+    if (memory_track_ui_isEmbeddedBackend(ui)) {
+        return;
+    }
     if (ui->closeRequested) {
         return;
     }
@@ -2790,9 +3218,11 @@ memory_track_ui_handleEvent(SDL_Event *ev)
             config_saveConfig();
         } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
             ui->memoryTrackWindowFocused = 1;
+            e9ui_windowSetSelfFocused(ui->windowHost, 1);
             memory_track_ui_updateAlwaysOnTop(ui);
         } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
             ui->memoryTrackWindowFocused = 0;
+            e9ui_windowSetSelfFocused(ui->windowHost, 0);
             memory_track_ui_updateAlwaysOnTop(ui);
         }
     } else if (ev->type == SDL_KEYDOWN) {
@@ -2838,11 +3268,28 @@ void
 memory_track_ui_render(void)
 {
     memory_track_ui_t *ui = &memory_track_ui_state;
-    if (!ui->open || !ui->renderer || !ui->root) {
+    if (!ui->open) {
         return;
     }
     if (ui->closeRequested) {
         memory_track_ui_shutdown();
+        return;
+    }
+    if (memory_track_ui_isEmbeddedBackend(ui)) {
+        int prevX = e9ui->layout.memTrackWinX;
+        int prevY = e9ui->layout.memTrackWinY;
+        int prevW = e9ui->layout.memTrackWinW;
+        int prevH = e9ui->layout.memTrackWinH;
+        memory_track_ui_captureWindowRect(ui);
+        if (e9ui->layout.memTrackWinX != prevX ||
+            e9ui->layout.memTrackWinY != prevY ||
+            e9ui->layout.memTrackWinW != prevW ||
+            e9ui->layout.memTrackWinH != prevH) {
+            config_saveConfig();
+        }
+        return;
+    }
+    if (!ui->renderer || !ui->root) {
         return;
     }
     if (ui->pendingRemove && ui->root) {

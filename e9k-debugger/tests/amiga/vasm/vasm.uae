@@ -3,3 +3,4 @@ floppy0=./tests/amiga/vasm/vasm.adf
 puae_cart_file=
 puae_floppy_speed=0
 puae_model=A500PLUS
+puae_mouse_speed=60

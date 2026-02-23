@@ -8,19 +8,30 @@
 
 #include <string.h>
 #include <ctype.h>
+#include <stdio.h>
 
 #include "core_options.h"
 #include "alloc.h"
 
 #include "config.h"
 #include "core_config.h"
+#include "debugger_input_bindings.h"
 #include "debugger.h"
 #include "e9ui.h"
 #include "e9ui_scroll.h"
+#include "e9ui_text.h"
 #include "libretro_host.h"
 #include "neogeo_core_options.h"
 #include "settings.h"
 #include "system_badge.h"
+
+typedef struct core_options_keybind_row_state
+{
+    char *label;
+    int labelWidthPx;
+    int totalWidthPx;
+    e9ui_component_t *button;
+} core_options_keybind_row_state_t;
 
 
 static void
@@ -30,10 +41,19 @@ static void
 core_options_optionCheckboxChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user);
 
 static void
+core_options_keybindButtonClicked(e9ui_context_t *ctx, void *user);
+
+static void
 core_options_clearOptionCbs(core_options_modal_state_t *st);
 
 static void
 core_options_clearCategoryCbs(core_options_modal_state_t *st);
+
+static void
+core_options_endKeyCapture(core_options_modal_state_t *st, e9ui_context_t *ctx, int restoreButtonLabel);
+
+static int
+core_options_isDebuggerSyntheticOptionKey(const char *key);
 
 static e9ui_component_t *
 core_options_makeSystemBadge(e9ui_context_t *ctx, target_iface_t* system)
@@ -88,11 +108,47 @@ core_options_uiClosed(e9ui_component_t *modal, void *user)
 }
 
 static void
+core_options_freeOwnedDefinitions(struct retro_core_option_v2_definition *defs, size_t defCount)
+{
+    if (!defs) {
+        return;
+    }
+    for (size_t i = 0; i < defCount; ++i) {
+        alloc_free((void *)defs[i].key);
+        alloc_free((void *)defs[i].desc);
+        alloc_free((void *)defs[i].info);
+        alloc_free((void *)defs[i].category_key);
+        alloc_free((void *)defs[i].default_value);
+        for (int j = 0; j < RETRO_NUM_CORE_OPTION_VALUES_MAX; ++j) {
+            alloc_free((void *)defs[i].values[j].value);
+            alloc_free((void *)defs[i].values[j].label);
+        }
+    }
+    alloc_free(defs);
+}
+
+static void
+core_options_freeOwnedCategories(struct retro_core_option_v2_category *cats, size_t catCount)
+{
+    if (!cats) {
+        return;
+    }
+    for (size_t i = 0; i < catCount; ++i) {
+        alloc_free((void *)cats[i].key);
+        alloc_free((void *)cats[i].desc);
+        alloc_free((void *)cats[i].info);
+    }
+    alloc_free(cats);
+}
+
+static void
 core_options_freeState(core_options_modal_state_t *st)
 {
     if (!st) {
         return;
     }
+
+    core_options_endKeyCapture(st, NULL, 0);
 
     core_options_clearOptionCbs(st);
     if (st->optionCallbacks) {
@@ -121,6 +177,22 @@ core_options_freeState(core_options_modal_state_t *st)
     st->entryCount = 0;
     st->entryCap = 0;
 
+    if (st->ownedDefs) {
+        core_options_freeOwnedDefinitions(st->ownedDefs, st->ownedDefCount);
+        st->ownedDefs = NULL;
+        st->ownedDefCount = 0;
+    }
+    if (st->ownedCats) {
+        core_options_freeOwnedCategories(st->ownedCats, st->ownedCatCount);
+        st->ownedCats = NULL;
+        st->ownedCatCount = 0;
+    }
+    st->defs = NULL;
+    st->defCount = 0;
+    st->cats = NULL;
+    st->catCount = 0;
+
+    st->container = NULL;
     st->categoryScroll = NULL;
     st->categoryStack = NULL;
     st->categoryWidthPx = 0;
@@ -129,6 +201,8 @@ core_options_freeState(core_options_modal_state_t *st)
     st->optionsWidthPx = 0;
     st->btnSave = NULL;
     st->btnDefaults = NULL;
+    st->keyCaptureReturnFocus = NULL;
+    st->capturingKeybind = NULL;
 
     if (st->probed) {
         core_config_freeCoreOptionsV2(&st->probedOptions);
@@ -370,7 +444,8 @@ core_options_categoryHasVisibleDefs(const core_options_modal_state_t *st, const 
             continue;
         }
         if (st->targetCoreRunning) {
-            if (!libretro_host_isCoreOptionVisible(def->key)) {
+            if (!core_options_isDebuggerSyntheticOptionKey(def->key) &&
+                !libretro_host_isCoreOptionVisible(def->key)) {
                 continue;
             }
         }
@@ -464,6 +539,216 @@ core_options_equalsIgnoreCase(const char *a, const char *b)
     return (*a == '\0' && *b == '\0') ? 1 : 0;
 }
 
+static char *
+core_options_dupString(const char *s)
+{
+    if (!s) {
+        return NULL;
+    }
+    return alloc_strdup(s);
+}
+
+static void
+core_options_cloneCategory(struct retro_core_option_v2_category *dst,
+                           const struct retro_core_option_v2_category *src)
+{
+    if (!dst || !src) {
+        return;
+    }
+    memset(dst, 0, sizeof(*dst));
+    dst->key = core_options_dupString(src->key);
+    dst->desc = core_options_dupString(src->desc);
+    dst->info = core_options_dupString(src->info);
+}
+
+static void
+core_options_cloneDefinition(struct retro_core_option_v2_definition *dst,
+                             const struct retro_core_option_v2_definition *src)
+{
+    if (!dst || !src) {
+        return;
+    }
+    memset(dst, 0, sizeof(*dst));
+    dst->key = core_options_dupString(src->key);
+    dst->desc = core_options_dupString(src->desc);
+    dst->info = core_options_dupString(src->info);
+    dst->category_key = core_options_dupString(src->category_key);
+    dst->default_value = core_options_dupString(src->default_value);
+    for (int i = 0; i < RETRO_NUM_CORE_OPTION_VALUES_MAX; ++i) {
+        dst->values[i].value = core_options_dupString(src->values[i].value);
+        dst->values[i].label = core_options_dupString(src->values[i].label);
+    }
+}
+
+static int
+core_options_hasDefKey(const struct retro_core_option_v2_definition *defs, size_t defCount, const char *key)
+{
+    if (!defs || !key || !*key) {
+        return 0;
+    }
+    for (size_t i = 0; i < defCount; ++i) {
+        if (defs[i].key && strcmp(defs[i].key, key) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+core_options_isDebuggerSyntheticOptionKey(const char *key)
+{
+    if (debugger_input_bindings_isOptionKey(key)) {
+        return 1;
+    }
+    return target_coreOptionsIsSyntheticOptionKey(key);
+}
+
+static int
+core_options_cloneWithDebuggerInput(int targetIndex,
+                                    const struct retro_core_option_v2_category *baseCats,
+                                    size_t baseCatCount,
+                                    const struct retro_core_option_v2_definition *baseDefs,
+                                    size_t baseDefCount,
+                                    struct retro_core_option_v2_category **outCats,
+                                    size_t *outCatCount,
+                                    struct retro_core_option_v2_definition **outDefs,
+                                    size_t *outDefCount)
+{
+    if (!baseDefs || !outCats || !outCatCount || !outDefs || !outDefCount) {
+        return 0;
+    }
+
+    const char *requestedInputKey = debugger_input_bindings_categoryKey();
+    const char *resolvedInputCategoryKey = requestedInputKey;
+    target_iface_t *targetIface = target_getByIndex(targetIndex);
+    int hasInputCategory = 0;
+    for (size_t i = 0; i < baseCatCount; ++i) {
+        const struct retro_core_option_v2_category *cat = &baseCats[i];
+        if (!cat->key || !*cat->key) {
+            continue;
+        }
+        if (core_options_equalsIgnoreCase(cat->key, requestedInputKey)) {
+            resolvedInputCategoryKey = cat->key;
+            hasInputCategory = 1;
+            break;
+        }
+    }
+
+    size_t syntheticDefCount = 0;
+    for (size_t i = 0; i < debugger_input_bindings_specCount(); ++i) {
+        const debugger_input_bindings_spec_t *spec = debugger_input_bindings_specAt(i);
+        if (!spec || !spec->optionKey) {
+            continue;
+        }
+        if (core_options_hasDefKey(baseDefs, baseDefCount, spec->optionKey)) {
+            continue;
+        }
+        syntheticDefCount++;
+    }
+    if (targetIface && targetIface->coreOptionsSyntheticDefCount && targetIface->coreOptionsSyntheticDefAt) {
+        size_t count = targetIface->coreOptionsSyntheticDefCount();
+        for (size_t i = 0; i < count; ++i) {
+            const struct retro_core_option_v2_definition *def = targetIface->coreOptionsSyntheticDefAt(i);
+            if (!def || !def->key || !*def->key) {
+                continue;
+            }
+            if (core_options_hasDefKey(baseDefs, baseDefCount, def->key)) {
+                continue;
+            }
+            syntheticDefCount++;
+        }
+    }
+
+    size_t outCatsNeeded = baseCatCount + (hasInputCategory ? 0u : 1u);
+    size_t outDefsNeeded = baseDefCount + syntheticDefCount;
+
+    struct retro_core_option_v2_category *cats =
+        (struct retro_core_option_v2_category *)alloc_calloc(outCatsNeeded + 1, sizeof(*cats));
+    struct retro_core_option_v2_definition *defs =
+        (struct retro_core_option_v2_definition *)alloc_calloc(outDefsNeeded + 1, sizeof(*defs));
+    if (!cats || !defs) {
+        core_options_freeOwnedCategories(cats, outCatsNeeded);
+        core_options_freeOwnedDefinitions(defs, outDefsNeeded);
+        return 0;
+    }
+
+    for (size_t i = 0; i < baseCatCount; ++i) {
+        core_options_cloneCategory(&cats[i], &baseCats[i]);
+    }
+    if (!hasInputCategory) {
+        size_t idx = baseCatCount;
+        memset(&cats[idx], 0, sizeof(cats[idx]));
+        cats[idx].key = core_options_dupString(debugger_input_bindings_categoryKey());
+        cats[idx].desc = core_options_dupString(debugger_input_bindings_categoryLabel());
+        cats[idx].info = core_options_dupString(debugger_input_bindings_categoryInfo());
+        resolvedInputCategoryKey = debugger_input_bindings_categoryKey();
+    }
+
+    for (size_t i = 0; i < baseDefCount; ++i) {
+        core_options_cloneDefinition(&defs[i], &baseDefs[i]);
+    }
+
+    size_t nextDef = baseDefCount;
+    for (size_t i = 0; i < debugger_input_bindings_specCount(); ++i) {
+        size_t specIndex = i;
+        if (targetIface && targetIface->coreOptionsMapDebuggerInputSpecIndex) {
+            specIndex = targetIface->coreOptionsMapDebuggerInputSpecIndex(specIndex);
+        }
+        const debugger_input_bindings_spec_t *spec = debugger_input_bindings_specAt(specIndex);
+        const char *label = NULL;
+        if (!spec || !spec->optionKey) {
+            continue;
+        }
+        if (core_options_hasDefKey(baseDefs, baseDefCount, spec->optionKey)) {
+            continue;
+        }
+        label = spec->label;
+        if (targetIface && targetIface->coreOptionsDebuggerInputLabel) {
+            label = targetIface->coreOptionsDebuggerInputLabel(spec->optionKey, label);
+        }
+
+        struct retro_core_option_v2_definition *dst = &defs[nextDef++];
+        memset(dst, 0, sizeof(*dst));
+        dst->key = core_options_dupString(spec->optionKey);
+        dst->desc = core_options_dupString(label);
+        dst->info = core_options_dupString(spec->info);
+        dst->category_key = core_options_dupString(resolvedInputCategoryKey);
+
+        char defaultValue[64];
+        SDL_Keycode defaultKey = debugger_input_bindings_defaultKeyForTarget(targetIndex, spec->optionKey);
+        if (!debugger_input_bindings_buildStoredValue(defaultKey, defaultValue, sizeof(defaultValue))) {
+            defaultValue[0] = '\0';
+        }
+        dst->default_value = core_options_dupString(defaultValue);
+    }
+
+    if (targetIface && targetIface->coreOptionsSyntheticDefCount && targetIface->coreOptionsSyntheticDefAt) {
+        size_t count = targetIface->coreOptionsSyntheticDefCount();
+        for (size_t i = 0; i < count; ++i) {
+            const struct retro_core_option_v2_definition *src = targetIface->coreOptionsSyntheticDefAt(i);
+            struct retro_core_option_v2_definition *dst = NULL;
+            if (!src || !src->key || !*src->key) {
+                continue;
+            }
+            if (core_options_hasDefKey(baseDefs, baseDefCount, src->key)) {
+                continue;
+            }
+            dst = &defs[nextDef++];
+            core_options_cloneDefinition(dst, src);
+            if (dst->category_key) {
+                alloc_free((void *)dst->category_key);
+            }
+            dst->category_key = core_options_dupString(resolvedInputCategoryKey);
+        }
+    }
+
+    *outCats = cats;
+    *outCatCount = outCatsNeeded;
+    *outDefs = defs;
+    *outDefCount = outDefsNeeded;
+    return 1;
+}
+
 static int
 core_options_isEnabledDisabledOption(const struct retro_core_option_v2_definition *def,
                                     const char **outEnabledValue,
@@ -511,11 +796,264 @@ core_options_isEnabledDisabledOption(const struct retro_core_option_v2_definitio
 }
 
 static void
+core_options_keybindUpdateButtonLabel(core_options_option_cb_t *cb)
+{
+    if (!cb || !cb->button || !cb->st || !cb->key) {
+        return;
+    }
+    if (cb->st->capturingKeybind == cb) {
+        e9ui_button_setLabel(cb->button, "Press key...");
+        return;
+    }
+    const char *value = core_options_getValue(cb->st, cb->key);
+    char display[96];
+    debugger_input_bindings_formatDisplayValue(value, display, sizeof(display));
+    e9ui_button_setLabel(cb->button, display);
+}
+
+static void
+core_options_setSavePending(core_options_modal_state_t *st)
+{
+    if (st && st->btnSave) {
+        e9ui_button_setGlowPulse(st->btnSave, 1);
+    }
+}
+
+static void
+core_options_endKeyCapture(core_options_modal_state_t *st, e9ui_context_t *ctx, int restoreButtonLabel)
+{
+    if (!st) {
+        return;
+    }
+
+    core_options_option_cb_t *cb = st->capturingKeybind;
+    st->capturingKeybind = NULL;
+
+    if (st->container) {
+        st->container->focusable = 0;
+    }
+
+    if (restoreButtonLabel && cb) {
+        core_options_keybindUpdateButtonLabel(cb);
+    }
+
+    if (ctx) {
+        if (st->keyCaptureReturnFocus) {
+            e9ui_setFocus(ctx, st->keyCaptureReturnFocus);
+        } else if (e9ui_getFocus(ctx) == st->container) {
+            e9ui_setFocus(ctx, NULL);
+        }
+    }
+
+    st->keyCaptureReturnFocus = NULL;
+}
+
+static void
+core_options_beginKeyCapture(core_options_option_cb_t *cb, e9ui_context_t *ctx)
+{
+    if (!cb || !cb->st) {
+        return;
+    }
+    core_options_modal_state_t *st = cb->st;
+
+    if (!st->container) {
+        return;
+    }
+
+    if (st->capturingKeybind == cb) {
+        core_options_endKeyCapture(st, ctx, 1);
+        return;
+    }
+
+    core_options_endKeyCapture(st, ctx, 1);
+
+    st->capturingKeybind = cb;
+    st->keyCaptureReturnFocus = cb->button;
+    st->container->focusable = 1;
+    e9ui_setFocus(ctx, st->container);
+    core_options_keybindUpdateButtonLabel(cb);
+}
+
+static void
+core_options_keybindButtonClicked(e9ui_context_t *ctx, void *user)
+{
+    core_options_option_cb_t *cb = (core_options_option_cb_t *)user;
+    core_options_beginKeyCapture(cb, ctx);
+}
+
+static int
+core_options_keybindRowPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    core_options_keybind_row_state_t *st = self ? (core_options_keybind_row_state_t *)self->state : NULL;
+    if (!st || !st->button || !st->button->preferredHeight) {
+        return 0;
+    }
+    int gap = e9ui_scale_px(ctx, 8);
+    int labelW = st->labelWidthPx > 0 ? e9ui_scale_px(ctx, st->labelWidthPx) : 0;
+    int totalW = availW;
+    if (st->totalWidthPx > 0) {
+        int scaled = e9ui_scale_px(ctx, st->totalWidthPx);
+        if (scaled < totalW) {
+            totalW = scaled;
+        }
+    }
+    int buttonW = totalW - labelW - gap;
+    if (buttonW < 0) {
+        buttonW = 0;
+    }
+    return st->button->preferredHeight(st->button, ctx, buttonW);
+}
+
+static void
+core_options_keybindRowLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+    core_options_keybind_row_state_t *st = (core_options_keybind_row_state_t *)self->state;
+    if (!st || !st->button) {
+        return;
+    }
+
+    int gap = e9ui_scale_px(ctx, 8);
+    int labelW = st->labelWidthPx > 0 ? e9ui_scale_px(ctx, st->labelWidthPx) : 0;
+    int totalW = bounds.w;
+    if (st->totalWidthPx > 0) {
+        int scaled = e9ui_scale_px(ctx, st->totalWidthPx);
+        if (scaled < totalW) {
+            totalW = scaled;
+        }
+    }
+    int buttonW = totalW - labelW - gap;
+    if (buttonW < 0) {
+        buttonW = 0;
+    }
+    int buttonH = st->button->preferredHeight ? st->button->preferredHeight(st->button, ctx, buttonW) : 0;
+    int rowH = buttonH > 0 ? buttonH : bounds.h;
+    int rowX = bounds.x + (bounds.w - totalW) / 2;
+    int rowY = bounds.y + (bounds.h - rowH) / 2;
+    e9ui_rect_t buttonRect = { rowX + labelW + gap, rowY, buttonW, rowH };
+    if (st->button->layout) {
+        st->button->layout(st->button, ctx, buttonRect);
+    }
+}
+
+static void
+core_options_keybindRowRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !ctx) {
+        return;
+    }
+    core_options_keybind_row_state_t *st = (core_options_keybind_row_state_t *)self->state;
+    if (!st) {
+        return;
+    }
+
+    if (st->label && *st->label) {
+        TTF_Font *font = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : ctx->font;
+        if (font) {
+            SDL_Color color = (SDL_Color){220, 220, 220, 255};
+            int tw = 0;
+            int th = 0;
+            SDL_Texture *tex = e9ui_text_cache_getText(ctx->renderer, font, st->label, color, &tw, &th);
+            if (tex) {
+                int gap = e9ui_scale_px(ctx, 8);
+                int labelW = st->labelWidthPx > 0 ? e9ui_scale_px(ctx, st->labelWidthPx) : (tw + gap);
+                int totalW = self->bounds.w;
+                if (st->totalWidthPx > 0) {
+                    int scaled = e9ui_scale_px(ctx, st->totalWidthPx);
+                    if (scaled < totalW) {
+                        totalW = scaled;
+                    }
+                }
+                int rowX = self->bounds.x + (self->bounds.w - totalW) / 2;
+                int rowY = self->bounds.y + (self->bounds.h - th) / 2;
+                int textX = rowX + labelW - tw;
+                SDL_Rect dst = { textX, rowY, tw, th };
+                SDL_RenderCopy(ctx->renderer, tex, NULL, &dst);
+            }
+        }
+    }
+
+    if (st->button && st->button->render) {
+        st->button->render(st->button, ctx);
+    }
+}
+
+static void
+core_options_keybindRowDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self || !self->state) {
+        return;
+    }
+    core_options_keybind_row_state_t *st = (core_options_keybind_row_state_t *)self->state;
+    if (st->label) {
+        alloc_free(st->label);
+        st->label = NULL;
+    }
+    alloc_free(st);
+    self->state = NULL;
+}
+
+static e9ui_component_t *
+core_options_makeKeybindRow(core_options_modal_state_t *st,
+                            const struct retro_core_option_v2_definition *def,
+                            const char *label,
+                            core_options_option_cb_t *cb,
+                            int labelWidthPx,
+                            int totalWidthPx)
+{
+    (void)st;
+    if (!def || !label || !cb) {
+        return NULL;
+    }
+
+    e9ui_component_t *row = (e9ui_component_t *)alloc_calloc(1, sizeof(*row));
+    if (!row) {
+        return NULL;
+    }
+    core_options_keybind_row_state_t *rowSt =
+        (core_options_keybind_row_state_t *)alloc_calloc(1, sizeof(*rowSt));
+    if (!rowSt) {
+        alloc_free(row);
+        return NULL;
+    }
+    row->name = "core_options_keybind_row";
+    row->state = rowSt;
+    row->preferredHeight = core_options_keybindRowPreferredHeight;
+    row->layout = core_options_keybindRowLayout;
+    row->render = core_options_keybindRowRender;
+    row->dtor = core_options_keybindRowDtor;
+    rowSt->label = alloc_strdup(label ? label : "");
+    rowSt->labelWidthPx = labelWidthPx;
+    rowSt->totalWidthPx = totalWidthPx;
+
+    e9ui_component_t *button = e9ui_button_make("Unbound", core_options_keybindButtonClicked, cb);
+    if (button) {
+        cb->button = button;
+        rowSt->button = button;
+        e9ui_button_setLeftJustify(button, 16);
+        e9ui_button_setLargestLabel(button, "Press key...");
+        core_options_keybindUpdateButtonLabel(cb);
+        if (def->info && *def->info) {
+            e9ui_setTooltip(button, def->info);
+            e9ui_setTooltip(row, def->info);
+        }
+        e9ui_child_add(row, button, 0);
+    }
+
+    return row;
+}
+
+static void
 core_options_buildOptionsForCategory(core_options_modal_state_t *st, e9ui_context_t *ctx)
 {
     if (!st || !ctx || !st->optionsStack || !st->defs) {
         return;
     }
+    core_options_endKeyCapture(st, ctx, 0);
     e9ui_child_destroyChildren(st->optionsStack, ctx);
     core_options_clearOptionCbs(st);
 
@@ -529,7 +1067,8 @@ core_options_buildOptionsForCategory(core_options_modal_state_t *st, e9ui_contex
             continue;
         }
         if (st->targetCoreRunning) {
-            if (!libretro_host_isCoreOptionVisible(def->key)) {
+            if (!core_options_isDebuggerSyntheticOptionKey(def->key) &&
+                !libretro_host_isCoreOptionVisible(def->key)) {
                 continue;
             }
         }
@@ -544,17 +1083,6 @@ core_options_buildOptionsForCategory(core_options_modal_state_t *st, e9ui_contex
             continue;
         }
 
-        e9ui_select_option_t opts[RETRO_NUM_CORE_OPTION_VALUES_MAX];
-        int optCount = 0;
-        for (int j = 0; j < RETRO_NUM_CORE_OPTION_VALUES_MAX; ++j) {
-            if (!def->values[j].value) {
-                break;
-            }
-            opts[optCount].value = def->values[j].value;
-            opts[optCount].label = def->values[j].label;
-            optCount++;
-        }
-
         const char *label = (def->desc && *def->desc) ? def->desc : def->key;
         label = core_options_labelStripCategoryPath(label);
         const char *value = core_options_getValue(st, def->key);
@@ -564,6 +1092,31 @@ core_options_buildOptionsForCategory(core_options_modal_state_t *st, e9ui_contex
             cb->st = st;
             cb->key = def->key;
             core_options_trackOptionCb(st, cb);
+        }
+
+        if (debugger_input_bindings_isOptionKey(def->key)) {
+            if (cb) {
+                cb->keyboardBinding = 1;
+            }
+            e9ui_component_t *row = core_options_makeKeybindRow(st, def, label, cb, labelWidthPx, totalWidthPx);
+            if (!row) {
+                continue;
+            }
+            (void)value;
+            e9ui_stack_addFixed(st->optionsStack, row);
+            e9ui_stack_addFixed(st->optionsStack, e9ui_vspacer_make(rowGapPx));
+            continue;
+        }
+
+        e9ui_select_option_t opts[RETRO_NUM_CORE_OPTION_VALUES_MAX];
+        int optCount = 0;
+        for (int j = 0; j < RETRO_NUM_CORE_OPTION_VALUES_MAX; ++j) {
+            if (!def->values[j].value) {
+                break;
+            }
+            opts[optCount].value = def->values[j].value;
+            opts[optCount].label = def->values[j].label;
+            optCount++;
         }
 
         const char *enabledValue = NULL;
@@ -686,9 +1239,7 @@ core_options_optionCheckboxChanged(e9ui_component_t *self, e9ui_context_t *ctx, 
         return;
     }
     core_options_setValue(cb->st, cb->key, value);
-    if (cb->st->btnSave) {
-        e9ui_button_setGlowPulse(cb->st->btnSave, 1);
-    }
+    core_options_setSavePending(cb->st);
 }
 
 static void
@@ -796,6 +1347,47 @@ core_options_containerRender(e9ui_component_t *self, e9ui_context_t *ctx)
     }
 }
 
+static int
+core_options_containerHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+{
+    if (!self || !ctx || !ev || ev->type != SDL_KEYDOWN) {
+        return 0;
+    }
+    core_options_modal_state_t *st = (core_options_modal_state_t *)self->state;
+    if (!st || !st->capturingKeybind || e9ui_getFocus(ctx) != self) {
+        return 0;
+    }
+    if (ev->key.repeat) {
+        return 1;
+    }
+
+    core_options_option_cb_t *cb = st->capturingKeybind;
+    SDL_Keycode key = ev->key.keysym.sym;
+
+    if (key == SDLK_ESCAPE) {
+        core_options_endKeyCapture(st, ctx, 1);
+        return 1;
+    }
+
+    if (key == SDLK_BACKSPACE || key == SDLK_DELETE) {
+        core_options_setValue(st, cb->key, "");
+        core_options_setSavePending(st);
+        core_options_endKeyCapture(st, ctx, 1);
+        return 1;
+    }
+
+    char storedValue[64];
+    if (!debugger_input_bindings_buildStoredValue(key, storedValue, sizeof(storedValue))) {
+        core_options_endKeyCapture(st, ctx, 1);
+        return 1;
+    }
+
+    core_options_setValue(st, cb->key, storedValue);
+    core_options_setSavePending(st);
+    core_options_endKeyCapture(st, ctx, 1);
+    return 1;
+}
+
 static void
 core_options_containerDtor(e9ui_component_t *self, e9ui_context_t *ctx)
 {
@@ -879,7 +1471,10 @@ core_options_makeBody(core_options_modal_state_t *st, e9ui_context_t *ctx)
     container->preferredHeight = core_options_containerPreferredHeight;
     container->layout = core_options_containerLayout;
     container->render = core_options_containerRender;
+    container->handleEvent = core_options_containerHandleEvent;
     container->dtor = core_options_containerDtor;
+    container->focusable = 0;
+    st->container = container;
     e9ui_child_add(container, layout, 0);
     return container;
 }
@@ -1066,34 +1661,54 @@ core_options_showModal(e9ui_context_t *ctx)
         }
         return;
     }
-    st->defs = defs;
-    st->defCount = defCount;
-    st->cats = cats;
-    st->catCount = catCount;
     st->targetCoreRunning = targetIsRunning ? 1 : 0;
     if (usedProbe) {
         st->probedOptions = probed;
         st->probed = 1;
     }
 
-    for (size_t i = 0; i < defCount; ++i) {
-        const struct retro_core_option_v2_definition *def = &defs[i];
+    if (!core_options_cloneWithDebuggerInput(selectedTarget ? selectedTarget->coreIndex : TARGET_NEOGEO,
+                                             cats,
+                                             catCount,
+                                             defs,
+                                             defCount,
+                                             &st->ownedCats,
+                                             &st->ownedCatCount,
+                                             &st->ownedDefs,
+                                             &st->ownedDefCount)) {
+        core_options_freeState(st);
+        alloc_free(st);
+        return;
+    }
+    st->cats = st->ownedCats;
+    st->catCount = st->ownedCatCount;
+    st->defs = st->ownedDefs;
+    st->defCount = st->ownedDefCount;
+
+    for (size_t i = 0; i < st->defCount; ++i) {
+        const struct retro_core_option_v2_definition *def = &st->defs[i];
         if (!def->key) {
             continue;
         }
         core_options_kv_t *ent = core_options_getOrAddEntry(st, def->key);
-        if (!ent) {
-            continue;
-        }
-        const char *initial = NULL;
+	    if (!ent) {
+	        continue;
+	    }
+	    const char *initial = NULL;
+	    int allowSyntheticCurrent = 1;
+	    if (e9ui && e9ui->settingsModal && cfg && cfg->target && cfg->target != target) {
+	        allowSyntheticCurrent = 0;
+	    }
 #if 1
-	if (cfg && e9ui && e9ui->settingsModal) {
-	  initial = cfg->target->coreOptionGetValue(def->key);
-	}
+		if (cfg && cfg->target && core_options_isDebuggerSyntheticOptionKey(def->key) && allowSyntheticCurrent) {
+		  initial = cfg->target->coreOptionGetValue(def->key);
+		} else if (cfg && e9ui && e9ui->settingsModal && !core_options_isDebuggerSyntheticOptionKey(def->key)) {
+		  initial = cfg->target->coreOptionGetValue(def->key);
+		}
 
-	if (!initial && st->targetCoreRunning) {
+	if (!initial && st->targetCoreRunning && !core_options_isDebuggerSyntheticOptionKey(def->key)) {
 	  initial = libretro_host_getCoreOptionValue(def->key);
-        } else {
+        } else if (!core_options_isDebuggerSyntheticOptionKey(def->key)) {
 	  initial = libretro_host_getCoreOptionOverrideValue(def->key);
         }
 #else //TODO

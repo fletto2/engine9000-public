@@ -17,6 +17,7 @@
 #include "alloc.h"
 #include "breakpoints.h"
 #include "debugger.h"
+#include "debugger_input_bindings.h"
 #include "json.h"
 #include "libretro_host.h"
 #include "machine.h"
@@ -38,6 +39,11 @@ typedef struct rom_config_protect_entry {
     int enabled;
 } rom_config_protect_entry_t;
 
+typedef struct rom_config_input_binding_entry {
+    char *key;
+    char *value;
+} rom_config_input_binding_entry_t;
+
 typedef struct rom_config_data {
     uint64_t romChecksum;
     rom_config_bp_entry_t *breakpoints;
@@ -51,12 +57,211 @@ typedef struct rom_config_data {
     int hasElf;
     int hasSource;
     int hasToolchain;
+    rom_config_input_binding_entry_t *inputBindings;
+    size_t inputBindingCount;
+    rom_config_input_binding_entry_t *targetOptions;
+    size_t targetOptionCount;
 } rom_config_data_t;
 
 char rom_config_activeElfPath[PATH_MAX];
 char rom_config_activeSourceDir[PATH_MAX];
 char rom_config_activeToolchainPrefix[PATH_MAX];
 int rom_config_activeInit = 0;
+static rom_config_input_binding_entry_t *rom_config_activeInputBindings = NULL;
+static size_t rom_config_activeInputBindingCount = 0;
+
+static void
+rom_config_setActiveDefaultsFromCurrentSystem(void);
+
+static void
+rom_config_freeInputBindingEntries(rom_config_input_binding_entry_t **entriesPtr, size_t *countPtr)
+{
+    if (!entriesPtr || !countPtr) {
+        return;
+    }
+    rom_config_input_binding_entry_t *entries = *entriesPtr;
+    size_t count = *countPtr;
+    if (entries) {
+        for (size_t i = 0; i < count; ++i) {
+            alloc_free(entries[i].key);
+            alloc_free(entries[i].value);
+        }
+        alloc_free(entries);
+    }
+    *entriesPtr = NULL;
+    *countPtr = 0;
+}
+
+static const char *
+rom_config_findInputBindingValue(const rom_config_input_binding_entry_t *entries, size_t count, const char *key)
+{
+    if (!entries || !key || !*key) {
+        return NULL;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (entries[i].key && strcmp(entries[i].key, key) == 0) {
+            return entries[i].value;
+        }
+    }
+    return NULL;
+}
+
+static int
+rom_config_setInputBindingValueInList(rom_config_input_binding_entry_t **entriesPtr,
+                                      size_t *countPtr,
+                                      const char *key,
+                                      const char *value)
+{
+    if (!entriesPtr || !countPtr || !key || !*key) {
+        return 0;
+    }
+
+    rom_config_input_binding_entry_t *entries = *entriesPtr;
+    size_t count = *countPtr;
+
+    for (size_t i = 0; i < count; ++i) {
+        if (!entries[i].key || strcmp(entries[i].key, key) != 0) {
+            continue;
+        }
+        if (!value || !*value) {
+            alloc_free(entries[i].key);
+            alloc_free(entries[i].value);
+            for (size_t j = i + 1; j < count; ++j) {
+                entries[j - 1] = entries[j];
+            }
+            count--;
+            if (count == 0) {
+                alloc_free(entries);
+                entries = NULL;
+            } else {
+                rom_config_input_binding_entry_t *shrunk =
+                    (rom_config_input_binding_entry_t *)alloc_realloc(entries, count * sizeof(*entries));
+                if (shrunk) {
+                    entries = shrunk;
+                }
+            }
+            *entriesPtr = entries;
+            *countPtr = count;
+            return 1;
+        }
+        alloc_free(entries[i].value);
+        entries[i].value = alloc_strdup(value);
+        *entriesPtr = entries;
+        *countPtr = count;
+        return 1;
+    }
+
+    if (!value || !*value) {
+        return 1;
+    }
+
+    rom_config_input_binding_entry_t *next =
+        (rom_config_input_binding_entry_t *)alloc_realloc(entries, (count + 1) * sizeof(*entries));
+    if (!next) {
+        return 0;
+    }
+    entries = next;
+    memset(&entries[count], 0, sizeof(entries[count]));
+    entries[count].key = alloc_strdup(key);
+    entries[count].value = alloc_strdup(value);
+    *entriesPtr = entries;
+    *countPtr = count + 1;
+    return 1;
+}
+
+static void
+rom_config_applyParsedInputBindingsToActive(const rom_config_data_t *data)
+{
+    rom_config_clearActiveInputBindings();
+    if (!data || !data->inputBindings || data->inputBindingCount == 0) {
+        return;
+    }
+    for (size_t i = 0; i < data->inputBindingCount; ++i) {
+        const char *key = data->inputBindings[i].key;
+        const char *value = data->inputBindings[i].value;
+        if (!key || !*key || !value) {
+            continue;
+        }
+        rom_config_setActiveInputBindingValue(key, value);
+    }
+}
+
+const char *
+rom_config_getActiveInputBindingValue(const char *key)
+{
+    return rom_config_findInputBindingValue(rom_config_activeInputBindings,
+                                            rom_config_activeInputBindingCount,
+                                            key);
+}
+
+void
+rom_config_setActiveInputBindingValue(const char *key, const char *value)
+{
+    if (!debugger_input_bindings_isOptionKey(key)) {
+        return;
+    }
+    if (!rom_config_activeInit) {
+        rom_config_setActiveDefaultsFromCurrentSystem();
+    }
+    (void)rom_config_setInputBindingValueInList(&rom_config_activeInputBindings,
+                                                &rom_config_activeInputBindingCount,
+                                                key,
+                                                value);
+}
+
+void
+rom_config_clearActiveInputBindings(void)
+{
+    rom_config_freeInputBindingEntries(&rom_config_activeInputBindings,
+                                       &rom_config_activeInputBindingCount);
+}
+
+static void
+rom_config_clearActiveTargetCustomOptions(target_iface_t *targetIface)
+{
+    if (!targetIface || !targetIface->romConfigClearActiveCustomOptions) {
+        return;
+    }
+    targetIface->romConfigClearActiveCustomOptions();
+}
+
+static void
+rom_config_applyParsedTargetOptionsToActive(const rom_config_data_t *data, target_iface_t *targetIface)
+{
+    rom_config_clearActiveTargetCustomOptions(targetIface);
+    if (!data || !targetIface || !targetIface->romConfigSetActiveCustomOptionValue ||
+        !data->targetOptions || data->targetOptionCount == 0) {
+        return;
+    }
+    for (size_t i = 0; i < data->targetOptionCount; ++i) {
+        const char *key = data->targetOptions[i].key;
+        const char *value = data->targetOptions[i].value;
+        if (!key || !*key || !value) {
+            continue;
+        }
+        targetIface->romConfigSetActiveCustomOptionValue(key, value);
+    }
+}
+
+static void
+rom_config_collectActiveTargetOptions(rom_config_data_t *data, target_iface_t *targetIface)
+{
+    if (!data || !targetIface || !targetIface->romConfigCustomOptionCount ||
+        !targetIface->romConfigCustomOptionKeyAt || !targetIface->romConfigGetActiveCustomOptionValue) {
+        return;
+    }
+    for (size_t i = 0; i < targetIface->romConfigCustomOptionCount(); ++i) {
+        const char *key = targetIface->romConfigCustomOptionKeyAt(i);
+        const char *value = key ? targetIface->romConfigGetActiveCustomOptionValue(key) : NULL;
+        if (!key || !*key || !value || !*value) {
+            continue;
+        }
+        (void)rom_config_setInputBindingValueInList(&data->targetOptions,
+                                                    &data->targetOptionCount,
+                                                    key,
+                                                    value);
+    }
+}
 
 static const char *
 rom_config_basename(const char *path)
@@ -503,6 +708,8 @@ rom_config_freeData(rom_config_data_t *data)
     if (!data) {
         return;
     }
+    rom_config_freeInputBindingEntries(&data->inputBindings, &data->inputBindingCount);
+    rom_config_freeInputBindingEntries(&data->targetOptions, &data->targetOptionCount);
     alloc_free(data->breakpoints);
     alloc_free(data->protects);
     memset(data, 0, sizeof(*data));
@@ -587,6 +794,68 @@ rom_config_parseFile(const char *path, rom_config_data_t *outData)
         if (rom_config_jsonGetString(rom_config_jsonObjectFind(cfgObj, "toolchain_prefix"), outData->toolchainPrefix, sizeof(outData->toolchainPrefix)) &&
             outData->toolchainPrefix[0]) {
             outData->hasToolchain = 1;
+        }
+    }
+
+    {
+        struct json_value_s *inputValue = rom_config_jsonObjectFind(object, "input_bindings");
+        struct json_object_s *inputObj = inputValue ? json_value_as_object(inputValue) : NULL;
+        if (inputObj) {
+            for (struct json_object_element_s *elem = inputObj->start; elem; elem = elem->next) {
+                if (!elem->name || !elem->name->string || elem->name->string_size == 0) {
+                    continue;
+                }
+                size_t keyLen = elem->name->string_size;
+                char keyBuf[128];
+                if (keyLen >= sizeof(keyBuf)) {
+                    continue;
+                }
+                memcpy(keyBuf, elem->name->string, keyLen);
+                keyBuf[keyLen] = '\0';
+                if (!debugger_input_bindings_isOptionKey(keyBuf)) {
+                    continue;
+                }
+                char valueBuf[128];
+                if (!rom_config_jsonGetString(elem->value, valueBuf, sizeof(valueBuf))) {
+                    continue;
+                }
+                if (!valueBuf[0]) {
+                    continue;
+                }
+                (void)rom_config_setInputBindingValueInList(&outData->inputBindings,
+                                                            &outData->inputBindingCount,
+                                                            keyBuf,
+                                                            valueBuf);
+            }
+        }
+    }
+    {
+        struct json_value_s *targetValue = rom_config_jsonObjectFind(object, "target_options");
+        struct json_object_s *targetObj = targetValue ? json_value_as_object(targetValue) : NULL;
+        if (targetObj) {
+            for (struct json_object_element_s *elem = targetObj->start; elem; elem = elem->next) {
+                if (!elem->name || !elem->name->string || elem->name->string_size == 0) {
+                    continue;
+                }
+                size_t keyLen = elem->name->string_size;
+                char keyBuf[128];
+                if (keyLen >= sizeof(keyBuf)) {
+                    continue;
+                }
+                memcpy(keyBuf, elem->name->string, keyLen);
+                keyBuf[keyLen] = '\0';
+                char valueBuf[128];
+                if (!rom_config_jsonGetString(elem->value, valueBuf, sizeof(valueBuf))) {
+                    continue;
+                }
+                if (!valueBuf[0]) {
+                    continue;
+                }
+                (void)rom_config_setInputBindingValueInList(&outData->targetOptions,
+                                                            &outData->targetOptionCount,
+                                                            keyBuf,
+                                                            valueBuf);
+            }
         }
     }
 
@@ -700,6 +969,48 @@ rom_config_writeJsonFile(const char *path, const char *romPath, const rom_config
     fprintf(f, "    \"toolchain_prefix\": \"%s\"\n", data->hasToolchain ? data->toolchainPrefix : "");
     fprintf(f, "  },\n");
 
+    fprintf(f, "  \"input_bindings\": {\n");
+    {
+        int wroteAny = 0;
+        for (size_t i = 0; i < data->inputBindingCount; ++i) {
+            const rom_config_input_binding_entry_t *entry = &data->inputBindings[i];
+            if (!entry->key || !entry->value || !entry->key[0] || !entry->value[0]) {
+                continue;
+            }
+            if (!debugger_input_bindings_isOptionKey(entry->key)) {
+                continue;
+            }
+            if (wroteAny) {
+                fprintf(f, ",\n");
+            }
+            fprintf(f, "    \"%s\": \"%s\"", entry->key, entry->value);
+            wroteAny = 1;
+        }
+        if (wroteAny) {
+            fprintf(f, "\n");
+        }
+    }
+    fprintf(f, "  },\n");
+    fprintf(f, "  \"target_options\": {\n");
+    {
+        int wroteAny = 0;
+        for (size_t i = 0; i < data->targetOptionCount; ++i) {
+            const rom_config_input_binding_entry_t *entry = &data->targetOptions[i];
+            if (!entry->key || !entry->value || !entry->key[0] || !entry->value[0]) {
+                continue;
+            }
+            if (wroteAny) {
+                fprintf(f, ",\n");
+            }
+            fprintf(f, "    \"%s\": \"%s\"", entry->key, entry->value);
+            wroteAny = 1;
+        }
+        if (wroteAny) {
+            fprintf(f, "\n");
+        }
+    }
+    fprintf(f, "  },\n");
+
     fprintf(f, "  \"breakpoints\": [\n");
     for (size_t i = 0; i < data->breakpointCount; ++i) {
         const rom_config_bp_entry_t *bp = &data->breakpoints[i];
@@ -734,13 +1045,19 @@ rom_config_setActiveDefaultsFromCurrentSystem(void)
     rom_config_activeElfPath[sizeof(rom_config_activeElfPath) - 1] = '\0';
     rom_config_activeSourceDir[sizeof(rom_config_activeSourceDir) - 1] = '\0';
     rom_config_activeToolchainPrefix[sizeof(rom_config_activeToolchainPrefix) - 1] = '\0';
+    rom_config_clearActiveInputBindings();
+    rom_config_clearActiveTargetCustomOptions(target);
     rom_config_activeInit = 1;
 }
 
 void
 rom_config_syncActiveFromCurrentSystem(void)
 {
-    rom_config_setActiveDefaultsFromCurrentSystem();
+    target->setActiveDefaultsFromCurrentSystem();
+    rom_config_activeElfPath[sizeof(rom_config_activeElfPath) - 1] = '\0';
+    rom_config_activeSourceDir[sizeof(rom_config_activeSourceDir) - 1] = '\0';
+    rom_config_activeToolchainPrefix[sizeof(rom_config_activeToolchainPrefix) - 1] = '\0';
+    rom_config_activeInit = 1;
 }
 
 static void
@@ -855,17 +1172,22 @@ rom_config_loadSettingsForSelectedRom(void)
         strncpy(rom_config_activeToolchainPrefix, data.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
         rom_config_activeToolchainPrefix[sizeof(rom_config_activeToolchainPrefix) - 1] = '\0';
     }
+    rom_config_applyParsedInputBindingsToActive(&data);
+    rom_config_applyParsedTargetOptionsToActive(&data, target);
     rom_config_applyActiveSettingsToCurrentSystem();
     rom_config_freeData(&data);
 }
 
 int
 rom_config_loadSettingsForRom(const char *saveDir, const char *romPath,
+                              target_iface_t *targetIface,
                               char *outElfPath, size_t elfCap,
                               char *outSourceDir, size_t sourceCap,
                               char *outToolchainPrefix, size_t toolchainCap,
                               int *outHasElf, int *outHasSource, int *outHasToolchain)
 {
+    rom_config_clearActiveInputBindings();
+    rom_config_clearActiveTargetCustomOptions(targetIface);
     if (outHasElf) {
         *outHasElf = 0;
     }
@@ -949,6 +1271,9 @@ rom_config_loadSettingsForRom(const char *saveDir, const char *romPath,
         outToolchainPrefix[toolchainCap - 1] = '\0';
     }
 
+    rom_config_applyParsedInputBindingsToActive(&data);
+    rom_config_applyParsedTargetOptionsToActive(&data, targetIface);
+
     rom_config_freeData(&data);
     return 1;
 }
@@ -997,9 +1322,14 @@ rom_config_loadRuntimeStateOnBoot(void)
         protect_clear();
         breakpoints_markDirty();
         trainer_markDirty();
+        rom_config_clearActiveInputBindings();
+        rom_config_clearActiveTargetCustomOptions(target);
         rom_config_freeData(&data);
         return;
     }
+
+    rom_config_applyParsedInputBindingsToActive(&data);
+    rom_config_applyParsedTargetOptionsToActive(&data, target);
 
     rom_config_clearBreakpointsCore();
     protect_clear();
@@ -1083,6 +1413,21 @@ rom_config_saveOnExit(void)
         data.hasSource = rom_config_activeSourceDir[0] ? 1 : 0;
         data.hasToolchain = rom_config_activeToolchainPrefix[0] ? 1 : 0;
     }
+    for (size_t i = 0; i < debugger_input_bindings_specCount(); ++i) {
+        const debugger_input_bindings_spec_t *spec = debugger_input_bindings_specAt(i);
+        if (!spec || !spec->optionKey) {
+            continue;
+        }
+        const char *value = rom_config_getActiveInputBindingValue(spec->optionKey);
+        if (!value || !*value) {
+            continue;
+        }
+        (void)rom_config_setInputBindingValueInList(&data.inputBindings,
+                                                    &data.inputBindingCount,
+                                                    spec->optionKey,
+                                                    value);
+    }
+    rom_config_collectActiveTargetOptions(&data, target);
     const machine_breakpoint_t *bps = NULL;
     int bpCount = 0;
     machine_getBreakpoints(&debugger.machine, &bps, &bpCount);
@@ -1130,7 +1475,27 @@ rom_config_saveOnExit(void)
 }
 
 void
+rom_config_saveCurrentRomSettings(void)
+{
+    const char *romPath = rom_config_activeRomPath();
+    const char *saveDir = rom_config_saveDir(NULL);
+    if (!romPath || !*romPath || !saveDir || !*saveDir || !rom_config_pathExistsDir(saveDir)) {
+        return;
+    }
+    if (!rom_config_activeInit) {
+        rom_config_setActiveDefaultsFromCurrentSystem();
+    }
+    rom_config_saveSettingsForRom(saveDir,
+                                  romPath,
+                                  target,
+                                  rom_config_activeElfPath[0] ? rom_config_activeElfPath : NULL,
+                                  rom_config_activeSourceDir[0] ? rom_config_activeSourceDir : NULL,
+                                  rom_config_activeToolchainPrefix[0] ? rom_config_activeToolchainPrefix : NULL);
+}
+
+void
 rom_config_saveSettingsForRom(const char *saveDir, const char *romPath,
+                              target_iface_t *targetIface,
                               const char *elfPath, const char *sourceDir,
                               const char *toolchainPrefix)
 {
@@ -1185,7 +1550,23 @@ rom_config_saveSettingsForRom(const char *saveDir, const char *romPath,
         data.toolchainPrefix[sizeof(data.toolchainPrefix) - 1] = '\0';
         data.hasToolchain = 1;
     }
-
+    rom_config_freeInputBindingEntries(&data.inputBindings, &data.inputBindingCount);
+    rom_config_freeInputBindingEntries(&data.targetOptions, &data.targetOptionCount);
+    for (size_t i = 0; i < debugger_input_bindings_specCount(); ++i) {
+        const debugger_input_bindings_spec_t *spec = debugger_input_bindings_specAt(i);
+        if (!spec || !spec->optionKey) {
+            continue;
+        }
+        const char *value = rom_config_getActiveInputBindingValue(spec->optionKey);
+        if (!value || !*value) {
+            continue;
+        }
+        (void)rom_config_setInputBindingValueInList(&data.inputBindings,
+                                                    &data.inputBindingCount,
+                                                    spec->optionKey,
+                                                    value);
+    }
+    rom_config_collectActiveTargetOptions(&data, targetIface ? targetIface : target);
     const char *activeRom = rom_config_activeRomPath();
     if (activeRom && strcmp(activeRom, romPath) == 0) {
         strncpy(rom_config_activeElfPath, data.elfPath, sizeof(rom_config_activeElfPath) - 1);

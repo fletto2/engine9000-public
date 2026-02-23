@@ -60,7 +60,7 @@ static uint32_t e9ui_fullscreenHintStart = 0;
 static TTF_Font *e9ui_fullscreenHintFont = NULL;
 static int e9ui_fullscreenHintSize = 0;
 static const char *e9ui_transientMessage = NULL;
-static const char e9ui_fullscreenMessage[] = "PRESS F12 TO EXIT FULLSCREEN";
+static char e9ui_fullscreenMessage[160] = "PRESS F12 TO EXIT FULLSCREEN";
 static int e9ui_loadingLayout = 0;
 static int e9ui_fpsEnabled = 0;
 static uint32_t e9ui_fpsLastTick = 0;
@@ -68,6 +68,19 @@ static int e9ui_fpsFrames = 0;
 static float e9ui_fpsValue = 0.0f;
 static TTF_Font *e9ui_fpsFont = NULL;
 static int e9ui_fpsFontSize = 0;
+
+static void
+e9ui_updateFullscreenHintMessage(void)
+{
+    char binding[64];
+    if (hotkeys_formatActionBindingDisplay("fullscreen", binding, sizeof(binding)) && binding[0]) {
+        snprintf(e9ui_fullscreenMessage, sizeof(e9ui_fullscreenMessage),
+                 "PRESS %s TO EXIT FULLSCREEN", binding);
+        return;
+    }
+    snprintf(e9ui_fullscreenMessage, sizeof(e9ui_fullscreenMessage),
+             "PRESS FULLSCREEN HOTKEY TO EXIT FULLSCREEN");
+}
 
 int
 e9ui_getFpsEnabled(void)
@@ -1041,19 +1054,28 @@ e9ui_pointInBounds(const e9ui_component_t *comp, int x, int y)
 static e9ui_tooltip_result_t
 e9ui_findTooltipRecursive(e9ui_component_t *comp, e9ui_context_t *ctx, int x, int y, int depth)
 {
+    (void)ctx;
     e9ui_tooltip_result_t best = { NULL, -1, NULL };
     if (!comp || !e9ui_pointInBounds(comp, x, y)) {
         return best;
     }
-    e9ui_child_iterator iter;
-    if (e9ui_child_iterateChildren(comp, &iter)) {
-        for (e9ui_child_iterator *it = e9ui_child_interateNext(&iter);
+    e9ui_child_reverse_iterator iter;
+    if (e9ui_child_iterateChildrenReverse(comp, &iter)) {
+        for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
              it;
-             it = e9ui_child_interateNext(&iter)) {
+             it = e9ui_child_iteratePrev(&iter)) {
+            if (!it->child || e9ui_getHidden(it->child) || !e9ui_pointInBounds(it->child, x, y)) {
+                continue;
+            }
             e9ui_tooltip_result_t candidate =
                 e9ui_findTooltipRecursive(it->child, ctx, x, y, depth + 1);
             if (!e9ui_getHidden(candidate.comp) && candidate.depth > best.depth) {
                 best = candidate;
+            }
+            if (it->child->name &&
+                (strcmp(it->child->name, "e9ui_modal") == 0 ||
+                 strcmp(it->child->name, "e9ui_window_embedded") == 0)) {
+                return best;
             }
         }
     }
@@ -1063,6 +1085,44 @@ e9ui_findTooltipRecursive(e9ui_component_t *comp, e9ui_context_t *ctx, int x, in
         best.comp = comp;
     }
     return best;
+}
+
+static int
+e9ui_pointerBlockedByOverlayRecursive(e9ui_component_t *comp, int x, int y)
+{
+    if (!comp || e9ui_getHidden(comp) || !e9ui_pointInBounds(comp, x, y)) {
+        return 0;
+    }
+    if (comp->name &&
+        (strcmp(comp->name, "e9ui_modal") == 0 ||
+         strcmp(comp->name, "e9ui_window_embedded") == 0)) {
+        return 1;
+    }
+    e9ui_child_reverse_iterator iter;
+    if (!e9ui_child_iterateChildrenReverse(comp, &iter)) {
+        return 0;
+    }
+    for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+         it;
+         it = e9ui_child_iteratePrev(&iter)) {
+        if (!it->child) {
+            continue;
+        }
+        if (e9ui_pointerBlockedByOverlayRecursive(it->child, x, y)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+e9ui_pointerBlockedByOverlayAtCurrentMouse(void)
+{
+    e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
+    if (!root) {
+        return 0;
+    }
+    return e9ui_pointerBlockedByOverlayRecursive(root, e9ui->ctx.mouseX, e9ui->ctx.mouseY);
 }
 
 static void
@@ -1293,6 +1353,7 @@ e9ui_setFullscreenComponent(e9ui_component_t *comp)
     }
     e9ui->fullscreen = comp;
     if (comp) {
+        e9ui_updateFullscreenHintMessage();
         e9ui_fullscreenHintStart = debugger_uiTicks();
         e9ui_transientMessage = e9ui_fullscreenMessage;
     }
@@ -1847,6 +1908,8 @@ e9ui_processEvents(void)
             if (sprite_debug_is_window_id(ev.motion.windowID) || mega_sprite_debug_ownsWindowId(ev.motion.windowID)) {
                 continue;
             }
+            int rawXrel = ev.motion.xrel;
+            int rawYrel = ev.motion.yrel;
             int prevX = e9ui->ctx.mouseX;
             int prevY = e9ui->ctx.mouseY;
             e9ui->ctx.mousePrevX = prevX;
@@ -1855,8 +1918,13 @@ e9ui_processEvents(void)
             int scaledY = e9ui_scale_coord(&e9ui->ctx, ev.motion.y);
             ev.motion.x = scaledX;
             ev.motion.y = scaledY;
-            ev.motion.xrel = scaledX - prevX;
-            ev.motion.yrel = scaledY - prevY;
+            if (SDL_GetRelativeMouseMode() == SDL_TRUE) {
+                ev.motion.xrel = e9ui_scale_coord(&e9ui->ctx, rawXrel);
+                ev.motion.yrel = e9ui_scale_coord(&e9ui->ctx, rawYrel);
+            } else {
+                ev.motion.xrel = scaledX - prevX;
+                ev.motion.yrel = scaledY - prevY;
+            }
             e9ui->ctx.mouseX = scaledX;
             e9ui->ctx.mouseY = scaledY;
             e9ui->mouseX = scaledX;
@@ -1864,7 +1932,9 @@ e9ui_processEvents(void)
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
             }
-            e9ui_text_select_handleEvent(&e9ui->ctx, &ev);
+            if (!e9ui_pointerBlockedByOverlayAtCurrentMouse()) {
+                e9ui_text_select_handleEvent(&e9ui->ctx, &ev);
+            }
         }
         else if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP) {
             if (!mainWindowId || ev.button.windowID != mainWindowId) {
@@ -1884,7 +1954,9 @@ e9ui_processEvents(void)
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
             }
-            e9ui_text_select_handleEvent(&e9ui->ctx, &ev);
+            if (!e9ui_pointerBlockedByOverlayAtCurrentMouse()) {
+                e9ui_text_select_handleEvent(&e9ui->ctx, &ev);
+            }
         }
         else if (ev.type == SDL_MOUSEWHEEL) {
             if (!mainWindowId || ev.wheel.windowID != mainWindowId) {
@@ -1970,11 +2042,17 @@ e9ui_processEvents(void)
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
             }
+            e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
+            if (root && e9ui_windowDispatchEmbeddedKeydown(root, &e9ui->ctx, &ev)) {
+                continue;
+            }
             SDL_Keycode key = ev.key.keysym.sym;
             SDL_Keymod mods = ev.key.keysym.mod;
             int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+            if (hotkeys_handleKeydown(&e9ui->ctx, &ev.key)) {
+                continue;
+            }
             if (!accel && key == SDLK_TAB && !e9ui_getFocus(&e9ui->ctx)) {
-                e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
                 int reverse = (mods & KMOD_SHIFT) ? 1 : 0;
                 e9ui_component_t *next = e9ui_focusFindNext(root, NULL, reverse);
                 if (next) {
@@ -1982,16 +2060,12 @@ e9ui_processEvents(void)
                     continue;
                 }
             }
-            if (hotkeys_handleKeydown(&e9ui->ctx, &ev.key)) {
-                continue;
-            }
             // Focused component gets first crack at keydown
             int consumed = 0;
             e9ui_component_t *focused = e9ui_getFocus(&e9ui->ctx);
             if (!consumed && focused && focused->handleEvent) {
                 consumed = focused->handleEvent(focused, &e9ui->ctx, &ev);
             }
-            e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
             if (!consumed && root && root->handleEvent) {
                 (void)root->handleEvent(root, &e9ui->ctx, &ev);
             }

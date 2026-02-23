@@ -18,6 +18,7 @@
 #include "prompt.h"
 #include "debugger.h"
 #include "console_cmd.h"
+#include "hotkeys.h"
 
 #define PROMPT_HISTORY_MAX 10000
 #define PROMPT_HISTORY_MAX_BYTES (8 * 1024 * 1024)
@@ -504,7 +505,13 @@ prompt_render(e9ui_component_t *self, e9ui_context_t *ctx)
         if (!*machine_getRunningState(debugger.machine)) {
             e9ui_component_t *focus = e9ui_getFocus(ctx);
             if (focus != self && focus != st->textbox) {
-                const char *inactive = "  USE TAB OR MOUSE ACTIVATE CONSOLE";
+                char inactive[128];
+                char binding[64];
+                if (hotkeys_formatActionBindingDisplay("prompt_focus", binding, sizeof(binding)) && binding[0]) {
+                    snprintf(inactive, sizeof(inactive), "  USE %s OR MOUSE ACTIVATE CONSOLE", binding);
+                } else {
+                    snprintf(inactive, sizeof(inactive), "  USE MOUSE ACTIVATE CONSOLE");
+                }
                 int iw = 0, ih = 0;
                 SDL_Texture *it = e9ui_text_cache_getText(ctx->renderer, useFont, inactive, colc, &iw, &ih);
                 if (it) {

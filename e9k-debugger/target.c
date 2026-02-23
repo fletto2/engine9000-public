@@ -58,6 +58,33 @@ target_setConfigDefaults(void)
     target_applyConfigDefaultsFor(megadrive);
 }
 
+target_iface_t *
+target_getByIndex(int index)
+{
+    if (index < 0 || index >= (int)target_targetCount) {
+        return NULL;
+    }
+    return target_targets[index];
+}
+
+int
+target_coreOptionsIsSyntheticOptionKey(const char *key)
+{
+    if (!key || !*key) {
+        return 0;
+    }
+    for (size_t i = 0; i < target_targetCount; ++i) {
+        target_iface_t *iface = target_targets[i];
+        if (!iface || !iface->coreOptionsIsSyntheticOptionKey) {
+            continue;
+        }
+        if (iface->coreOptionsIsSyntheticOptionKey(key)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void
 target_settingsClearAllOptions(void)
 {

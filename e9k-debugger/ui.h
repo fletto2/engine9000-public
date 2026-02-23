@@ -30,3 +30,9 @@ ui_copyFramebufferToClipboard(void);
 
 void
 ui_refreshSpeedButton(void);
+
+void
+ui_refreshHotkeyTooltips(void);
+
+void
+ui_toggleRollingSavePauseResume(void);

@@ -12,10 +12,12 @@
 #include <string.h>
 
 #include "alloc.h"
+#include "debugger_input_bindings.h"
 #include "emu_mega.h"
 #include "e9ui.h"
 #include "libretro.h"
 #include "mega_sprite_debug.h"
+#include "target.h"
 
 typedef struct
 {
@@ -394,47 +396,12 @@ emu_mega_renderHistogram(SDL_Renderer *renderer, const SDL_Rect *dst, const e9k_
 static int
 emu_mega_mapKeyToJoypad(SDL_Keycode key, unsigned *id)
 {
-    if (!id) {
-        return 0;
-    }
-    switch (key) {
-    case SDLK_UP:
-        *id = RETRO_DEVICE_ID_JOYPAD_UP;
-        return 1;
-    case SDLK_DOWN:
-        *id = RETRO_DEVICE_ID_JOYPAD_DOWN;
-        return 1;
-    case SDLK_LEFT:
-        *id = RETRO_DEVICE_ID_JOYPAD_LEFT;
-        return 1;
-    case SDLK_RIGHT:
-        *id = RETRO_DEVICE_ID_JOYPAD_RIGHT;
-        return 1;
-    case SDLK_LCTRL:
-    case SDLK_RCTRL:
-        *id = RETRO_DEVICE_ID_JOYPAD_B;
-        return 1;
-    case SDLK_LALT:
-    case SDLK_RALT:
-        *id = RETRO_DEVICE_ID_JOYPAD_A;
-        return 1;
-    case SDLK_SPACE:
-        *id = RETRO_DEVICE_ID_JOYPAD_Y;
-        return 1;
-    case SDLK_LSHIFT:
-    case SDLK_RSHIFT:
-        *id = RETRO_DEVICE_ID_JOYPAD_X;
-        return 1;
-    case SDLK_1:
-        *id = RETRO_DEVICE_ID_JOYPAD_START;
-        return 1;
-    case SDLK_5:
-        *id = RETRO_DEVICE_ID_JOYPAD_SELECT;
-        return 1;
-    default:
-        break;
-    }
-    return 0;
+    return debugger_input_bindings_mapKeyToJoypad(TARGET_MEGADRIVE,
+                                                  (target && target->coreOptionGetValue)
+                                                      ? target->coreOptionGetValue
+                                                      : NULL,
+                                                  key,
+                                                  id);
 }
 
 static uint16_t

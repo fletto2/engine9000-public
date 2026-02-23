@@ -81,6 +81,16 @@ typedef struct target_iface
     SDL_Texture *(*getBadgeTexture)(SDL_Renderer *renderer, struct target_iface *t, int *outW, int *outH);
     void (*configControllerPorts)(void);
     int (*controllerMapButton)(SDL_GameControllerButton button, unsigned *outId);
+    size_t (*romConfigCustomOptionCount)(void);
+    const char *(*romConfigCustomOptionKeyAt)(size_t index);
+    const char *(*romConfigGetActiveCustomOptionValue)(const char *key);
+    void (*romConfigSetActiveCustomOptionValue)(const char *key, const char *value);
+    void (*romConfigClearActiveCustomOptions)(void);
+    int (*coreOptionsIsSyntheticOptionKey)(const char *key);
+    size_t (*coreOptionsSyntheticDefCount)(void);
+    const struct retro_core_option_v2_definition *(*coreOptionsSyntheticDefAt)(size_t index);
+    size_t (*coreOptionsMapDebuggerInputSpecIndex)(size_t specIndex);
+    const char *(*coreOptionsDebuggerInputLabel)(const char *optionKey, const char *defaultLabel);
 } target_iface_t;
 
 void
@@ -97,6 +107,12 @@ target_settingsClearAllOptions(void);
 
 void
 target_setConfigDefaults(void);
+
+target_iface_t *
+target_getByIndex(int index);
+
+int
+target_coreOptionsIsSyntheticOptionKey(const char *key);
 
 target_iface_t *target_amiga(void);
 

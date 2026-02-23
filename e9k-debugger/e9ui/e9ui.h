@@ -39,6 +39,7 @@
 #include "e9ui_scale.h"
 #include "e9ui_link.h"
 #include "e9ui_checkbox.h"
+#include "e9ui_window.h"
 #include "e9ui_theme_defaults.h"
 #include "e9ui_theme_presets.h"
 #include "e9ui_theme.h"

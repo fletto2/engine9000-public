@@ -19,6 +19,34 @@ e9ui_event_pointInBounds(const e9ui_component_t *comp, int x, int y)
            y >= comp->bounds.y && y < comp->bounds.y + comp->bounds.h;
 }
 
+static int
+e9ui_event_componentContainsBlockingWindow(e9ui_component_t *comp)
+{
+    if (!comp || e9ui_getHidden(comp)) {
+        return 0;
+    }
+    if (comp->name &&
+        (strcmp(comp->name, "e9ui_modal") == 0 ||
+         strcmp(comp->name, "e9ui_window_embedded") == 0)) {
+        return 1;
+    }
+    e9ui_child_reverse_iterator iter;
+    if (!e9ui_child_iterateChildrenReverse(comp, &iter)) {
+        return 0;
+    }
+    for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+         it;
+         it = e9ui_child_iteratePrev(&iter)) {
+        if (!it->child) {
+            continue;
+        }
+        if (e9ui_event_componentContainsBlockingWindow(it->child)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static e9ui_mouse_button_t
 e9ui_event_translateMouseButton(Uint8 button)
 {
@@ -150,6 +178,16 @@ e9ui_event_processChildren(e9ui_component_t *comp, e9ui_context_t *ctx, const e9
     if (ev && (ev->type == SDL_MOUSEMOTION || ev->type == SDL_MOUSEBUTTONUP)) {
         allow_multiple = 1;
     }
+    int hasPointer = 0;
+    if (ev) {
+        if (ev->type == SDL_MOUSEMOTION) {
+            hasPointer = 1;
+        } else if (ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP) {
+            hasPointer = 1;
+        } else if (ev->type == SDL_MOUSEWHEEL) {
+            hasPointer = 1;
+        }
+    }
     int consumed = 0;
     e9ui_child_reverse_iterator iter;
     if (!e9ui_child_iterateChildrenReverse(comp, &iter)) {
@@ -163,7 +201,7 @@ e9ui_event_processChildren(e9ui_component_t *comp, e9ui_context_t *ctx, const e9
         }
         if (e9ui_event_process(it->child, ctx, ev)) {
             consumed = 1;
-            if (it->child->name && strcmp(it->child->name, "e9ui_modal") == 0) {
+            if (hasPointer && e9ui_event_componentContainsBlockingWindow(it->child)) {
                 return 1;
             }
             if (!allow_multiple) {

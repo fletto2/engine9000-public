@@ -14,8 +14,10 @@
 #include <string.h>
 
 #include "sprite_debug.h"
+#include "alloc.h"
 #include "debugger.h"
 #include "config.h"
+#include "e9ui.h"
 
 #define NG_COORD_SIZE 512
 #define NG_WRAP_MASK 0x1FF
@@ -40,8 +42,10 @@
 #define SCREEN_HEIGHT 224
 
 typedef struct sprite_debug_state {
+    e9ui_window_t *windowHost;
     SDL_Window *window;
     SDL_Renderer *renderer;
+    e9ui_component_t *embeddedBodyHost;
     SDL_Texture *texture;
     uint32_t *pixels;
     size_t pixels_cap;
@@ -59,15 +63,37 @@ typedef struct sprite_debug_state {
     uint32_t last_hash;
     int cached_valid;
     int open;
+    int closeRequested;
     int hist_x0_anchor;
     uint32_t window_id;
     int always_on_top_state;
     int main_window_focused;
     int sprite_window_focused;
+    e9k_debug_sprite_state_t lastState;
+    int hasLastState;
 } sprite_debug_state_t;
 
 static sprite_debug_state_t s_dbg = {0};
 static int sprite_debug_histogramEnabled = 1;
+
+typedef struct sprite_debug_embedded_body_state {
+    int unused;
+} sprite_debug_embedded_body_state_t;
+
+static e9ui_window_backend_t
+sprite_debug_windowBackend(void)
+{
+    return e9ui_window_backend_embedded;
+}
+
+static int
+sprite_debug_isEmbeddedBackend(void)
+{
+    if (!s_dbg.windowHost) {
+        return 0;
+    }
+    return e9ui_windowIsEmbedded(s_dbg.windowHost);
+}
 
 static int
 sprite_debug_parseInt(const char *value, int *out)
@@ -90,6 +116,18 @@ sprite_debug_parseInt(const char *value, int *out)
 static void
 sprite_debug_captureWindowRect(void)
 {
+    if (sprite_debug_isEmbeddedBackend()) {
+        e9ui_rect_t rect = e9ui_windowGetEmbeddedRect(s_dbg.windowHost);
+        const e9ui_context_t *scaleCtx = e9ui ? &e9ui->ctx : NULL;
+        if (scaleCtx && rect.w > 0 && rect.h > 0) {
+            s_dbg.winX = e9ui_unscale_px(scaleCtx, rect.x);
+            s_dbg.winY = e9ui_unscale_px(scaleCtx, rect.y);
+            s_dbg.winW = e9ui_unscale_px(scaleCtx, rect.w);
+            s_dbg.winH = e9ui_unscale_px(scaleCtx, rect.h);
+            s_dbg.winHasSaved = 1;
+        }
+        return;
+    }
     if (!s_dbg.window) {
         return;
     }
@@ -101,17 +139,10 @@ sprite_debug_captureWindowRect(void)
 static void
 sprite_debug_updateAlwaysOnTop(void)
 {
-#ifndef E9K_DISABLE_ALWAYS_ON_TOP
-    if (!s_dbg.window) {
+    if (!s_dbg.windowHost) {
         return;
     }
-    int shouldStayOnTop = (s_dbg.main_window_focused || s_dbg.sprite_window_focused) ? 1 : 0;
-    if (s_dbg.always_on_top_state == shouldStayOnTop) {
-        return;
-    }
-    SDL_SetWindowAlwaysOnTop(s_dbg.window, shouldStayOnTop ? SDL_TRUE : SDL_FALSE);
-    s_dbg.always_on_top_state = shouldStayOnTop;
-#endif
+    e9ui_windowUpdateAlwaysOnTop(s_dbg.windowHost);
 }
 
 static void
@@ -125,13 +156,27 @@ sprite_debug_updateScale(void)
 }
 
 static void
-sprite_debug_presentTexture(int base_w, int base_h)
+sprite_debug_presentTexture(int base_w, int base_h, int presentFrame)
 {
-    int out_w = 0;
-    int out_h = 0;
-    SDL_GetRendererOutputSize(s_dbg.renderer, &out_w, &out_h);
+    SDL_Rect viewport = { 0, 0, 0, 0 };
+    SDL_RenderGetViewport(s_dbg.renderer, &viewport);
+    int out_w = viewport.w;
+    int out_h = viewport.h;
     if (out_w <= 0 || out_h <= 0) {
-        SDL_GetWindowSize(s_dbg.window, &out_w, &out_h);
+        SDL_GetRendererOutputSize(s_dbg.renderer, &out_w, &out_h);
+        viewport.x = 0;
+        viewport.y = 0;
+        viewport.w = out_w;
+        viewport.h = out_h;
+    }
+    if (out_w <= 0 || out_h <= 0) {
+        if (s_dbg.window) {
+            SDL_GetWindowSize(s_dbg.window, &out_w, &out_h);
+            viewport.x = 0;
+            viewport.y = 0;
+            viewport.w = out_w;
+            viewport.h = out_h;
+        }
     }
     float scale_x = out_w > 0 ? (float)out_w / (float)base_w : 1.0f;
     float scale_y = out_h > 0 ? (float)out_h / (float)base_h : 1.0f;
@@ -145,7 +190,8 @@ sprite_debug_presentTexture(int base_w, int base_h)
     int dst_y = (out_h - dst_h) / 2;
     SDL_Rect dst = { dst_x, dst_y, dst_w, dst_h };
     SDL_SetRenderDrawColor(s_dbg.renderer, 0, 0, 0, 255);
-    SDL_RenderClear(s_dbg.renderer);
+    SDL_Rect clearRect = { 0, 0, out_w, out_h };
+    SDL_RenderFillRect(s_dbg.renderer, &clearRect);
     SDL_Rect src = { 0, 0, base_w, base_h };
     SDL_RenderCopy(s_dbg.renderer, s_dbg.texture, &src, &dst);
     if (sprite_debug_histogramEnabled) {
@@ -158,7 +204,9 @@ sprite_debug_presentTexture(int base_w, int base_h)
                               dst_h };
         SDL_RenderCopy(s_dbg.renderer, s_dbg.texture, &hist_src, &hist_dst);
     }
-    SDL_RenderPresent(s_dbg.renderer);
+    if (presentFrame) {
+        SDL_RenderPresent(s_dbg.renderer);
+    }
 }
 
 static void
@@ -171,6 +219,160 @@ sprite_debug_refocusMain(void)
     SDL_ShowWindow(main_win);
     SDL_RaiseWindow(main_win);
     SDL_SetWindowInputFocus(main_win);
+}
+
+static e9ui_rect_t
+sprite_debug_embeddedDefaultRect(const e9ui_context_t *ctx)
+{
+    e9ui_rect_t rect = {
+        e9ui_scale_px(ctx, 96),
+        e9ui_scale_px(ctx, 96),
+        e9ui_scale_px(ctx, 768),
+        e9ui_scale_px(ctx, 768)
+    };
+    return rect;
+}
+
+static e9ui_rect_t
+sprite_debug_embeddedRectFromSaved(const e9ui_context_t *ctx)
+{
+    e9ui_rect_t rect = sprite_debug_embeddedDefaultRect(ctx);
+    if (s_dbg.winHasSaved && s_dbg.winW > 0 && s_dbg.winH > 0) {
+        rect.x = e9ui_scale_px(ctx, s_dbg.winX);
+        rect.y = e9ui_scale_px(ctx, s_dbg.winY);
+        rect.w = e9ui_scale_px(ctx, s_dbg.winW);
+        rect.h = e9ui_scale_px(ctx, s_dbg.winH);
+    }
+    return rect;
+}
+
+static void
+sprite_debug_embeddedClampRectSize(e9ui_rect_t *rect, const e9ui_context_t *ctx)
+{
+    if (!rect || !ctx) {
+        return;
+    }
+    int minW = e9ui_scale_px(ctx, 420);
+    int minH = e9ui_scale_px(ctx, 360);
+    if (rect->w < minW) {
+        rect->w = minW;
+    }
+    if (rect->h < minH) {
+        rect->h = minH;
+    }
+    if (ctx->winW > 0 && rect->w > ctx->winW) {
+        rect->w = ctx->winW;
+    }
+    if (ctx->winH > 0 && rect->h > ctx->winH) {
+        rect->h = ctx->winH;
+    }
+}
+
+static int
+sprite_debug_embeddedBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)self;
+    (void)ctx;
+    (void)availW;
+    return 0;
+}
+
+static void
+sprite_debug_embeddedBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+sprite_debug_renderFrameInternal(const e9k_debug_sprite_state_t *st, int presentFrame);
+
+static void
+sprite_debug_embeddedBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !ctx || !ctx->renderer) {
+        return;
+    }
+    if (!s_dbg.open || !s_dbg.hasLastState) {
+        return;
+    }
+    SDL_Rect prevViewport;
+    SDL_Rect viewport = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
+    SDL_Rect prevClip = { 0, 0, 0, 0 };
+    int hadClip = SDL_RenderIsClipEnabled(ctx->renderer) ? 1 : 0;
+    if (hadClip) {
+        SDL_RenderGetClipRect(ctx->renderer, &prevClip);
+    }
+    SDL_RenderGetViewport(ctx->renderer, &prevViewport);
+    SDL_RenderSetViewport(ctx->renderer, &viewport);
+    if (hadClip) {
+        SDL_Rect localClip = {
+            prevClip.x - self->bounds.x,
+            prevClip.y - self->bounds.y,
+            prevClip.w,
+            prevClip.h
+        };
+        SDL_Rect viewportLocal = { 0, 0, self->bounds.w, self->bounds.h };
+        SDL_Rect clipped;
+        if (SDL_IntersectRect(&localClip, &viewportLocal, &clipped)) {
+            SDL_RenderSetClipRect(ctx->renderer, &clipped);
+        } else {
+            SDL_Rect empty = { 0, 0, 0, 0 };
+            SDL_RenderSetClipRect(ctx->renderer, &empty);
+        }
+    }
+    s_dbg.window = ctx->window;
+    s_dbg.renderer = ctx->renderer;
+    sprite_debug_renderFrameInternal(&s_dbg.lastState, 0);
+    SDL_RenderSetViewport(ctx->renderer, &prevViewport);
+    if (hadClip) {
+        SDL_RenderSetClipRect(ctx->renderer, &prevClip);
+    }
+}
+
+static void
+sprite_debug_embeddedBodyDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    sprite_debug_embedded_body_state_t *st = (sprite_debug_embedded_body_state_t *)self->state;
+    alloc_free(st);
+    self->state = NULL;
+}
+
+static e9ui_component_t *
+sprite_debug_makeEmbeddedBodyHost(void)
+{
+    e9ui_component_t *host = (e9ui_component_t *)alloc_calloc(1, sizeof(*host));
+    if (!host) {
+        return NULL;
+    }
+    sprite_debug_embedded_body_state_t *st =
+        (sprite_debug_embedded_body_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!st) {
+        alloc_free(host);
+        return NULL;
+    }
+    host->name = "sprite_debug_embedded_body";
+    host->state = st;
+    host->preferredHeight = sprite_debug_embeddedBodyPreferredHeight;
+    host->layout = sprite_debug_embeddedBodyLayout;
+    host->render = sprite_debug_embeddedBodyRender;
+    host->dtor = sprite_debug_embeddedBodyDtor;
+    return host;
+}
+
+static void
+sprite_debug_embeddedWindowCloseRequested(e9ui_window_t *window, void *user)
+{
+    (void)window;
+    (void)user;
+    s_dbg.closeRequested = 1;
 }
 
 static const uint8_t g_lut_hshrink[0x10][0x10] = {
@@ -376,70 +578,59 @@ void
 sprite_debug_toggle(void)
 {
     if (!s_dbg.open) {
-        s_dbg.window = SDL_CreateWindow(
-            "Sprite Debug",
-            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-            768, 768,
-            SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE
-        );
-        if (s_dbg.window) {
-            s_dbg.renderer = SDL_CreateRenderer(s_dbg.window, -1, SDL_RENDERER_ACCELERATED);
-            if (!s_dbg.renderer) {
-                s_dbg.renderer = SDL_CreateRenderer(s_dbg.window, -1, SDL_RENDERER_SOFTWARE);
-            }
-            if (s_dbg.renderer) {
-                int lw = NG_COORD_W;
-                int lh = NG_COORD_H;
-                if (sprite_debug_histogramEnabled) {
-                    lw += DBG_GAP + DBG_HIST_WIDTH;
-                }
-                s_dbg.logicalW = lw;
-                s_dbg.logicalH = lh;
-                SDL_RenderSetIntegerScale(s_dbg.renderer, SDL_FALSE);
-                sprite_debug_updateScale();
-                if (s_dbg.winHasSaved) {
-                    SDL_SetWindowPosition(s_dbg.window, s_dbg.winX, s_dbg.winY);
-                    SDL_SetWindowSize(s_dbg.window, s_dbg.winW, s_dbg.winH);
-                } else {
-                    int main_w = 0;
-                    int main_h = 0;
-                    if (e9ui->ctx.window) {
-                        SDL_GetWindowSize(e9ui->ctx.window, &main_w, &main_h);
-                    }
-                    if (main_w > 0 && main_h > 0) {
-                        int target_w = main_w / 2;
-                        int target_h = main_h / 2;
-                        SDL_SetWindowSize(s_dbg.window, target_w, target_h);
-                    } else {
-                        SDL_SetWindowSize(s_dbg.window, lw, lh);
-                    }
-                }
-                s_dbg.always_on_top_state = -1;
-                s_dbg.main_window_focused = 0;
-                if (e9ui && e9ui->ctx.window) {
-                    uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
-                    s_dbg.main_window_focused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-                }
-                uint32_t spriteFlags = SDL_GetWindowFlags(s_dbg.window);
-                s_dbg.sprite_window_focused = (spriteFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-                sprite_debug_updateAlwaysOnTop();
-                s_dbg.texture = SDL_CreateTexture(s_dbg.renderer, SDL_PIXELFORMAT_ARGB8888,
-                                                  SDL_TEXTUREACCESS_STREAMING, lw, lh);
-                s_dbg.tex_w = lw;
-                s_dbg.tex_h = lh;
-                s_dbg.hist_x0_anchor = -1;
-                s_dbg.open = 1;
-                s_dbg.window_id = SDL_GetWindowID(s_dbg.window);
-            } else {
-                SDL_DestroyWindow(s_dbg.window);
-                s_dbg.window = NULL;
-            }
+        s_dbg.windowHost = e9ui_windowCreate(sprite_debug_windowBackend());
+        if (!s_dbg.windowHost) {
+            return;
         }
+        int lw = NG_COORD_W;
+        int lh = NG_COORD_H;
+        if (sprite_debug_histogramEnabled) {
+            lw += DBG_GAP + DBG_HIST_WIDTH;
+        }
+        s_dbg.logicalW = lw;
+        s_dbg.logicalH = lh;
+        s_dbg.always_on_top_state = -1;
+        s_dbg.main_window_focused = 0;
+        if (e9ui && e9ui->ctx.window) {
+            uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
+            s_dbg.main_window_focused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+            e9ui_windowSetMainWindowFocused(s_dbg.windowHost, s_dbg.main_window_focused);
+        }
+        s_dbg.sprite_window_focused = 0;
+        s_dbg.embeddedBodyHost = sprite_debug_makeEmbeddedBodyHost();
+        if (!s_dbg.embeddedBodyHost) {
+            e9ui_windowDestroy(s_dbg.windowHost);
+            s_dbg.windowHost = NULL;
+            return;
+        }
+        e9ui_rect_t rect = sprite_debug_embeddedRectFromSaved(&e9ui->ctx);
+        sprite_debug_embeddedClampRectSize(&rect, &e9ui->ctx);
+        if (!s_dbg.winHasSaved) {
+            int winW = e9ui->ctx.winW > 0 ? e9ui->ctx.winW : 1280;
+            int winH = e9ui->ctx.winH > 0 ? e9ui->ctx.winH : 720;
+            rect.x = (winW - rect.w) / 2;
+            rect.y = (winH - rect.h) / 2;
+        }
+        if (!e9ui_windowOpenEmbedded(s_dbg.windowHost,
+                                     "Sprite Debug",
+                                     rect,
+                                     s_dbg.embeddedBodyHost,
+                                     sprite_debug_embeddedWindowCloseRequested,
+                                     NULL,
+                                     &e9ui->ctx)) {
+            e9ui_childDestroy(s_dbg.embeddedBodyHost, &e9ui->ctx);
+            s_dbg.embeddedBodyHost = NULL;
+            e9ui_windowDestroy(s_dbg.windowHost);
+            s_dbg.windowHost = NULL;
+            return;
+        }
+        s_dbg.window = e9ui->ctx.window;
+        s_dbg.renderer = e9ui->ctx.renderer;
+        s_dbg.window_id = e9ui_windowGetWindowId(s_dbg.windowHost);
+        s_dbg.hist_x0_anchor = -1;
+        s_dbg.open = 1;
+        s_dbg.closeRequested = 0;
     } else {
-        if (s_dbg.renderer) {
-            SDL_DestroyRenderer(s_dbg.renderer);
-            s_dbg.renderer = NULL;
-        }
         if (s_dbg.texture) {
             SDL_DestroyTexture(s_dbg.texture);
             s_dbg.texture = NULL;
@@ -456,16 +647,21 @@ sprite_debug_toggle(void)
         s_dbg.hist_grad_ready = 0;
         s_dbg.cached_valid = 0;
         s_dbg.last_hash = 0;
-        if (s_dbg.window) {
-            SDL_DestroyWindow(s_dbg.window);
-            s_dbg.window = NULL;
+        if (s_dbg.windowHost) {
+            e9ui_windowDestroy(s_dbg.windowHost);
+            s_dbg.windowHost = NULL;
         }
+        s_dbg.embeddedBodyHost = NULL;
         s_dbg.hist_x0_anchor = -1;
         s_dbg.open = 0;
+        s_dbg.closeRequested = 0;
         s_dbg.window_id = 0;
         s_dbg.always_on_top_state = 0;
         s_dbg.main_window_focused = 0;
         s_dbg.sprite_window_focused = 0;
+        s_dbg.hasLastState = 0;
+        s_dbg.window = NULL;
+        s_dbg.renderer = NULL;
         sprite_debug_refocusMain();
     }
 }
@@ -524,6 +720,9 @@ void
 sprite_debug_setMainWindowFocused(int focused)
 {
     s_dbg.main_window_focused = focused ? 1 : 0;
+    if (s_dbg.windowHost) {
+        e9ui_windowSetMainWindowFocused(s_dbg.windowHost, s_dbg.main_window_focused);
+    }
     if (!s_dbg.open) {
         return;
     }
@@ -531,15 +730,12 @@ sprite_debug_setMainWindowFocused(int focused)
 }
 
 void
-sprite_debug_render(const e9k_debug_sprite_state_t *st)
+sprite_debug_renderFrameInternal(const e9k_debug_sprite_state_t *st, int presentFrame)
 {
     if (!s_dbg.open || !s_dbg.renderer) {
         return;
     }
     if (!st || !st->vram) {
-        return;
-    }
-    if (!s_dbg.texture) {
         return;
     }
     const uint16_t *vram = st->vram;
@@ -569,7 +765,7 @@ sprite_debug_render(const e9k_debug_sprite_state_t *st)
     }
     uint32_t hash = sprite_dbgHashSprites(scb2, scb3, scb4);
     if (s_dbg.cached_valid && hash == s_dbg.last_hash && s_dbg.texture) {
-        sprite_debug_presentTexture(base_w, base_h);
+        sprite_debug_presentTexture(base_w, base_h, presentFrame);
         return;
     }
     size_t needed = (size_t)ext_w * (size_t)ext_h;
@@ -794,9 +990,42 @@ sprite_debug_render(const e9k_debug_sprite_state_t *st)
     }
 
     SDL_UpdateTexture(s_dbg.texture, NULL, pixels, ext_w * (int)sizeof(uint32_t));
-    sprite_debug_presentTexture(base_w, base_h);
+    sprite_debug_presentTexture(base_w, base_h, presentFrame);
     s_dbg.cached_valid = 1;
     s_dbg.last_hash = hash;
+}
+
+void
+sprite_debug_render(const e9k_debug_sprite_state_t *st)
+{
+    if (s_dbg.closeRequested && s_dbg.open) {
+        sprite_debug_toggle();
+        return;
+    }
+    if (st) {
+        s_dbg.lastState = *st;
+        s_dbg.hasLastState = 1;
+    }
+    if (!s_dbg.open) {
+        return;
+    }
+    if (sprite_debug_isEmbeddedBackend()) {
+        int prevHasSaved = s_dbg.winHasSaved;
+        int prevX = s_dbg.winX;
+        int prevY = s_dbg.winY;
+        int prevW = s_dbg.winW;
+        int prevH = s_dbg.winH;
+        sprite_debug_captureWindowRect();
+        if (!prevHasSaved ||
+            s_dbg.winX != prevX ||
+            s_dbg.winY != prevY ||
+            s_dbg.winW != prevW ||
+            s_dbg.winH != prevH) {
+            config_saveConfig();
+        }
+        return;
+    }
+    sprite_debug_renderFrameInternal(st ? st : (s_dbg.hasLastState ? &s_dbg.lastState : NULL), 1);
 }
 
 void

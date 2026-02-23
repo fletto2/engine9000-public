@@ -53,6 +53,10 @@ typedef struct custom_log_filter_cb {
     int filterIndex;
 } custom_log_filter_cb_t;
 
+typedef struct custom_log_embedded_body_state {
+    custom_log_state_t *ui;
+} custom_log_embedded_body_state_t;
+
 typedef struct custom_log_layout {
     int winW;
     int winH;
@@ -78,21 +82,18 @@ struct custom_log_state {
     int open;
     int closeRequested;
     int warnedMissingOption;
+    e9ui_window_t *windowHost;
     SDL_Window *window;
     SDL_Renderer *renderer;
     e9ui_context_t ctx;
     e9ui_component_t *filterRoot;
     e9ui_component_t *filterTextboxes[CUSTOM_LOG_FILTER_COUNT];
     custom_log_filter_cb_t filterCbs[CUSTOM_LOG_FILTER_COUNT];
-    uint32_t windowId;
     int winX;
     int winY;
     int winW;
     int winH;
     int winHasSaved;
-    int mainWindowFocused;
-    int customLogWindowFocused;
-    int alwaysOnTopState;
     int scrollRow;
     e9k_debug_ami_custom_log_entry_t *entries;
     size_t entryCount;
@@ -108,6 +109,18 @@ struct custom_log_state {
 };
 
 static custom_log_state_t custom_log_state = {0};
+
+static e9ui_window_backend_t
+custom_log_windowBackend(void)
+{
+    return e9ui_window_backend_embedded;
+}
+
+static e9ui_component_t *
+custom_log_makeEmbeddedBodyHost(custom_log_state_t *ui);
+
+static void
+custom_log_embeddedWindowCloseRequested(e9ui_window_t *window, void *user);
 
 static int
 custom_log_parseInt(const char *value, int *out)
@@ -136,6 +149,84 @@ custom_log_measureLineHeight(void)
         lineHeight = 16;
     }
     return lineHeight;
+}
+
+static int
+custom_log_isEmbeddedBackend(const custom_log_state_t *ui)
+{
+    if (!ui || !ui->windowHost) {
+        return 0;
+    }
+    return e9ui_windowIsEmbedded(ui->windowHost);
+}
+
+static e9ui_rect_t
+custom_log_embeddedDefaultRect(const e9ui_context_t *ctx)
+{
+    e9ui_rect_t rect = {
+        e9ui_scale_px(ctx, 96),
+        e9ui_scale_px(ctx, 96),
+        e9ui_scale_px(ctx, 540),
+        e9ui_scale_px(ctx, 360)
+    };
+    return rect;
+}
+
+static e9ui_rect_t
+custom_log_embeddedRectFromSaved(const custom_log_state_t *ui, const e9ui_context_t *ctx)
+{
+    e9ui_rect_t rect = custom_log_embeddedDefaultRect(ctx);
+    if (!ui || !ui->winHasSaved || ui->winW <= 0 || ui->winH <= 0) {
+        return rect;
+    }
+    rect.x = e9ui_scale_px(ctx, ui->winX);
+    rect.y = e9ui_scale_px(ctx, ui->winY);
+    rect.w = e9ui_scale_px(ctx, ui->winW);
+    rect.h = e9ui_scale_px(ctx, ui->winH);
+    return rect;
+}
+
+static int
+custom_log_componentContains(const e9ui_component_t *root, const e9ui_component_t *needle)
+{
+    if (!root || !needle) {
+        return 0;
+    }
+    if (root == needle) {
+        return 1;
+    }
+    for (list_t *ptr = root->children; ptr; ptr = ptr->next) {
+        e9ui_component_child_t *container = (e9ui_component_child_t *)ptr->data;
+        if (!container || !container->component) {
+            continue;
+        }
+        if (custom_log_componentContains(container->component, needle)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+custom_log_embeddedClampRectSize(e9ui_rect_t *rect, const e9ui_context_t *ctx)
+{
+    if (!rect || !ctx) {
+        return;
+    }
+    int minW = e9ui_scale_px(ctx, 420);
+    int minH = e9ui_scale_px(ctx, 260);
+    if (rect->w < minW) {
+        rect->w = minW;
+    }
+    if (rect->h < minH) {
+        rect->h = minH;
+    }
+    if (ctx->winW > 0 && rect->w > ctx->winW) {
+        rect->w = ctx->winW;
+    }
+    if (ctx->winH > 0 && rect->h > ctx->winH) {
+        rect->h = ctx->winH;
+    }
 }
 
 static float
@@ -179,7 +270,12 @@ custom_log_computeLayout(const custom_log_state_t *ui, custom_log_layout_t *out)
     }
     int winW = 0;
     int winH = 0;
-    SDL_GetRendererOutputSize(ui->renderer, &winW, &winH);
+    if (custom_log_isEmbeddedBackend(ui) && ui->ctx.winW > 0 && ui->ctx.winH > 0) {
+        winW = ui->ctx.winW;
+        winH = ui->ctx.winH;
+    } else {
+        SDL_GetRendererOutputSize(ui->renderer, &winW, &winH);
+    }
     if (winW <= 0 || winH <= 0) {
         return 0;
     }
@@ -775,6 +871,21 @@ static void
 custom_log_captureWindowRect(void)
 {
     custom_log_state_t *ui = &custom_log_state;
+    if (!ui || !ui->windowHost) {
+        return;
+    }
+    if (custom_log_isEmbeddedBackend(ui)) {
+        e9ui_rect_t rect = e9ui_windowGetEmbeddedRect(ui->windowHost);
+        const e9ui_context_t *scaleCtx = e9ui ? &e9ui->ctx : &ui->ctx;
+        if (rect.w > 0 && rect.h > 0) {
+            ui->winX = e9ui_unscale_px(scaleCtx, rect.x);
+            ui->winY = e9ui_unscale_px(scaleCtx, rect.y);
+            ui->winW = e9ui_unscale_px(scaleCtx, rect.w);
+            ui->winH = e9ui_unscale_px(scaleCtx, rect.h);
+            ui->winHasSaved = 1;
+        }
+        return;
+    }
     if (!ui->window) {
         return;
     }
@@ -802,19 +913,11 @@ custom_log_refocusMain(void)
 static void
 custom_log_updateAlwaysOnTop(custom_log_state_t *ui)
 {
-#ifndef E9K_DISABLE_ALWAYS_ON_TOP
-    if (!ui || !ui->window) {
-        return;
-    }
-    int shouldStayOnTop = (ui->mainWindowFocused || ui->customLogWindowFocused) ? 1 : 0;
-    if (ui->alwaysOnTopState == shouldStayOnTop) {
-        return;
-    }
-    SDL_SetWindowAlwaysOnTop(ui->window, shouldStayOnTop ? SDL_TRUE : SDL_FALSE);
-    ui->alwaysOnTopState = shouldStayOnTop;
-#else
     (void)ui;
-#endif
+    if (!ui || !ui->windowHost) {
+        return;
+    }
+    e9ui_windowUpdateAlwaysOnTop(ui->windowHost);
 }
 
 static void
@@ -841,64 +944,103 @@ custom_log_init(void)
         return 1;
     }
 
-    SDL_Window *win = SDL_CreateWindow(CUSTOM_LOG_TITLE,
-                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                       540, 360,
-                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-    if (!win) {
-        debug_error("custom log: SDL_CreateWindow failed: %s", SDL_GetError());
+    ui->windowHost = e9ui_windowCreate(custom_log_windowBackend());
+    if (!ui->windowHost) {
         return 0;
     }
-    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
-    if (!ren) {
-        SDL_DestroyWindow(win);
-        debug_error("custom log: SDL_CreateRenderer failed: %s", SDL_GetError());
-        return 0;
-    }
-    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    if (ui->winHasSaved) {
-        SDL_SetWindowPosition(win, ui->winX, ui->winY);
-        SDL_SetWindowSize(win, ui->winW, ui->winH);
-    }
-
-    ui->window = win;
-    ui->renderer = ren;
-    ui->windowId = SDL_GetWindowID(win);
     memset(&ui->ctx, 0, sizeof(ui->ctx));
-    ui->ctx.window = win;
-    ui->ctx.renderer = ren;
     ui->ctx.font = e9ui->ctx.font;
-    ui->ctx.dpiScale = custom_log_computeDpiScale(&ui->ctx);
     ui->closeRequested = 0;
     ui->warnedMissingOption = 0;
-    ui->alwaysOnTopState = -1;
     ui->scrollRow = 0;
     ui->filterRoot = NULL;
     memset(ui->filters, 0, sizeof(ui->filters));
     for (int i = 0; i < CUSTOM_LOG_FILTER_COUNT; ++i) {
         ui->filterTextboxes[i] = NULL;
     }
-    ui->mainWindowFocused = 0;
-    if (e9ui && e9ui->ctx.window) {
-        uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
-        ui->mainWindowFocused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-    }
-    uint32_t customFlags = SDL_GetWindowFlags(win);
-    ui->customLogWindowFocused = (customFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-    custom_log_updateAlwaysOnTop(ui);
     ui->filterRoot = custom_log_buildFilterRoot(ui);
     if (!ui->filterRoot) {
-        if (ui->renderer) {
-            SDL_DestroyRenderer(ui->renderer);
-            ui->renderer = NULL;
-        }
-        if (ui->window) {
-            SDL_DestroyWindow(ui->window);
-            ui->window = NULL;
-        }
-        ui->windowId = 0;
+        e9ui_windowDestroy(ui->windowHost);
+        ui->windowHost = NULL;
+        ui->renderer = NULL;
+        ui->window = NULL;
         memset(&ui->ctx, 0, sizeof(ui->ctx));
         return 0;
+    }
+    if (custom_log_isEmbeddedBackend(ui)) {
+        e9ui_rect_t rect = custom_log_embeddedRectFromSaved(ui, &e9ui->ctx);
+        custom_log_embeddedClampRectSize(&rect, &e9ui->ctx);
+        if (!ui->winHasSaved) {
+            int winW = e9ui->ctx.winW > 0 ? e9ui->ctx.winW : 1280;
+            int winH = e9ui->ctx.winH > 0 ? e9ui->ctx.winH : 720;
+            rect.x = (winW - rect.w) / 2;
+            rect.y = (winH - rect.h) / 2;
+        }
+        e9ui_component_t *embeddedBodyHost = custom_log_makeEmbeddedBodyHost(ui);
+        if (!embeddedBodyHost) {
+            e9ui_childDestroy(ui->filterRoot, &e9ui->ctx);
+            ui->filterRoot = NULL;
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        if (!e9ui_windowOpenEmbedded(ui->windowHost,
+                                     CUSTOM_LOG_TITLE,
+                                     rect,
+                                     embeddedBodyHost,
+                                     custom_log_embeddedWindowCloseRequested,
+                                     ui,
+                                     &e9ui->ctx)) {
+            ui->filterRoot = NULL;
+            e9ui_childDestroy(embeddedBodyHost, &e9ui->ctx);
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        ui->window = e9ui->ctx.window;
+        ui->renderer = e9ui->ctx.renderer;
+        ui->ctx = e9ui->ctx;
+    } else {
+        if (!e9ui_windowOpenSdl(ui->windowHost,
+                                CUSTOM_LOG_TITLE,
+                                SDL_WINDOWPOS_CENTERED,
+                                SDL_WINDOWPOS_CENTERED,
+                                540,
+                                360,
+                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI)) {
+            debug_error("custom log: SDL_CreateWindow failed: %s", SDL_GetError());
+            e9ui_childDestroy(ui->filterRoot, &ui->ctx);
+            ui->filterRoot = NULL;
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        if (!e9ui_windowCreateSdlRenderer(ui->windowHost, -1, SDL_RENDERER_ACCELERATED)) {
+            debug_error("custom log: SDL_CreateRenderer failed: %s", SDL_GetError());
+            e9ui_childDestroy(ui->filterRoot, &ui->ctx);
+            ui->filterRoot = NULL;
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        SDL_Window *win = e9ui_windowGetSdlWindow(ui->windowHost);
+        SDL_Renderer *ren = e9ui_windowGetSdlRenderer(ui->windowHost);
+        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+        if (ui->winHasSaved) {
+            SDL_SetWindowPosition(win, ui->winX, ui->winY);
+            SDL_SetWindowSize(win, ui->winW, ui->winH);
+        }
+        ui->window = win;
+        ui->renderer = ren;
+        ui->ctx.window = win;
+        ui->ctx.renderer = ren;
+        ui->ctx.dpiScale = custom_log_computeDpiScale(&ui->ctx);
+        if (e9ui && e9ui->ctx.window) {
+            uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
+            e9ui_windowSetMainWindowFocused(ui->windowHost, (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0);
+        }
+        e9ui_windowRefreshSelfFocusedFromFlags(ui->windowHost);
+        custom_log_updateAlwaysOnTop(ui);
     }
 
     ui->open = 1;
@@ -917,7 +1059,8 @@ custom_log_shutdown(void)
     custom_log_captureWindowRect();
     config_saveConfig();
     custom_log_applyEnabledOption(0);
-    if (ui->filterRoot) {
+    int embedded = custom_log_isEmbeddedBackend(ui);
+    if (ui->filterRoot && !embedded) {
         e9ui_childDestroy(ui->filterRoot, &ui->ctx);
         ui->filterRoot = NULL;
     }
@@ -925,14 +1068,15 @@ custom_log_shutdown(void)
         ui->filterTextboxes[i] = NULL;
     }
     e9ui_text_cache_clearRenderer(ui->renderer);
-    if (ui->renderer) {
-        SDL_DestroyRenderer(ui->renderer);
-        ui->renderer = NULL;
+    if (embedded) {
+        ui->filterRoot = NULL;
     }
-    if (ui->window) {
-        SDL_DestroyWindow(ui->window);
-        ui->window = NULL;
+    if (ui->windowHost) {
+        e9ui_windowDestroy(ui->windowHost);
+        ui->windowHost = NULL;
     }
+    ui->renderer = NULL;
+    ui->window = NULL;
     if (ui->entries) {
         free(ui->entries);
         ui->entries = NULL;
@@ -944,7 +1088,6 @@ custom_log_shutdown(void)
 
     ui->open = 0;
     ui->closeRequested = 0;
-    ui->windowId = 0;
     ui->warnedMissingOption = 0;
     ui->scrollRow = 0;
     ui->entryCount = 0;
@@ -956,9 +1099,6 @@ custom_log_shutdown(void)
     ui->framesCaptured = 0;
     ui->allocFailures = 0;
     memset(ui->filters, 0, sizeof(ui->filters));
-    ui->mainWindowFocused = 0;
-    ui->customLogWindowFocused = 0;
-    ui->alwaysOnTopState = 0;
     memset(&ui->ctx, 0, sizeof(ui->ctx));
     custom_log_refocusMain();
 }
@@ -982,14 +1122,14 @@ custom_log_isOpen(void)
 uint32_t
 custom_log_getWindowId(void)
 {
-    return custom_log_state.windowId;
+    return e9ui_windowGetWindowId(custom_log_state.windowHost);
 }
 
 void
 custom_log_setMainWindowFocused(int focused)
 {
     custom_log_state_t *ui = &custom_log_state;
-    ui->mainWindowFocused = focused ? 1 : 0;
+    e9ui_windowSetMainWindowFocused(ui->windowHost, focused);
     if (!ui->open) {
         return;
     }
@@ -1060,10 +1200,10 @@ custom_log_handleEvent(SDL_Event *ev)
             ui->winHasSaved = 1;
             config_saveConfig();
         } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-            ui->customLogWindowFocused = 1;
+            e9ui_windowSetSelfFocused(ui->windowHost, 1);
             custom_log_updateAlwaysOnTop(ui);
         } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-            ui->customLogWindowFocused = 0;
+            e9ui_windowSetSelfFocused(ui->windowHost, 0);
             custom_log_updateAlwaysOnTop(ui);
         }
         return;
@@ -1141,31 +1281,78 @@ custom_log_handleEvent(SDL_Event *ev)
     }
 }
 
-void
-custom_log_render(void)
+static int
+custom_log_embeddedBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
 {
-    custom_log_state_t *ui = &custom_log_state;
-    if (!ui->open || !ui->renderer) {
-        return;
-    }
-    if (ui->closeRequested) {
-        custom_log_shutdown();
-        return;
-    }
+    (void)self;
+    (void)ctx;
+    (void)availW;
+    return 0;
+}
 
-    SDL_SetRenderDrawColor(ui->renderer, 12, 12, 12, 255);
-    SDL_RenderClear(ui->renderer);
+static void
+custom_log_embeddedBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static int
+custom_log_embeddedTranslateEventLocal(e9ui_component_t *self, const e9ui_event_t *ev, e9ui_event_t *out)
+{
+    if (!self || !ev || !out) {
+        return 0;
+    }
+    *out = *ev;
+    if (ev->type == SDL_MOUSEMOTION) {
+        out->motion.x -= self->bounds.x;
+        out->motion.y -= self->bounds.y;
+        return 1;
+    }
+    if (ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP) {
+        out->button.x -= self->bounds.x;
+        out->button.y -= self->bounds.y;
+        return 1;
+    }
+    if (ev->type == SDL_MOUSEWHEEL) {
+        out->wheel.mouseX -= self->bounds.x;
+        out->wheel.mouseY -= self->bounds.y;
+        return 1;
+    }
+    if (ev->type == SDL_KEYDOWN || ev->type == SDL_KEYUP) {
+        return 1;
+    }
+    return 0;
+}
+
+static void
+custom_log_renderFrame(custom_log_state_t *ui, int presentFrame)
+{
+    if (!ui || !ui->renderer) {
+        return;
+    }
     TTF_Font *font = e9ui->ctx.font;
     if (!font) {
-        SDL_RenderPresent(ui->renderer);
+        if (presentFrame) {
+            SDL_RenderPresent(ui->renderer);
+        }
         return;
     }
 
     custom_log_layout_t layout;
     if (!custom_log_computeLayout(ui, &layout)) {
-        SDL_RenderPresent(ui->renderer);
+        if (presentFrame) {
+            SDL_RenderPresent(ui->renderer);
+        }
         return;
     }
+
+    SDL_Rect bgRect = { 0, 0, layout.winW, layout.winH };
+    SDL_SetRenderDrawColor(ui->renderer, 12, 12, 12, 255);
+    SDL_RenderFillRect(ui->renderer, &bgRect);
 
     int winW = layout.winW;
     int lineHeight = layout.lineHeight;
@@ -1176,10 +1363,6 @@ custom_log_render(void)
         (void)custom_log_ensureRowHitCapacity(ui, (size_t)visibleRows);
     }
     ui->ctx.font = font;
-    ui->ctx.window = ui->window;
-    ui->ctx.renderer = ui->renderer;
-    ui->ctx.winW = layout.winW;
-    ui->ctx.winH = layout.winH;
     ui->ctx.focusRoot = ui->filterRoot;
     ui->ctx.focusFullscreen = NULL;
     if (ui->filterRoot && ui->filterRoot->layout) {
@@ -1326,7 +1509,251 @@ custom_log_render(void)
                                (SDL_Color){ 0, 0, 0, 255 });
     }
 
-    SDL_RenderPresent(ui->renderer);
+    if (presentFrame) {
+        SDL_RenderPresent(ui->renderer);
+    }
+}
+
+static int
+custom_log_embeddedBodyHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+{
+    if (!self || !ctx || !ev || !self->state) {
+        return 0;
+    }
+    custom_log_embedded_body_state_t *st = (custom_log_embedded_body_state_t *)self->state;
+    custom_log_state_t *ui = st ? st->ui : NULL;
+    if (!ui || !ui->open) {
+        return 0;
+    }
+    e9ui_event_t localEv;
+    if (!custom_log_embeddedTranslateEventLocal(self, ev, &localEv)) {
+        return 0;
+    }
+    ui->ctx = *ctx;
+    ui->ctx.window = ctx->window;
+    ui->ctx.renderer = ctx->renderer;
+    ui->ctx.winW = self->bounds.w;
+    ui->ctx.winH = self->bounds.h;
+    ui->ctx.mouseX = ctx->mouseX - self->bounds.x;
+    ui->ctx.mouseY = ctx->mouseY - self->bounds.y;
+    ui->ctx.mousePrevX = ctx->mousePrevX - self->bounds.x;
+    ui->ctx.mousePrevY = ctx->mousePrevY - self->bounds.y;
+
+    if (localEv.type == SDL_KEYDOWN) {
+        SDL_Keymod mods = localEv.key.keysym.mod;
+        int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+        if (!accel && localEv.key.keysym.sym == SDLK_TAB) {
+            e9ui_component_t *focus = e9ui_getFocus(ctx);
+            int focusInFilters = (focus && custom_log_componentContains(ui->filterRoot, focus)) ? 1 : 0;
+            if (focusInFilters || !focus) {
+                int reverse = (mods & KMOD_SHIFT) ? 1 : 0;
+                e9ui_component_t *next = e9ui_focusFindNext(ui->filterRoot, focusInFilters ? focus : NULL, reverse);
+                if (next) {
+                    e9ui_setFocus(ctx, next);
+                    return 1;
+                }
+            }
+        }
+    }
+
+    if (ui->filterRoot) {
+        e9ui_component_t *prevFocusRoot = ctx->focusRoot;
+        e9ui_component_t *prevFocusFullscreen = ctx->focusFullscreen;
+        ctx->focusRoot = ui->filterRoot;
+        ctx->focusFullscreen = NULL;
+        if (e9ui_event_process(ui->filterRoot, ctx, &localEv)) {
+            ctx->focusRoot = prevFocusRoot;
+            ctx->focusFullscreen = prevFocusFullscreen;
+            return 1;
+        }
+        ctx->focusRoot = prevFocusRoot;
+        ctx->focusFullscreen = prevFocusFullscreen;
+        if (localEv.type == SDL_MOUSEBUTTONDOWN &&
+            localEv.button.button == SDL_BUTTON_LEFT &&
+            !ctx->focusClickHandled) {
+            e9ui_setFocus(ctx, NULL);
+        }
+    }
+    if (localEv.type == SDL_MOUSEWHEEL) {
+        int wheelY = localEv.wheel.y;
+        if (localEv.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+            wheelY = -wheelY;
+        }
+        if (wheelY != 0) {
+            custom_log_adjustScroll(ui, wheelY);
+        }
+        return 1;
+    }
+    if (localEv.type == SDL_MOUSEBUTTONDOWN && localEv.button.button == SDL_BUTTON_LEFT) {
+        custom_log_row_hit_t hitRow;
+        if (custom_log_findAddressHit(ui, localEv.button.x, localEv.button.y, &hitRow)) {
+            if (!hitRow.sourceIsCopper) {
+                custom_log_addOrEnableBreakpoint(custom_log_normalizeAddress(hitRow.sourceAddr));
+            }
+            return 1;
+        }
+    }
+    if (localEv.type == SDL_KEYDOWN) {
+        SDL_Keycode key = localEv.key.keysym.sym;
+        SDL_Keymod mods = localEv.key.keysym.mod;
+        int visibleRows = custom_log_computeVisibleRows(ui);
+        int step = custom_log_arrowScrollAmount(mods, visibleRows);
+        switch (key) {
+        case SDLK_UP:
+            custom_log_adjustScroll(ui, -step);
+            return 1;
+        case SDLK_DOWN:
+            custom_log_adjustScroll(ui, step);
+            return 1;
+        case SDLK_PAGEUP:
+            custom_log_adjustScroll(ui, -visibleRows);
+            return 1;
+        case SDLK_PAGEDOWN:
+            custom_log_adjustScroll(ui, visibleRows);
+            return 1;
+        case SDLK_HOME:
+            ui->scrollRow = 0;
+            custom_log_clampScroll(ui, visibleRows);
+            return 1;
+        case SDLK_END:
+            ui->scrollRow = INT_MAX;
+            custom_log_clampScroll(ui, visibleRows);
+            return 1;
+        default:
+            break;
+        }
+    }
+    return 0;
+}
+
+static void
+custom_log_embeddedBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !ctx || !self->state || !ctx->renderer) {
+        return;
+    }
+    custom_log_embedded_body_state_t *st = (custom_log_embedded_body_state_t *)self->state;
+    custom_log_state_t *ui = st ? st->ui : NULL;
+    if (!ui || !ui->open) {
+        return;
+    }
+    SDL_Rect prevViewport;
+    int hadClip = SDL_RenderIsClipEnabled(ctx->renderer) ? 1 : 0;
+    SDL_Rect prevClip = { 0, 0, 0, 0 };
+    if (hadClip) {
+        SDL_RenderGetClipRect(ctx->renderer, &prevClip);
+    }
+    SDL_RenderGetViewport(ctx->renderer, &prevViewport);
+    SDL_Rect viewport = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
+    SDL_RenderSetViewport(ctx->renderer, &viewport);
+    if (hadClip) {
+        SDL_Rect localClip = {
+            prevClip.x - self->bounds.x,
+            prevClip.y - self->bounds.y,
+            prevClip.w,
+            prevClip.h
+        };
+        SDL_Rect viewportLocal = { 0, 0, self->bounds.w, self->bounds.h };
+        SDL_Rect clipped;
+        if (SDL_IntersectRect(&localClip, &viewportLocal, &clipped)) {
+            SDL_RenderSetClipRect(ctx->renderer, &clipped);
+        } else {
+            SDL_Rect empty = { 0, 0, 0, 0 };
+            SDL_RenderSetClipRect(ctx->renderer, &empty);
+        }
+    }
+
+    ui->ctx = *ctx;
+    ui->ctx.window = ctx->window;
+    ui->ctx.renderer = ctx->renderer;
+    ui->ctx.winW = self->bounds.w;
+    ui->ctx.winH = self->bounds.h;
+    ui->ctx.mouseX = ctx->mouseX - self->bounds.x;
+    ui->ctx.mouseY = ctx->mouseY - self->bounds.y;
+    ui->ctx.mousePrevX = ctx->mousePrevX - self->bounds.x;
+    ui->ctx.mousePrevY = ctx->mousePrevY - self->bounds.y;
+    custom_log_renderFrame(ui, 0);
+
+    SDL_RenderSetViewport(ctx->renderer, &prevViewport);
+    if (hadClip) {
+        SDL_RenderSetClipRect(ctx->renderer, &prevClip);
+    }
+}
+
+static e9ui_component_t *
+custom_log_makeEmbeddedBodyHost(custom_log_state_t *ui)
+{
+    if (!ui) {
+        return NULL;
+    }
+    e9ui_component_t *host = (e9ui_component_t *)alloc_calloc(1, sizeof(*host));
+    if (!host) {
+        return NULL;
+    }
+    custom_log_embedded_body_state_t *st = (custom_log_embedded_body_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!st) {
+        alloc_free(host);
+        return NULL;
+    }
+    st->ui = ui;
+    host->name = "custom_log_embedded_body";
+    host->state = st;
+    host->preferredHeight = custom_log_embeddedBodyPreferredHeight;
+    host->layout = custom_log_embeddedBodyLayout;
+    host->render = custom_log_embeddedBodyRender;
+    host->handleEvent = custom_log_embeddedBodyHandleEvent;
+    if (ui->filterRoot) {
+        e9ui_child_add(host, ui->filterRoot, alloc_strdup("custom_log_filter_root"));
+    }
+    return host;
+}
+
+static void
+custom_log_embeddedWindowCloseRequested(e9ui_window_t *window, void *user)
+{
+    (void)window;
+    custom_log_state_t *ui = (custom_log_state_t *)user;
+    if (!ui) {
+        return;
+    }
+    ui->closeRequested = 1;
+}
+
+void
+custom_log_render(void)
+{
+    custom_log_state_t *ui = &custom_log_state;
+    if (!ui->open) {
+        return;
+    }
+    if (ui->closeRequested) {
+        custom_log_shutdown();
+        return;
+    }
+    if (custom_log_isEmbeddedBackend(ui)) {
+        int prevHasSaved = ui->winHasSaved;
+        int prevX = ui->winX;
+        int prevY = ui->winY;
+        int prevW = ui->winW;
+        int prevH = ui->winH;
+        custom_log_captureWindowRect();
+        if (!prevHasSaved ||
+            ui->winX != prevX ||
+            ui->winY != prevY ||
+            ui->winW != prevW ||
+            ui->winH != prevH) {
+            config_saveConfig();
+        }
+        return;
+    }
+    if (!ui->renderer) {
+        return;
+    }
+    SDL_SetRenderDrawColor(ui->renderer, 12, 12, 12, 255);
+    SDL_RenderClear(ui->renderer);
+    ui->ctx.window = ui->window;
+    ui->ctx.renderer = ui->renderer;
+    custom_log_renderFrame(ui, 1);
 }
 
 void

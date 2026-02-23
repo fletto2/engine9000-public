@@ -12,6 +12,7 @@
 #include "custom_ui.h"
 #include "debugger.h"
 #include "e9ui.h"
+#include "hotkeys.h"
 #include "sprite_debug.h"
 #include "mega_sprite_debug.h"
 #include "shader_ui.h"
@@ -148,11 +149,18 @@ config_persistConfig(FILE *f)
     if (!debugger.config.crtEnabled) {
         fprintf(f, "comp.config.crt_enabled=0\n");
     }
+    if (!debugger.config.recordEnabled) {
+        fprintf(f, "comp.config.record_enabled=0\n");
+    }
+    if (!debugger.config.logosEnabled) {
+        fprintf(f, "comp.config.logos_enabled=0\n");
+    }
     if (!debugger.coreOptionsShowHelp) {
         fprintf(f, "comp.config.core_options_show_help=0\n");
     }
     fprintf(f, "comp.config.transition=%s\n", transition_modeName(e9ui->transition.mode));
     fprintf(f, "comp.config.core_system=%d\n", target->coreIndex);
+    hotkeys_persistConfig(f);
     crt_persistConfig(f);
     sprite_debug_persistConfig(f);
     mega_sprite_debug_persistConfig(f);
@@ -278,6 +286,10 @@ config_loadConfigFile(const char *path)
                 debugger.config.megadrive.libretro.audioEnabled = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "crt_enabled") == 0) {
                 debugger.config.crtEnabled = atoi(value) ? 1 : 0;
+            } else if (strcmp(prop, "record_enabled") == 0) {
+                debugger.config.recordEnabled = atoi(value) ? 1 : 0;
+            } else if (strcmp(prop, "logos_enabled") == 0) {
+                debugger.config.logosEnabled = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "core_options_show_help") == 0) {
                 debugger.coreOptionsShowHelp = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "core_system") == 0) {
@@ -293,6 +305,8 @@ config_loadConfigFile(const char *path)
                 if (transition_parseMode(value, &mode)) {
                     e9ui->transition.mode = mode;
                 }
+            } else if (strncmp(prop, "hotkey.", 7) == 0) {
+                hotkeys_loadConfigProperty(prop + 7, value);
             }
             continue;
         }
@@ -334,6 +348,7 @@ void
 config_loadConfig(void)
 {
     target_setConfigDefaults();
+    hotkeys_resetConfigOverrides();
 
     if (ui_test_getMode() != UI_TEST_MODE_NONE) {
         if (debugger_getLoadTestTempConfig()) {

@@ -16,6 +16,8 @@
 #include "e9ui.h"
 #include "e9ui_scroll.h"
 #include "e9ui_text.h"
+#include "hotkeys.h"
+#include "debugger_input_bindings.h"
 
 typedef struct help_collapsible_state {
     const char *label;
@@ -286,6 +288,71 @@ help_measureTextWidth(e9ui_context_t *ctx, const char *text)
     return w;
 }
 
+static void
+help_formatDebuggerInputBindingForTarget(int targetIndex, const char *optionKey, char *out, size_t outCap)
+{
+    const char *storedValue = NULL;
+    char storedDefault[64];
+
+    if (!out || outCap == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!optionKey || !*optionKey) {
+        return;
+    }
+
+    if (target && target->coreIndex == targetIndex && target->coreOptionGetValue) {
+        storedValue = target->coreOptionGetValue(optionKey);
+    }
+    if (!storedValue || !*storedValue) {
+        SDL_Keycode defKey = debugger_input_bindings_defaultKeyForTarget(targetIndex, optionKey);
+        if (debugger_input_bindings_buildStoredValue(defKey, storedDefault, sizeof(storedDefault))) {
+            storedValue = storedDefault;
+        }
+    }
+
+    debugger_input_bindings_formatDisplayValue(storedValue, out, outCap);
+    if (strcmp(out, "Unbound") == 0) {
+        out[0] = '\0';
+    }
+}
+
+static void
+help_formatAmigaDpadSummary(char *out, size_t outCap)
+{
+    char up[32];
+    char down[32];
+    char left[32];
+    char right[32];
+
+    if (!out || outCap == 0) {
+        return;
+    }
+    out[0] = '\0';
+
+    help_formatDebuggerInputBindingForTarget(TARGET_AMIGA, "e9k_debugger_input_dpad_up", up, sizeof(up));
+    help_formatDebuggerInputBindingForTarget(TARGET_AMIGA, "e9k_debugger_input_dpad_down", down, sizeof(down));
+    help_formatDebuggerInputBindingForTarget(TARGET_AMIGA, "e9k_debugger_input_dpad_left", left, sizeof(left));
+    help_formatDebuggerInputBindingForTarget(TARGET_AMIGA, "e9k_debugger_input_dpad_right", right, sizeof(right));
+
+    if (strcmp(up, "Up") == 0 &&
+        strcmp(down, "Down") == 0 &&
+        strcmp(left, "Left") == 0 &&
+        strcmp(right, "Right") == 0) {
+        snprintf(out, outCap, "Arrows");
+        out[outCap - 1] = '\0';
+        return;
+    }
+
+    snprintf(out, outCap, "%s/%s/%s/%s",
+             up[0] ? up : "-",
+             down[0] ? down : "-",
+             left[0] ? left : "-",
+             right[0] ? right : "-");
+    out[outCap - 1] = '\0';
+}
+
 static e9ui_component_t *
 help_makeRow(const char *key, const char *value, int keyW, int gap, SDL_Color keyColor, SDL_Color valueColor)
 {
@@ -372,7 +439,7 @@ help_showModal(e9ui_context_t *ctx)
     int gap = 10;
     int gapSmall = 6;
     int colGap = e9ui_scale_px(ctx, 16);
-    int colW = e9ui_scale_px(ctx, 320);
+    int colW = e9ui_scale_px(ctx, 384);
     int columnGap = e9ui_scale_px(ctx, 32);
     int contentHLeft = 0;
     int contentHRight = 0;
@@ -381,7 +448,8 @@ help_showModal(e9ui_context_t *ctx)
     e9ui_text_setFontSize(titleShortcuts, headingSize);
     e9ui_text_setColor(titleShortcuts, headingColor);
 
-    const char *shortcutKeys[] = { "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F11", "F12", "ESC", "TAB", "C", "P", "S", "N", "I", "b", "f", "g", "Ctrl+C", ",", ".", "/" };
+    char shortcutKeyBufs[28][64];
+    const char *shortcutKeys[28] = {0};
     const char *shortcutVals[] = { "Help",
                                    "Screenshot to clipboard",
                                    "Amiga <-> Neo Geo",
@@ -390,8 +458,12 @@ help_showModal(e9ui_context_t *ctx)
                                    "Toggle audio",
                                    "Save state",
                                    "Restore state",
+                                   "Restart",
+                                   "Reset core",
+                                   "Settings",
                                    "Toggle hotkeys",
                                    "Toggle fullscreen",
+                                   "Release mouse capture",
                                    "Close modal",
                                    "Activate console",
                                    "Continue",
@@ -406,6 +478,80 @@ help_showModal(e9ui_context_t *ctx)
                                    "Checkpoint profile",
                                    "Checkpoint reset",
                                    "Checkpoint dump" };
+    const char *shortcutActionIds[] = {
+        "help",
+        "screenshot",
+        "cycle_core_restart",
+        "rolling_save_toggle",
+        "warp",
+        "audio_toggle",
+        "save_state",
+        "restore_state",
+        "restart",
+        "reset_core",
+        "settings",
+        "hotkeys_toggle",
+        "fullscreen",
+        "mouse_release",
+        NULL,
+        "prompt_focus",
+        "continue",
+        "pause",
+        "step",
+        "next",
+        "step_inst",
+        "frame_back",
+        "frame_step",
+        "frame_continue",
+        NULL,
+        "checkpoint_prev",
+        "checkpoint_reset",
+        "checkpoint_next"
+    };
+    const char *shortcutFixedKeys[] = {
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        "esc",
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        "ctrl+c",
+        NULL,
+        NULL,
+        NULL
+    };
+    size_t shortcutCount = sizeof(shortcutVals) / sizeof(shortcutVals[0]);
+    for (size_t i = 0; i < shortcutCount; ++i) {
+        if (shortcutActionIds[i]) {
+            if (!hotkeys_formatActionBindingDisplay(shortcutActionIds[i], shortcutKeyBufs[i],
+                                                    sizeof(shortcutKeyBufs[i]))) {
+                snprintf(shortcutKeyBufs[i], sizeof(shortcutKeyBufs[i]), "?");
+            }
+        } else if (shortcutFixedKeys[i]) {
+            snprintf(shortcutKeyBufs[i], sizeof(shortcutKeyBufs[i]), "%s", shortcutFixedKeys[i]);
+        } else {
+            snprintf(shortcutKeyBufs[i], sizeof(shortcutKeyBufs[i]), "?");
+        }
+        shortcutKeys[i] = shortcutKeyBufs[i];
+    }
     int shortcutKeyW = help_measureKeyWidth(ctx, shortcutKeys, sizeof(shortcutKeys) / sizeof(shortcutKeys[0]));
 
     e9ui_component_t *titleSourcePane = e9ui_text_make("SOURCE PANE");
@@ -458,8 +604,16 @@ help_showModal(e9ui_context_t *ctx)
     e9ui_component_t *titleAmigaKeyboard = e9ui_text_make("AMIGA KEYBOARD");
     e9ui_text_setBold(titleAmigaKeyboard, 1);
     e9ui_text_setColor(titleAmigaKeyboard, headingColor);
-    const char *amigaKbKeys[] = { "Arrows", "L Alt", "L Ctrl" };
+    char amigaKbKeyBufDpad[96];
+    char amigaKbKeyBufFire1[64];
+    char amigaKbKeyBufFire2[64];
+    const char *amigaKbKeys[] = { amigaKbKeyBufDpad, amigaKbKeyBufFire1, amigaKbKeyBufFire2 };
     const char *amigaKbVals[] = { "D-pad", "Fire 1", "Fire 2" };
+    help_formatAmigaDpadSummary(amigaKbKeyBufDpad, sizeof(amigaKbKeyBufDpad));
+    help_formatDebuggerInputBindingForTarget(TARGET_AMIGA, "e9k_debugger_input_button_b",
+                                             amigaKbKeyBufFire1, sizeof(amigaKbKeyBufFire1));
+    help_formatDebuggerInputBindingForTarget(TARGET_AMIGA, "e9k_debugger_input_button_a",
+                                             amigaKbKeyBufFire2, sizeof(amigaKbKeyBufFire2));
     int amigaKbKeyW = help_measureKeyWidth(ctx, amigaKbKeys, sizeof(amigaKbKeys) / sizeof(amigaKbKeys[0]));
 
     e9ui_component_t *titleAmigaController = e9ui_text_make("AMIGA JOYSTICK CONTROLS");

@@ -67,18 +67,30 @@ e9ui_fileselect_drawStatusBorder(const e9ui_component_t *textbox, e9ui_context_t
     if (!textbox || !ctx || !ctx->renderer) {
         return;
     }
-    SDL_Color base = valid ? (SDL_Color){80, 200, 120, 180} : (SDL_Color){210, 80, 80, 180};
+    SDL_Color base = valid ? (SDL_Color){80, 200, 120, 180} : (SDL_Color){140, 28, 28, 235};
     SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
-    int blur = e9ui_scale_px(ctx, 3);
+    int blur = e9ui_scale_px(ctx, valid ? 3 : 5);
     if (blur < 1) {
         blur = 1;
     }
     for (int i = blur; i >= 1; --i) {
-        int alpha = base.a / (i + 1);
+        int alpha = valid ? (base.a / (i + 1)) : (base.a / (i + 2) + 20);
+        if (alpha > 255) {
+            alpha = 255;
+        }
         SDL_SetRenderDrawColor(ctx->renderer, base.r, base.g, base.b, (Uint8)alpha);
         SDL_Rect r = { textbox->bounds.x - i, textbox->bounds.y - i,
                        textbox->bounds.w + i * 2, textbox->bounds.h + i * 2 };
         SDL_RenderDrawRect(ctx->renderer, &r);
+    }
+    if (!valid) {
+        SDL_SetRenderDrawColor(ctx->renderer, base.r, base.g, base.b, 255);
+        SDL_Rect r0 = { textbox->bounds.x - 1, textbox->bounds.y - 1,
+                        textbox->bounds.w + 2, textbox->bounds.h + 2 };
+        SDL_Rect r1 = { textbox->bounds.x - 2, textbox->bounds.y - 2,
+                        textbox->bounds.w + 4, textbox->bounds.h + 4 };
+        SDL_RenderDrawRect(ctx->renderer, &r0);
+        SDL_RenderDrawRect(ctx->renderer, &r1);
     }
 }
 

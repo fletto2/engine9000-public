@@ -2,6 +2,7 @@
 #include "target.h"
 #include "emu_mega.h"
 #include "rom_config.h"
+#include "debugger_input_bindings.h"
 #include "megadrive_core_options.h"
 #include "debugger_platform.h"
 #include "core_options.h"
@@ -281,7 +282,7 @@ target_megadrive_validateSettings(void)
         }
     }
     megadrive_coreOptionsClear();
-    rom_config_saveSettingsForRom(saveDir, romPath,
+    rom_config_saveSettingsForRom(saveDir, romPath, target_megadrive(),
                                   debugger.settingsEdit.megadrive.libretro.exePath,
                                   debugger.settingsEdit.megadrive.libretro.sourceDir,
                                   debugger.settingsEdit.megadrive.libretro.toolchainPrefix);
@@ -398,11 +399,35 @@ target_megadrive_coreOptionsSaveClicked(e9ui_context_t *ctx, core_options_modal_
 {
     (void)ctx;
     int anyChange = 0;
+    int anyRomConfigBindingChange = 0;
+    int anyCoreOptionChange = 0;
 
     for (size_t i = 0; i < st->entryCount; ++i) {
         const char *key = st->entries[i].key;
         const char *value = st->entries[i].value;
         if (!key || !*key) {
+            continue;
+        }
+        if (debugger_input_bindings_isOptionKey(key)) {
+            const char *existingBinding = rom_config_getActiveInputBindingValue(key);
+            const char *desiredBinding = (value && *value) ? value : NULL;
+            if (desiredBinding) {
+                const char *defValue = core_options_findDefaultValue(st, key);
+                if (defValue && strcmp(defValue, desiredBinding) == 0) {
+                    desiredBinding = NULL;
+                }
+            }
+            if (desiredBinding) {
+                if (!existingBinding || !core_options_stringsEqual(existingBinding, desiredBinding)) {
+                    rom_config_setActiveInputBindingValue(key, desiredBinding);
+                    anyChange = 1;
+                    anyRomConfigBindingChange = 1;
+                }
+            } else if (existingBinding) {
+                rom_config_setActiveInputBindingValue(key, NULL);
+                anyChange = 1;
+                anyRomConfigBindingChange = 1;
+            }
             continue;
         }
         const char *defValue = core_options_findDefaultValue(st, key);
@@ -417,28 +442,37 @@ target_megadrive_coreOptionsSaveClicked(e9ui_context_t *ctx, core_options_modal_
             }
             megadrive_coreOptionsSetValue(key, NULL);
             anyChange = 1;
+            anyCoreOptionChange = 1;
         } else {
             if (existing && core_options_stringsEqual(existing, desired)) {
                 continue;
             }
             megadrive_coreOptionsSetValue(key, desired);
             anyChange = 1;
+            anyCoreOptionChange = 1;
         }
     }
     if (anyChange) {
-        settings_markCoreOptionsDirty();
+        settings_markCoreOptionsDirtyWithRestart(anyCoreOptionChange ? 1 : 0);
     }
-    if (anyChange && e9ui->settingsSaveButton) {
-        e9ui_button_setGlowPulse(e9ui->settingsSaveButton, 1);
+    if (anyRomConfigBindingChange && (!e9ui || !e9ui->settingsModal)) {
+        rom_config_saveCurrentRomSettings();
     }
     settings_refreshSaveLabel();
-    e9ui_showTransientMessage(anyChange ? "CORE OPTIONS STAGED" : "CORE OPTIONS: NO CHANGES");
+    if (anyChange) {
+        e9ui_showTransientMessage((!e9ui || !e9ui->settingsModal) ? "CORE OPTIONS APPLIED" : "CORE OPTIONS STAGED");
+    } else {
+        e9ui_showTransientMessage("CORE OPTIONS: NO CHANGES");
+    }
     core_options_closeModal();
 }
 
 const char *
 target_megadrive_coreOptionGetValue(const char *key)
 {
+    if (debugger_input_bindings_isOptionKey(key)) {
+        return rom_config_getActiveInputBindingValue(key);
+    }
     return megadrive_coreOptionsGetValue(key);
 }
 

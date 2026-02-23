@@ -80,21 +80,22 @@ typedef struct shader_ui_action_row_state {
     int padRight;
 } shader_ui_action_row_state_t;
 
+typedef struct shader_ui_embedded_body_state {
+    struct e9k_shader_ui *ui;
+} shader_ui_embedded_body_state_t;
+
 typedef struct e9k_shader_ui {
     int open;
     int closeRequested;
     int dirty;
-    int alwaysOnTopState;
-    int mainWindowFocused;
-    int shaderWindowFocused;
     int winX;
     int winY;
     int winW;
     int winH;
     int winHasSaved;
+    e9ui_window_t *windowHost;
     SDL_Window *window;
     SDL_Renderer *renderer;
-    uint32_t windowId;
     e9ui_context_t ctx;
     e9ui_component_t *root;
     e9ui_component_t *fullscreen;
@@ -141,6 +142,12 @@ typedef struct e9k_shader_ui {
 
 static e9k_shader_ui_t shader_ui_state = {0};
 
+static e9ui_window_backend_t
+shader_ui_windowBackend(void)
+{
+    return e9ui_window_backend_embedded;
+}
+
 static void
 shader_ui_refocusMain(void)
 {
@@ -160,19 +167,11 @@ shader_ui_refocusMain(void)
 static void
 shader_ui_updateAlwaysOnTop(e9k_shader_ui_t *ui)
 {
-#ifndef E9K_DISABLE_ALWAYS_ON_TOP
-    if (!ui || !ui->window) {
-        return;
-    }
-    int shouldStayOnTop = (ui->mainWindowFocused || ui->shaderWindowFocused) ? 1 : 0;
-    if (ui->alwaysOnTopState == shouldStayOnTop) {
-        return;
-    }
-    SDL_SetWindowAlwaysOnTop(ui->window, shouldStayOnTop ? SDL_TRUE : SDL_FALSE);
-    ui->alwaysOnTopState = shouldStayOnTop;
-#else
     (void)ui;
-#endif
+    if (!ui || !ui->windowHost) {
+        return;
+    }
+    e9ui_windowUpdateAlwaysOnTop(ui->windowHost);
 }
 
 static int
@@ -197,12 +196,96 @@ static void
 shader_ui_captureWindowRect(void)
 {
     e9k_shader_ui_t *ui = &shader_ui_state;
+    if (!ui || !ui->windowHost) {
+        return;
+    }
+    if (e9ui_windowIsEmbedded(ui->windowHost)) {
+        e9ui_rect_t rect = e9ui_windowGetEmbeddedRect(ui->windowHost);
+        const e9ui_context_t *scaleCtx = e9ui ? &e9ui->ctx : &ui->ctx;
+        if (rect.w > 0 && rect.h > 0) {
+            ui->winX = e9ui_unscale_px(scaleCtx, rect.x);
+            ui->winY = e9ui_unscale_px(scaleCtx, rect.y);
+            ui->winW = e9ui_unscale_px(scaleCtx, rect.w);
+            ui->winH = e9ui_unscale_px(scaleCtx, rect.h);
+            ui->winHasSaved = 1;
+        }
+        return;
+    }
     if (!ui->window) {
         return;
     }
     SDL_GetWindowPosition(ui->window, &ui->winX, &ui->winY);
     SDL_GetWindowSize(ui->window, &ui->winW, &ui->winH);
     ui->winHasSaved = 1;
+}
+
+static int
+shader_ui_isEmbeddedBackend(const e9k_shader_ui_t *ui)
+{
+    if (!ui || !ui->windowHost) {
+        return 0;
+    }
+    return e9ui_windowIsEmbedded(ui->windowHost);
+}
+
+static e9ui_rect_t
+shader_ui_embeddedDefaultRect(const e9ui_context_t *ctx)
+{
+    e9ui_rect_t rect = {
+        e9ui_scale_px(ctx, 96),
+        e9ui_scale_px(ctx, 96),
+        e9ui_scale_px(ctx, 520),
+        e9ui_scale_px(ctx, 720)
+    };
+    return rect;
+}
+
+static e9ui_rect_t
+shader_ui_embeddedRectFromSaved(const e9k_shader_ui_t *ui, const e9ui_context_t *ctx)
+{
+    e9ui_rect_t rect = shader_ui_embeddedDefaultRect(ctx);
+    if (!ui || !ui->winHasSaved || ui->winW <= 0 || ui->winH <= 0) {
+        return rect;
+    }
+    rect.x = e9ui_scale_px(ctx, ui->winX);
+    rect.y = e9ui_scale_px(ctx, ui->winY);
+    rect.w = e9ui_scale_px(ctx, ui->winW);
+    rect.h = e9ui_scale_px(ctx, ui->winH);
+    return rect;
+}
+
+static int
+shader_ui_embeddedTitlebarHeightEstimate(const e9ui_context_t *ctx)
+{
+    TTF_Font *font = e9ui->theme.text.source ? e9ui->theme.text.source : (ctx ? ctx->font : NULL);
+    int textH = font ? TTF_FontHeight(font) : 16;
+    if (textH <= 0) {
+        textH = 16;
+    }
+    int padY = e9ui_scale_px(ctx, 4);
+    return textH + padY * 2;
+}
+
+static void
+shader_ui_embeddedClampRectSize(e9ui_rect_t *rect, const e9ui_context_t *ctx)
+{
+    if (!rect || !ctx) {
+        return;
+    }
+    int minW = e9ui_scale_px(ctx, 420);
+    int minH = e9ui_scale_px(ctx, 420);
+    if (rect->w < minW) {
+        rect->w = minW;
+    }
+    if (rect->h < minH) {
+        rect->h = minH;
+    }
+    if (ctx->winW > 0 && rect->w > ctx->winW) {
+        rect->w = ctx->winW;
+    }
+    if (ctx->winH > 0 && rect->h > ctx->winH) {
+        rect->h = ctx->winH;
+    }
 }
 
 
@@ -1199,6 +1282,92 @@ shader_ui_measureRootHeight(e9ui_component_t *root, e9ui_context_t *ctx, int ava
     return total;
 }
 
+static int
+shader_ui_embeddedBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)self;
+    (void)ctx;
+    (void)availW;
+    return 0;
+}
+
+static void
+shader_ui_embeddedBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+    shader_ui_embedded_body_state_t *st = (shader_ui_embedded_body_state_t *)self->state;
+    if (!st || !st->ui || !st->ui->root || !st->ui->root->layout) {
+        return;
+    }
+    st->ui->root->layout(st->ui->root, ctx, bounds);
+}
+
+static void
+shader_ui_embeddedBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !ctx || !self->state) {
+        return;
+    }
+    shader_ui_embedded_body_state_t *st = (shader_ui_embedded_body_state_t *)self->state;
+    e9k_shader_ui_t *ui = st ? st->ui : NULL;
+    if (!ui || !ui->root) {
+        return;
+    }
+    ui->ctx = *ctx;
+    ui->ctx.window = ctx->window;
+    ui->ctx.renderer = ctx->renderer;
+    ui->ctx.font = e9ui->ctx.font;
+    ui->ctx.winW = self->bounds.w;
+    ui->ctx.winH = self->bounds.h;
+    ui->ctx.mouseX = ctx->mouseX;
+    ui->ctx.mouseY = ctx->mouseY;
+    ui->ctx.mousePrevX = ctx->mousePrevX;
+    ui->ctx.mousePrevY = ctx->mousePrevY;
+    ui->ctx.focusRoot = ui->root;
+    ui->ctx.focusFullscreen = ui->fullscreen;
+    shader_ui_syncState(ui);
+    e9ui_component_t *root = ui->fullscreen ? ui->fullscreen : ui->root;
+    if (root && root->render) {
+        root->render(root, &ui->ctx);
+    }
+    ui->dirty = 0;
+}
+
+static e9ui_component_t *
+shader_ui_makeEmbeddedBodyHost(e9k_shader_ui_t *ui)
+{
+    if (!ui || !ui->root) {
+        return NULL;
+    }
+    e9ui_component_t *host = (e9ui_component_t *)alloc_calloc(1, sizeof(*host));
+    if (!host) {
+        return NULL;
+    }
+    shader_ui_embedded_body_state_t *st = (shader_ui_embedded_body_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!st) {
+        alloc_free(host);
+        return NULL;
+    }
+    st->ui = ui;
+    host->name = "shader_ui_embedded_body";
+    host->state = st;
+    host->preferredHeight = shader_ui_embeddedBodyPreferredHeight;
+    host->layout = shader_ui_embeddedBodyLayout;
+    host->render = shader_ui_embeddedBodyRender;
+    e9ui_child_add(host, ui->root, alloc_strdup("shader_ui_root"));
+    return host;
+}
+
+static void
+shader_ui_embeddedWindowCloseRequested(e9ui_window_t *window, void *user)
+{
+    (void)window;
+    shader_ui_cancel(&e9ui->ctx, user);
+}
+
 int
 shader_ui_init(void)
 {
@@ -1208,60 +1377,115 @@ shader_ui_init(void)
     }
     shader_ui_buildBindings(ui);
 
-    SDL_Window *win = SDL_CreateWindow("ENGINE9000 DEBUGGER - CRT SETTINGS",
-                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                       520, 720,
-                                       SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-    if (!win) {
-        debug_error("shader ui: SDL_CreateWindow failed: %s", SDL_GetError());
+    ui->windowHost = e9ui_windowCreate(shader_ui_windowBackend());
+    if (!ui->windowHost) {
         return 0;
     }
-    SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
-    if (!ren) {
-        SDL_DestroyWindow(win);
-        debug_error("shader ui: SDL_CreateRenderer failed: %s", SDL_GetError());
-        return 0;
-    }
-    if (ui->winHasSaved) {
-        SDL_SetWindowPosition(win, ui->winX, ui->winY);
-        SDL_SetWindowSize(win, ui->winW, ui->winH);
-    }
-    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-    ui->window = win;
-    ui->renderer = ren;
-    ui->windowId = SDL_GetWindowID(win);
-    ui->ctx.window = win;
-    ui->ctx.renderer = ren;
+    memset(&ui->ctx, 0, sizeof(ui->ctx));
     ui->ctx.font = e9ui->ctx.font;
-    ui->ctx.dpiScale = shader_ui_computeDpiScale(&ui->ctx);
-    ui->alwaysOnTopState = -1;
-    ui->mainWindowFocused = 0;
-    if (e9ui && e9ui->ctx.window) {
-        uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
-        ui->mainWindowFocused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-    }
-    uint32_t shaderFlags = SDL_GetWindowFlags(win);
-    ui->shaderWindowFocused = (shaderFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-    shader_ui_updateAlwaysOnTop(ui);
     shader_ui_snapshot(ui);
     ui->closeRequested = 0;
     ui->dirty = 1;
 
     ui->root = shader_ui_buildRoot(ui);
     if (!ui->root) {
-        shader_ui_shutdown();
+        e9ui_windowDestroy(ui->windowHost);
+        ui->windowHost = NULL;
         return 0;
     }
-    if (!ui->winHasSaved) {
-        int winW = 0;
-        int winH = 0;
-        SDL_GetWindowSize(win, &winW, &winH);
-        int renderW = (int)((float)winW * ui->ctx.dpiScale + 0.5f);
-        int desiredRenderH = shader_ui_measureRootHeight(ui->root, &ui->ctx, renderW);
-        if (desiredRenderH > 0 && ui->ctx.dpiScale > 0.0f) {
-            int desiredWinH = (int)((float)desiredRenderH / ui->ctx.dpiScale + 0.5f);
-            if (desiredWinH > 0 && desiredWinH != winH) {
-                SDL_SetWindowSize(win, winW, desiredWinH);
+    if (shader_ui_isEmbeddedBackend(ui)) {
+        e9ui_rect_t rect = shader_ui_embeddedRectFromSaved(ui, &e9ui->ctx);
+        shader_ui_embeddedClampRectSize(&rect, &e9ui->ctx);
+        if (!ui->winHasSaved) {
+            int desiredRenderH = shader_ui_measureRootHeight(ui->root, &e9ui->ctx, rect.w);
+            if (desiredRenderH > 0) {
+                rect.h = desiredRenderH +
+                         shader_ui_embeddedTitlebarHeightEstimate(&e9ui->ctx) +
+                         e9ui_scale_px(&e9ui->ctx, 20);
+                shader_ui_embeddedClampRectSize(&rect, &e9ui->ctx);
+            }
+            int winW = e9ui->ctx.winW > 0 ? e9ui->ctx.winW : 1280;
+            int winH = e9ui->ctx.winH > 0 ? e9ui->ctx.winH : 720;
+            rect.x = (winW - rect.w) / 2;
+            rect.y = (winH - rect.h) / 2;
+        }
+        e9ui_component_t *embeddedBodyHost = shader_ui_makeEmbeddedBodyHost(ui);
+        if (!embeddedBodyHost) {
+            e9ui_childDestroy(ui->root, &e9ui->ctx);
+            ui->root = NULL;
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        if (!e9ui_windowOpenEmbedded(ui->windowHost,
+                                     "ENGINE9000 DEBUGGER - CRT SETTINGS",
+                                     rect,
+                                     embeddedBodyHost,
+                                     shader_ui_embeddedWindowCloseRequested,
+                                     ui,
+                                     &e9ui->ctx)) {
+            ui->root = NULL;
+            e9ui_childDestroy(embeddedBodyHost, &e9ui->ctx);
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        ui->window = e9ui->ctx.window;
+        ui->renderer = e9ui->ctx.renderer;
+        ui->ctx = e9ui->ctx;
+    } else {
+        if (!e9ui_windowOpenSdl(ui->windowHost,
+                                "ENGINE9000 DEBUGGER - CRT SETTINGS",
+                                SDL_WINDOWPOS_CENTERED,
+                                SDL_WINDOWPOS_CENTERED,
+                                520,
+                                720,
+                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI)) {
+            debug_error("shader ui: SDL_CreateWindow failed: %s", SDL_GetError());
+            e9ui_childDestroy(ui->root, &e9ui->ctx);
+            ui->root = NULL;
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        if (!e9ui_windowCreateSdlRenderer(ui->windowHost, -1, SDL_RENDERER_ACCELERATED)) {
+            debug_error("shader ui: SDL_CreateRenderer failed: %s", SDL_GetError());
+            e9ui_childDestroy(ui->root, &e9ui->ctx);
+            ui->root = NULL;
+            e9ui_windowDestroy(ui->windowHost);
+            ui->windowHost = NULL;
+            return 0;
+        }
+        SDL_Window *win = e9ui_windowGetSdlWindow(ui->windowHost);
+        SDL_Renderer *ren = e9ui_windowGetSdlRenderer(ui->windowHost);
+        if (ui->winHasSaved) {
+            SDL_SetWindowPosition(win, ui->winX, ui->winY);
+            SDL_SetWindowSize(win, ui->winW, ui->winH);
+        }
+        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+        ui->window = win;
+        ui->renderer = ren;
+        ui->ctx.window = win;
+        ui->ctx.renderer = ren;
+        ui->ctx.font = e9ui->ctx.font;
+        ui->ctx.dpiScale = shader_ui_computeDpiScale(&ui->ctx);
+        if (e9ui && e9ui->ctx.window) {
+            uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
+            e9ui_windowSetMainWindowFocused(ui->windowHost, (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0);
+        }
+        e9ui_windowRefreshSelfFocusedFromFlags(ui->windowHost);
+        shader_ui_updateAlwaysOnTop(ui);
+        if (!ui->winHasSaved) {
+            int winW = 0;
+            int winH = 0;
+            SDL_GetWindowSize(win, &winW, &winH);
+            int renderW = (int)((float)winW * ui->ctx.dpiScale + 0.5f);
+            int desiredRenderH = shader_ui_measureRootHeight(ui->root, &ui->ctx, renderW);
+            if (desiredRenderH > 0 && ui->ctx.dpiScale > 0.0f) {
+                int desiredWinH = (int)((float)desiredRenderH / ui->ctx.dpiScale + 0.5f);
+                if (desiredWinH > 0 && desiredWinH != winH) {
+                    SDL_SetWindowSize(win, winW, desiredWinH);
+                }
             }
         }
     }
@@ -1276,27 +1500,25 @@ shader_ui_shutdown(void)
     if (!ui->open) {
         return;
     }
-    if (ui->root) {
+    int embedded = shader_ui_isEmbeddedBackend(ui);
+    if (ui->root && !embedded) {
         e9ui_childDestroy(ui->root, &ui->ctx);
         ui->root = NULL;
     }
     shader_ui_captureWindowRect();
     config_saveConfig();
     e9ui_text_cache_clearRenderer(ui->renderer);
-    if (ui->renderer) {
-        SDL_DestroyRenderer(ui->renderer);
-        ui->renderer = NULL;
+    if (embedded) {
+        ui->root = NULL;
     }
-    if (ui->window) {
-        SDL_DestroyWindow(ui->window);
-        ui->window = NULL;
+    if (ui->windowHost) {
+        e9ui_windowDestroy(ui->windowHost);
+        ui->windowHost = NULL;
     }
+    ui->renderer = NULL;
+    ui->window = NULL;
     ui->open = 0;
     ui->closeRequested = 0;
-    ui->alwaysOnTopState = 0;
-    ui->mainWindowFocused = 0;
-    ui->shaderWindowFocused = 0;
-    ui->windowId = 0;
     ui->dirty = 0;
     memset(&ui->ctx, 0, sizeof(ui->ctx));
     shader_ui_refocusMain();
@@ -1311,14 +1533,14 @@ shader_ui_isOpen(void)
 uint32_t
 shader_ui_getWindowId(void)
 {
-    return shader_ui_state.windowId;
+    return e9ui_windowGetWindowId(shader_ui_state.windowHost);
 }
 
 void
 shader_ui_setMainWindowFocused(int focused)
 {
     e9k_shader_ui_t *ui = &shader_ui_state;
-    ui->mainWindowFocused = focused ? 1 : 0;
+    e9ui_windowSetMainWindowFocused(ui->windowHost, focused);
     if (!ui->open) {
         return;
     }
@@ -1332,6 +1554,9 @@ shader_ui_handleEvent(SDL_Event *ev)
         return;
     }
     e9k_shader_ui_t *ui = &shader_ui_state;
+    if (shader_ui_isEmbeddedBackend(ui)) {
+        return;
+    }
     if (ui->closeRequested) {
         return;
     }
@@ -1389,10 +1614,10 @@ shader_ui_handleEvent(SDL_Event *ev)
             ui->winHasSaved = 1;
             config_saveConfig();
         } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-            ui->shaderWindowFocused = 1;
+            e9ui_windowSetSelfFocused(ui->windowHost, 1);
             shader_ui_updateAlwaysOnTop(ui);
         } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-            ui->shaderWindowFocused = 0;
+            e9ui_windowSetSelfFocused(ui->windowHost, 0);
             shader_ui_updateAlwaysOnTop(ui);
         }
     } else if (ev->type == SDL_KEYDOWN) {
@@ -1437,11 +1662,30 @@ void
 shader_ui_render(void)
 {
     e9k_shader_ui_t *ui = &shader_ui_state;
-    if (!ui->open || !ui->renderer || !ui->root) {
+    if (!ui->open || !ui->root) {
         return;
     }
     if (ui->closeRequested) {
         shader_ui_shutdown();
+        return;
+    }
+    if (shader_ui_isEmbeddedBackend(ui)) {
+        int prevHasSaved = ui->winHasSaved;
+        int prevX = ui->winX;
+        int prevY = ui->winY;
+        int prevW = ui->winW;
+        int prevH = ui->winH;
+        shader_ui_captureWindowRect();
+        if (!prevHasSaved ||
+            ui->winX != prevX ||
+            ui->winY != prevY ||
+            ui->winW != prevW ||
+            ui->winH != prevH) {
+            config_saveConfig();
+        }
+        return;
+    }
+    if (!ui->renderer) {
         return;
     }
     if (!ui->dirty) {

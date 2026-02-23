@@ -28,6 +28,8 @@ typedef struct core_options_option_cb {
     const char *key;
     const char *enabledValue;
     const char *disabledValue;
+    e9ui_component_t *button;
+    int keyboardBinding;
 } core_options_option_cb_t;
 
 typedef struct core_options_modal_state {
@@ -39,9 +41,14 @@ typedef struct core_options_modal_state {
     size_t catCount;
     const struct retro_core_option_v2_definition *defs;
     size_t defCount;
+    struct retro_core_option_v2_category *ownedCats;
+    size_t ownedCatCount;
+    struct retro_core_option_v2_definition *ownedDefs;
+    size_t ownedDefCount;
 
     const char *selectedCategoryKey;
 
+    e9ui_component_t *container;
     e9ui_component_t *categoryScroll;
     e9ui_component_t *categoryStack;
     int categoryWidthPx;
@@ -52,6 +59,8 @@ typedef struct core_options_modal_state {
 
     e9ui_component_t *btnSave;
     e9ui_component_t *btnDefaults;
+    e9ui_component_t *keyCaptureReturnFocus;
+    core_options_option_cb_t *capturingKeybind;
 
     core_options_category_cb_t **categoryCallbacks;
     size_t categoryCallbackCount;
@@ -87,4 +96,3 @@ core_options_stringsEqual(const char *a, const char *b);
 
 void
 core_options_closeModal(void);
-

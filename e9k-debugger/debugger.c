@@ -664,6 +664,8 @@ debugger_ctor(void)
   debugger.uiFrameCounter = 0;
   debugger.uiRefreshHz = 0;
   debugger.config.crtEnabled = 1;
+  debugger.config.recordEnabled = 1;
+  debugger.config.logosEnabled = 1;
   snprintf(debugger.config.neogeo.libretro.toolchainPrefix, sizeof(debugger.config.neogeo.libretro.toolchainPrefix), "m68k-neogeo-elf");
   snprintf(debugger.config.amiga.libretro.toolchainPrefix, sizeof(debugger.config.amiga.libretro.toolchainPrefix), "m68k-amigaos-");
   snprintf(debugger.config.megadrive.libretro.toolchainPrefix, sizeof(debugger.config.megadrive.libretro.toolchainPrefix), "m68k-elf");
@@ -747,6 +749,7 @@ debugger_main(int argc, char **argv)
   if (debugger.cliCoreSystemOverride) {
     target_setTargetIndex(debugger.cliTargetIndex);
   }
+  state_buffer_setRollingPaused(debugger.config.recordEnabled ? 0 : 1);
   if (debugger.smokeTestMode != SMOKE_TEST_MODE_NONE || ui_test_getMode() != UI_TEST_MODE_NONE ||
       debugger.cliHeadless || debugger.cliDisableRollingRecord) {
     state_buffer_setRollingPaused(1);

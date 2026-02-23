@@ -10,8 +10,11 @@
 
 typedef struct e9ui_scroll_state {
     e9ui_component_t *child;
+    int scrollX;
     int scrollY;
+    int contentW;
     int contentH;
+    int contentWidthPx;
     int contentHeightPx;
     int lineHeight;
 } e9ui_scroll_state_t;
@@ -28,14 +31,24 @@ scroll_measureLineHeight(e9ui_context_t *ctx)
 }
 
 static void
-scroll_clamp(e9ui_scroll_state_t *st, int viewH)
+scroll_clamp(e9ui_scroll_state_t *st, int viewW, int viewH)
 {
     if (!st) {
         return;
     }
+    int maxScrollX = st->contentW - viewW;
+    if (maxScrollX < 0) {
+        maxScrollX = 0;
+    }
     int maxScroll = st->contentH - viewH;
     if (maxScroll < 0) {
         maxScroll = 0;
+    }
+    if (st->scrollX < 0) {
+        st->scrollX = 0;
+    }
+    if (st->scrollX > maxScrollX) {
+        st->scrollX = maxScrollX;
     }
     if (st->scrollY < 0) {
         st->scrollY = 0;
@@ -66,16 +79,21 @@ scroll_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
     if (!st || !st->child || !st->child->layout) {
         return;
     }
+    int contentW = bounds.w;
+    if (st->contentWidthPx > 0) {
+        contentW = st->contentWidthPx;
+    }
     int contentH = bounds.h;
     if (st->contentHeightPx > 0) {
         contentH = st->contentHeightPx;
     } else if (st->child->preferredHeight) {
         contentH = st->child->preferredHeight(st->child, ctx, bounds.w);
     }
+    st->contentW = contentW;
     st->contentH = contentH;
     st->lineHeight = scroll_measureLineHeight(ctx);
-    scroll_clamp(st, bounds.h);
-    e9ui_rect_t childBounds = { bounds.x, bounds.y - st->scrollY, bounds.w, st->contentH };
+    scroll_clamp(st, bounds.w, bounds.h);
+    e9ui_rect_t childBounds = { bounds.x - st->scrollX, bounds.y - st->scrollY, st->contentW, st->contentH };
     st->child->layout(st->child, ctx, childBounds);
 }
 
@@ -90,12 +108,21 @@ scroll_render(e9ui_component_t *self, e9ui_context_t *ctx)
         return;
     }
     SDL_Rect prev;
-    SDL_bool clip_enabled = SDL_RenderIsClipEnabled(ctx->renderer);
+    SDL_bool clipEnabled = SDL_RenderIsClipEnabled(ctx->renderer);
     SDL_RenderGetClipRect(ctx->renderer, &prev);
     SDL_Rect clip = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
-    SDL_RenderSetClipRect(ctx->renderer, &clip);
+    if (clipEnabled) {
+        SDL_Rect clipped = clip;
+        if (SDL_IntersectRect(&prev, &clip, &clipped)) {
+            SDL_RenderSetClipRect(ctx->renderer, &clipped);
+        } else {
+            SDL_RenderSetClipRect(ctx->renderer, &clip);
+        }
+    } else {
+        SDL_RenderSetClipRect(ctx->renderer, &clip);
+    }
     st->child->render(st->child, ctx);
-    if (clip_enabled) {
+    if (clipEnabled) {
         SDL_RenderSetClipRect(ctx->renderer, &prev);
     } else {
         SDL_RenderSetClipRect(ctx->renderer, NULL);
@@ -117,18 +144,34 @@ scroll_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event
         int my = ctx->mouseY;
         if (mx >= self->bounds.x && mx < self->bounds.x + self->bounds.w &&
             my >= self->bounds.y && my < self->bounds.y + self->bounds.h) {
+            int consumed = 0;
+            int wheelX = ev->wheel.x;
             int wheelY = ev->wheel.y;
             if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+                wheelX = -wheelX;
                 wheelY = -wheelY;
+            }
+            SDL_Keymod mods = SDL_GetModState();
+            if (wheelX == 0 && (mods & KMOD_SHIFT)) {
+                wheelX = wheelY;
+                wheelY = 0;
+            }
+            if (wheelX != 0) {
+                const int step = st->lineHeight > 0 ? st->lineHeight : 16;
+                st->scrollX -= wheelX * step;
+                consumed = 1;
             }
             if (wheelY != 0) {
                 const int linesPerTick = 1;
                 int delta = wheelY * linesPerTick;
                 int step = st->lineHeight > 0 ? st->lineHeight : 16;
                 st->scrollY += delta * step;
-                scroll_clamp(st, self->bounds.h);
+                consumed = 1;
             }
-            return 1;
+            if (consumed) {
+                scroll_clamp(st, self->bounds.w, self->bounds.h);
+                return 1;
+            }
         }
     }
     if (st->child && st->child->handleEvent) {
@@ -181,4 +224,14 @@ e9ui_scroll_setContentHeightPx(e9ui_component_t *scroll, int contentHeight_px)
     }
     e9ui_scroll_state_t *st = (e9ui_scroll_state_t*)scroll->state;
     st->contentHeightPx = contentHeight_px > 0 ? contentHeight_px : 0;
+}
+
+void
+e9ui_scroll_setContentWidthPx(e9ui_component_t *scroll, int contentWidth_px)
+{
+    if (!scroll || !scroll->state) {
+        return;
+    }
+    e9ui_scroll_state_t *st = (e9ui_scroll_state_t*)scroll->state;
+    st->contentWidthPx = contentWidth_px > 0 ? contentWidth_px : 0;
 }

@@ -16,20 +16,16 @@
 #include "debug.h"
 #include "state_buffer.h"
 #include "debugger.h"
+#include "debugger_input_bindings.h"
 #include "ui.h"
+#include "hotkeys.h"
 #include "e9ui_button.h"
 #include "shader_ui.h"
 #include "emu_geo.h"
-#include "custom_ui.h"
-
-typedef enum emu_range_bar_kind
-{
-    emu_range_bar_kindBplptr = 0,
-    emu_range_bar_kindCopper = 1
-} emu_range_bar_kind_t;
+#define EMU_RANGE_BAR_MAX 4
 
 typedef struct emu_range_bar_binding {
-    emu_range_bar_kind_t kind;
+    size_t index;
 } emu_range_bar_binding_t;
 
 typedef struct geo9000_state {
@@ -38,15 +34,95 @@ typedef struct geo9000_state {
     int histogramEnabled;
     char *shaderUiBtnMeta;
     char *buttonStackMeta;
-    char *rangeBarLeftMeta;
-    char *rangeBarRightMeta;
-    emu_range_bar_binding_t rangeBarBindings[2];
+    size_t rangeBarCount;
+    char *rangeBarMeta[EMU_RANGE_BAR_MAX];
+    emu_range_bar_binding_t rangeBarBindings[EMU_RANGE_BAR_MAX];
 } emu_state_t;
 
 typedef struct geo9000_button_stack_state {
     int padding;
     int gap;
 } emu_button_stack_state_t;
+
+static int emu_mouseCaptured = 0;
+static char emu_mouseCaptureMessage[160];
+
+static int
+emu_mouseCaptureEnabledForCurrentTarget(void)
+{
+    if (!target || !target->emu || !target->emu->mouseCaptureCanEnable) {
+        return 0;
+    }
+    return target->emu->mouseCaptureCanEnable() ? 1 : 0;
+}
+
+static int
+emu_mouseCaptureEnable(e9ui_context_t *ctx)
+{
+    int relativeEnabled = 0;
+    int canCapture = 0;
+    char releaseBinding[64];
+
+    if (!ctx) {
+        return 0;
+    }
+    if (emu_mouseCaptured) {
+        return 1;
+    }
+    canCapture = emu_mouseCaptureEnabledForCurrentTarget();
+    if (!canCapture) {
+        return 0;
+    }
+    if (SDL_SetRelativeMouseMode(SDL_TRUE) == 0) {
+        relativeEnabled = 1;
+    }
+    if (ctx->window) {
+        SDL_SetWindowGrab(ctx->window, SDL_TRUE);
+    }
+    (void)SDL_CaptureMouse(SDL_TRUE);
+    SDL_ShowCursor(SDL_DISABLE);
+    if (!relativeEnabled && ctx && ctx->window) {
+        SDL_RaiseWindow(ctx->window);
+    }
+    emu_mouseCaptured = 1;
+    if (hotkeys_formatActionBindingDisplay("mouse_release", releaseBinding, sizeof(releaseBinding)) &&
+        releaseBinding[0]) {
+        snprintf(emu_mouseCaptureMessage, sizeof(emu_mouseCaptureMessage),
+                 "MOUSE CAPTURED (%s TO RELEASE)", releaseBinding);
+        e9ui_showTransientMessage(emu_mouseCaptureMessage);
+    } else {
+        e9ui_showTransientMessage("MOUSE CAPTURED");
+    }
+    return 1;
+}
+
+int
+emu_mouseCaptureRelease(e9ui_context_t *ctx)
+{
+    if (!emu_mouseCaptured) {
+        return 0;
+    }
+    if (ctx && ctx->window) {
+        SDL_SetWindowGrab(ctx->window, SDL_FALSE);
+    }
+    (void)SDL_CaptureMouse(SDL_FALSE);
+    SDL_SetRelativeMouseMode(SDL_FALSE);
+    SDL_ShowCursor(SDL_ENABLE);
+    emu_mouseCaptured = 0;
+    return 1;
+}
+
+static void
+emu_mouseCaptureValidate(e9ui_context_t *ctx)
+{
+    if (!emu_mouseCaptured) {
+        return;
+    }
+    if (emu_mouseCaptureEnabledForCurrentTarget()) {
+        return;
+    }
+    (void)emu_mouseCaptureRelease(ctx);
+}
 
 static void
 emu_buttonStackMeasure(e9ui_component_t *self, e9ui_context_t *ctx, int *outW, int *outH)
@@ -217,124 +293,24 @@ emu_seekTooltip(float percent, char *out, size_t cap, void *user)
     snprintf(out, cap, "Frame %llu", (unsigned long long)frame_no);
 }
 
-static int
-emu_percentToVideoLine(float percent, int lineCount)
-{
-    if (lineCount <= 1) {
-        return 0;
-    }
-    float clamped = percent;
-    if (clamped < 0.0f) {
-        clamped = 0.0f;
-    }
-    if (clamped > 1.0f) {
-        clamped = 1.0f;
-    }
-    return (int)(clamped * (float)(lineCount - 1) + 0.5f);
-}
-
-static float
-emu_videoLineToPercent(int videoLine, int lineCount)
-{
-    if (lineCount <= 1) {
-        return 0.0f;
-    }
-    int clamped = videoLine;
-    if (clamped < 0) {
-        clamped = 0;
-    }
-    if (clamped >= lineCount) {
-        clamped = lineCount - 1;
-    }
-    return (float)clamped / (float)(lineCount - 1);
-}
-
-static int
-emu_rangeBarGetCoreRangeFromPercent(float startPercent, float endPercent, int *outStartLine, int *outEndLine)
-{
-    int lineCount = 0;
-    if (!libretro_host_debugAmiGetVideoLineCount(&lineCount) || lineCount <= 0) {
-        return 0;
-    }
-    int startVideoLine = emu_percentToVideoLine(startPercent, lineCount);
-    int endVideoLine = emu_percentToVideoLine(endPercent, lineCount);
-    int startLine = -1;
-    int endLine = -1;
-    if (!libretro_host_debugAmiVideoLineToCoreLine(startVideoLine, &startLine)) {
-        return 0;
-    }
-    if (!libretro_host_debugAmiVideoLineToCoreLine(endVideoLine, &endLine)) {
-        return 0;
-    }
-    if (endLine < startLine) {
-        int temp = startLine;
-        startLine = endLine;
-        endLine = temp;
-    }
-    if (outStartLine) {
-        *outStartLine = startLine;
-    }
-    if (outEndLine) {
-        *outEndLine = endLine;
-    }
-    return 1;
-}
-
-static int
-emu_rangeBarSetPercentFromCoreLines(e9ui_component_t *bar, int startLine, int endLine)
-{
-    if (!bar) {
-        return 0;
-    }
-    int lineCount = 0;
-    if (!libretro_host_debugAmiGetVideoLineCount(&lineCount) || lineCount <= 0) {
-        return 0;
-    }
-    int startVideoLine = -1;
-    int endVideoLine = -1;
-    if (!libretro_host_debugAmiCoreLineToVideoLine(startLine, &startVideoLine)) {
-        return 0;
-    }
-    if (!libretro_host_debugAmiCoreLineToVideoLine(endLine, &endVideoLine)) {
-        return 0;
-    }
-    float startPercent = emu_videoLineToPercent(startVideoLine, lineCount);
-    float endPercent = emu_videoLineToPercent(endVideoLine, lineCount);
-    if (endPercent < startPercent) {
-        float temp = startPercent;
-        startPercent = endPercent;
-        endPercent = temp;
-    }
-    range_bar_setRangePercent(bar, startPercent, endPercent);
-    return 1;
-}
-
 static void
 emu_rangeBarChanged(float startPercent, float endPercent, void *user)
 {
     emu_range_bar_binding_t *binding = (emu_range_bar_binding_t*)user;
-    if (!binding || target != target_amiga()) {
+    if (!binding || !target || !target->emu || !target->emu->rangeBarChanged) {
         return;
     }
-    int startLine = -1;
-    int endLine = -1;
-    if (!emu_rangeBarGetCoreRangeFromPercent(startPercent, endPercent, &startLine, &endLine)) {
-        return;
-    }
-    if (binding->kind == emu_range_bar_kindCopper) {
-        custom_ui_setCopperLimitRange(startLine, endLine);
-    } else {
-        custom_ui_setBplptrLineLimitRange(startLine, endLine);
-    }
+    target->emu->rangeBarChanged(binding->index, startPercent, endPercent);
 }
 
 static void
 emu_rangeBarDragging(int dragging, float startPercent, float endPercent, void *user)
 {
-    (void)dragging;
-    (void)startPercent;
-    (void)endPercent;
-    (void)user;
+    emu_range_bar_binding_t *binding = (emu_range_bar_binding_t*)user;
+    if (!binding || !target || !target->emu || !target->emu->rangeBarDragging) {
+        return;
+    }
+    target->emu->rangeBarDragging(binding->index, dragging, startPercent, endPercent);
 }
 
 static void
@@ -344,44 +320,18 @@ emu_rangeBarTooltip(float startPercent, float endPercent, char *out, size_t cap,
     if (!out || cap == 0 || !binding) {
         return;
     }
-    int startLine = -1;
-    int endLine = -1;
-    if (!emu_rangeBarGetCoreRangeFromPercent(startPercent, endPercent, &startLine, &endLine)) {
-        return;
+    if (target && target->emu && target->emu->rangeBarTooltip) {
+        target->emu->rangeBarTooltip(binding->index, startPercent, endPercent, out, cap);
     }
-    const char *label = (binding->kind == emu_range_bar_kindCopper) ? "Copper" : "BPLPTR";
-    snprintf(out, cap, "%s %d..%d", label, startLine, endLine);
 }
 
 static int
-emu_rangeBarSyncFromCustomUi(e9ui_component_t *bar, emu_range_bar_kind_t kind)
+emu_rangeBarSync(e9ui_component_t *bar, size_t index)
 {
-    if (!bar || target != target_amiga()) {
+    if (!bar || !target || !target->emu || !target->emu->rangeBarSync) {
         return 0;
     }
-    int enabled = 0;
-    int startLine = 0;
-    int endLine = 0;
-    if (kind == emu_range_bar_kindCopper) {
-        enabled = custom_ui_getCopperLimitEnabled();
-        if (!custom_ui_getCopperLimitRange(&startLine, &endLine)) {
-            enabled = 0;
-        }
-    } else {
-        enabled = custom_ui_getBplptrBlockEnabled();
-        if (!custom_ui_getBplptrLineLimitRange(&startLine, &endLine)) {
-            enabled = 0;
-        }
-    }
-    if (!enabled) {
-        e9ui_setHidden(bar, 1);
-        return 0;
-    }
-    if (!emu_rangeBarSetPercentFromCoreLines(bar, startLine, endLine)) {
-        e9ui_setHidden(bar, 1);
-        return 0;
-    }
-    return 1;
+    return target->emu->rangeBarSync(index, bar) ? 1 : 0;
 }
 
 
@@ -458,22 +408,21 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
     if (!self || !ev) {
         return 0;
     }
+    emu_mouseCaptureValidate(ctx);
     emu_state_t *state = (emu_state_t *)self->state;
     if (ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP || ev->type == SDL_MOUSEMOTION) {
-        if (state && state->rangeBarLeftMeta) {
-            e9ui_component_t *rangeBarLeft = e9ui_child_find(self, state->rangeBarLeftMeta);
-            if (rangeBarLeft &&
-                (range_bar_isDragging(rangeBarLeft) || !e9ui_getHidden(rangeBarLeft)) &&
-                rangeBarLeft->handleEvent && rangeBarLeft->handleEvent(rangeBarLeft, ctx, ev)) {
-                return 1;
-            }
-        }
-        if (state && state->rangeBarRightMeta) {
-            e9ui_component_t *rangeBarRight = e9ui_child_find(self, state->rangeBarRightMeta);
-            if (rangeBarRight &&
-                (range_bar_isDragging(rangeBarRight) || !e9ui_getHidden(rangeBarRight)) &&
-                rangeBarRight->handleEvent && rangeBarRight->handleEvent(rangeBarRight, ctx, ev)) {
-                return 1;
+        if (state) {
+            for (size_t i = 0; i < state->rangeBarCount; ++i) {
+                e9ui_component_t *rangeBar = NULL;
+                if (!state->rangeBarMeta[i]) {
+                    continue;
+                }
+                rangeBar = e9ui_child_find(self, state->rangeBarMeta[i]);
+                if (rangeBar &&
+                    (range_bar_isDragging(rangeBar) || !e9ui_getHidden(rangeBar)) &&
+                    rangeBar->handleEvent && rangeBar->handleEvent(rangeBar, ctx, ev)) {
+                    return 1;
+                }
             }
         }
         if (state && state->seekBarMeta) {
@@ -494,6 +443,9 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
         int my = (ev->type == SDL_MOUSEMOTION) ? ev->motion.y : ev->button.y;
         if (!emu_pointInBounds(self, mx, my)) {
             return 0;
+        }
+        if (ev->type == SDL_MOUSEBUTTONDOWN) {
+            (void)emu_mouseCaptureEnable(ctx);
         }
         if (ev->type == SDL_MOUSEBUTTONDOWN && ctx && e9ui_getFocus(ctx) != self) {
             return 1;
@@ -523,6 +475,7 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
         return 0;
     }
     unsigned id = 0;
+    unsigned port = 0;
     if (ev->type == SDL_KEYDOWN && ev->key.repeat) {
         return 1;
     }
@@ -541,7 +494,13 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
     if (rawMods & KMOD_GUI) {
         mods = (SDL_Keymod)(mods | KMOD_GUI);
     }
-    if (target->emu->mapKeyToJoypad(ev->key.keysym.sym, &id)) {
+    if (debugger_input_bindings_mapKeyToJoypadPort(target ? target->coreIndex : TARGET_NEOGEO,
+                                                   (target && target->coreOptionGetValue) ? target->coreOptionGetValue : NULL,
+                                                   ev->key.keysym.sym,
+                                                   &port,
+                                                   &id)) {
+        libretro_host_setJoypadState(port, id, pressed);
+    } else if (target->emu->mapKeyToJoypad(ev->key.keysym.sym, &id)) {
         libretro_host_setJoypadState(emu_joypadPort(), id, pressed);
     } else {
         SDL_Keycode key = ev->key.keysym.sym;
@@ -590,6 +549,7 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
         return;
     }
     emu_state_t *state = (emu_state_t *)self->state;
+    emu_mouseCaptureValidate(ctx);
     int focused = (e9ui_getFocus(ctx) == self);
     if (!focused && state && state->wasFocused) {
         libretro_host_clearJoypadState();
@@ -623,27 +583,20 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
 
     target->emu->render(ctx, &dst);    
 
-    if (state && target == target_amiga()) {
+    if (state && state->rangeBarCount > 0) {
         e9ui_rect_t vidBounds = { dst.x, dst.y, dst.w, dst.h };
-        if (state->rangeBarLeftMeta) {
-            e9ui_component_t *rangeBarLeft = e9ui_child_find(self, state->rangeBarLeftMeta);
-            if (rangeBarLeft) {
-                range_bar_layoutInParent(rangeBarLeft, ctx, vidBounds);
-                e9ui_setAutoHideClip(rangeBarLeft, &self->bounds);
-                if (emu_rangeBarSyncFromCustomUi(rangeBarLeft, emu_range_bar_kindBplptr) &&
-                    !e9ui_getHidden(rangeBarLeft) && rangeBarLeft->render) {
-                    rangeBarLeft->render(rangeBarLeft, ctx);
-                }
+        for (size_t i = 0; i < state->rangeBarCount; ++i) {
+            e9ui_component_t *rangeBar = NULL;
+            if (!state->rangeBarMeta[i]) {
+                continue;
             }
-        }
-        if (state->rangeBarRightMeta) {
-            e9ui_component_t *rangeBarRight = e9ui_child_find(self, state->rangeBarRightMeta);
-            if (rangeBarRight) {
-                range_bar_layoutInParent(rangeBarRight, ctx, vidBounds);
-                e9ui_setAutoHideClip(rangeBarRight, &self->bounds);
-                if (emu_rangeBarSyncFromCustomUi(rangeBarRight, emu_range_bar_kindCopper) &&
-                    !e9ui_getHidden(rangeBarRight) && rangeBarRight->render) {
-                    rangeBarRight->render(rangeBarRight, ctx);
+            rangeBar = e9ui_child_find(self, state->rangeBarMeta[i]);
+            if (rangeBar) {
+                range_bar_layoutInParent(rangeBar, ctx, vidBounds);
+                e9ui_setAutoHideClip(rangeBar, &self->bounds);
+                if (emu_rangeBarSync(rangeBar, i) &&
+                    !e9ui_getHidden(rangeBar) && rangeBar->render) {
+                    rangeBar->render(rangeBar, ctx);
                 }
             }
         }
@@ -693,6 +646,7 @@ emu_dtor(e9ui_component_t *self, e9ui_context_t *ctx)
     if (!self) {
         return;
     }
+    (void)emu_mouseCaptureRelease(ctx);
     if (target && target->emu && target->emu->destroy) {
         target->emu->destroy();
     }
@@ -738,7 +692,7 @@ emu_makeComponent(void)
 
     e9ui_component_t *seek = seek_bar_make();
     if (seek) {
-        seek_bar_setMargins(seek, 18, 18, 10);
+        seek_bar_setMargins(seek, 30, 30, 10);
         seek_bar_setHeight(seek, 14);
         seek_bar_setHoverMargin(seek, 18);
         seek_bar_setCallback(seek, emu_seekBarChanged, NULL);
@@ -749,36 +703,37 @@ emu_makeComponent(void)
         e9ui_child_add(comp, seek, state->seekBarMeta);
     }
 
-    if (target == target_amiga()) {
-        state->rangeBarBindings[0].kind = emu_range_bar_kindBplptr;
-        state->rangeBarBindings[1].kind = emu_range_bar_kindCopper;
-
-        e9ui_component_t *rangeBarLeft = range_bar_make();
-        if (rangeBarLeft) {
-            range_bar_setSide(rangeBarLeft, range_bar_sideLeft);
-            range_bar_setMargins(rangeBarLeft, 10, 10, 10);
-            range_bar_setWidth(rangeBarLeft, 12);
-            range_bar_setHoverMargin(rangeBarLeft, 18);
-            range_bar_setCallback(rangeBarLeft, emu_rangeBarChanged, &state->rangeBarBindings[0]);
-            range_bar_setDragCallback(rangeBarLeft, emu_rangeBarDragging, &state->rangeBarBindings[0]);
-            range_bar_setTooltipCallback(rangeBarLeft, emu_rangeBarTooltip, &state->rangeBarBindings[0]);
-            e9ui_setAutoHide(rangeBarLeft, 1, range_bar_getHoverMargin(rangeBarLeft));
-            state->rangeBarLeftMeta = alloc_strdup("range_bar_left");
-            e9ui_child_add(comp, rangeBarLeft, state->rangeBarLeftMeta);
+    if (target && target->emu && target->emu->rangeBarCount && target->emu->rangeBarDescribe) {
+        size_t count = target->emu->rangeBarCount();
+        if (count > EMU_RANGE_BAR_MAX) {
+            count = EMU_RANGE_BAR_MAX;
         }
-
-        e9ui_component_t *rangeBarRight = range_bar_make();
-        if (rangeBarRight) {
-            range_bar_setSide(rangeBarRight, range_bar_sideRight);
-            range_bar_setMargins(rangeBarRight, 10, 10, 10);
-            range_bar_setWidth(rangeBarRight, 12);
-            range_bar_setHoverMargin(rangeBarRight, 18);
-            range_bar_setCallback(rangeBarRight, emu_rangeBarChanged, &state->rangeBarBindings[1]);
-            range_bar_setDragCallback(rangeBarRight, emu_rangeBarDragging, &state->rangeBarBindings[1]);
-            range_bar_setTooltipCallback(rangeBarRight, emu_rangeBarTooltip, &state->rangeBarBindings[1]);
-            e9ui_setAutoHide(rangeBarRight, 1, range_bar_getHoverMargin(rangeBarRight));
-            state->rangeBarRightMeta = alloc_strdup("range_bar_right");
-            e9ui_child_add(comp, rangeBarRight, state->rangeBarRightMeta);
+        state->rangeBarCount = count;
+        for (size_t i = 0; i < state->rangeBarCount; ++i) {
+            emu_range_bar_desc_t desc;
+            e9ui_component_t *rangeBar = NULL;
+            memset(&desc, 0, sizeof(desc));
+            if (!target->emu->rangeBarDescribe(i, &desc)) {
+                continue;
+            }
+            if (!desc.metaKey || !*desc.metaKey) {
+                continue;
+            }
+            rangeBar = range_bar_make();
+            if (!rangeBar) {
+                continue;
+            }
+            range_bar_setSide(rangeBar, (range_bar_side_t)desc.side);
+            range_bar_setMargins(rangeBar, desc.marginTop, desc.marginBottom, desc.marginSide);
+            range_bar_setWidth(rangeBar, desc.width);
+            range_bar_setHoverMargin(rangeBar, desc.hoverMargin);
+            state->rangeBarBindings[i].index = i;
+            range_bar_setCallback(rangeBar, emu_rangeBarChanged, &state->rangeBarBindings[i]);
+            range_bar_setDragCallback(rangeBar, emu_rangeBarDragging, &state->rangeBarBindings[i]);
+            range_bar_setTooltipCallback(rangeBar, emu_rangeBarTooltip, &state->rangeBarBindings[i]);
+            e9ui_setAutoHide(rangeBar, 1, range_bar_getHoverMargin(rangeBar));
+            state->rangeBarMeta[i] = alloc_strdup(desc.metaKey);
+            e9ui_child_add(comp, rangeBar, state->rangeBarMeta[i]);
         }
     }
     return comp;

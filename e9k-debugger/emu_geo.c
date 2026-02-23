@@ -7,6 +7,7 @@
  */
 
 #include "debugger.h"
+#include "debugger_input_bindings.h"
 #include "e9ui.h"
 #include "sprite_debug.h"
 #include "libretro.h"
@@ -523,47 +524,12 @@ emu_e9k_spriteOverlayRender(SDL_Renderer *renderer, const SDL_Rect *dst, const e
 int
 emu_geo_mapKeyToJoypad(SDL_Keycode key, unsigned *id)
 {
-    if (!id) {
-        return 0;
-    }
-    switch (key) {
-    case SDLK_UP:
-        *id = RETRO_DEVICE_ID_JOYPAD_UP;
-        return 1;
-    case SDLK_DOWN:
-        *id = RETRO_DEVICE_ID_JOYPAD_DOWN;
-        return 1;
-    case SDLK_LEFT:
-        *id = RETRO_DEVICE_ID_JOYPAD_LEFT;
-        return 1;
-    case SDLK_RIGHT:
-        *id = RETRO_DEVICE_ID_JOYPAD_RIGHT;
-        return 1;
-    case SDLK_LCTRL:
-    case SDLK_RCTRL:
-        *id = RETRO_DEVICE_ID_JOYPAD_B;
-        return 1;
-    case SDLK_LALT:
-    case SDLK_RALT:
-        *id = RETRO_DEVICE_ID_JOYPAD_A;
-        return 1;
-    case SDLK_SPACE:
-        *id = RETRO_DEVICE_ID_JOYPAD_Y;
-        return 1;
-    case SDLK_LSHIFT:
-    case SDLK_RSHIFT:
-        *id = RETRO_DEVICE_ID_JOYPAD_X;
-        return 1;
-    case SDLK_1:
-        *id = RETRO_DEVICE_ID_JOYPAD_START;
-        return 1;
-    case SDLK_5:
-        *id = RETRO_DEVICE_ID_JOYPAD_SELECT;
-        return 1;
-    default:
-        break;
-    }
-    return 0;
+    return debugger_input_bindings_mapKeyToJoypad(TARGET_NEOGEO,
+                                                  (target && target->coreOptionGetValue)
+                                                      ? target->coreOptionGetValue
+                                                      : NULL,
+                                                  key,
+                                                  id);
 }
 
 uint16_t

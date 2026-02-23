@@ -1,7 +1,9 @@
 #include "debugger.h"
 #include "target.h"
 #include "emu_ami.h"
+#include "emu.h"
 #include "rom_config.h"
+#include "debugger_input_bindings.h"
 #include "amiga_uae_options.h"
 #include "neogeo_core_options.h"
 #include "debugger_platform.h"
@@ -13,6 +15,167 @@
 
 static const char *
 target_amiga_defaultCorePath(void);
+
+static void
+target_amiga_configControllerPorts(void);
+
+static const char *
+target_amiga_mouseCaptureOptionKey(void)
+{
+    return "e9k_debugger_amiga_mouse_capture";
+}
+
+static const char *
+target_amiga_normalizeMouseCaptureOverrideValue(const char *value)
+{
+    if (!value || !*value) {
+        return NULL;
+    }
+    if (strcmp(value, "enabled") == 0 || strcmp(value, "Enabled") == 0) {
+        return "enabled";
+    }
+    if (strcmp(value, "disabled") == 0 || strcmp(value, "Disabled") == 0) {
+        return "disabled";
+    }
+    return NULL;
+}
+
+static char target_amiga_activeRomMouseCaptureOverride[16];
+static int target_amiga_hasActiveRomMouseCaptureOverride = 0;
+
+static const char *
+target_amiga_getActiveMouseCaptureOverride(void)
+{
+    if (!target_amiga_hasActiveRomMouseCaptureOverride) {
+        return NULL;
+    }
+    return target_amiga_activeRomMouseCaptureOverride[0] ? target_amiga_activeRomMouseCaptureOverride : NULL;
+}
+
+static void
+target_amiga_setActiveMouseCaptureOverride(const char *value)
+{
+    const char *normalized = target_amiga_normalizeMouseCaptureOverrideValue(value);
+    if (!normalized) {
+        if (!value || !*value) {
+            target_amiga_activeRomMouseCaptureOverride[0] = '\0';
+            target_amiga_hasActiveRomMouseCaptureOverride = 0;
+        }
+        return;
+    }
+    strncpy(target_amiga_activeRomMouseCaptureOverride, normalized, sizeof(target_amiga_activeRomMouseCaptureOverride) - 1);
+    target_amiga_activeRomMouseCaptureOverride[sizeof(target_amiga_activeRomMouseCaptureOverride) - 1] = '\0';
+    target_amiga_hasActiveRomMouseCaptureOverride = 1;
+}
+
+static size_t
+target_amiga_romConfigCustomOptionCount(void)
+{
+    return 1;
+}
+
+static const char *
+target_amiga_romConfigCustomOptionKeyAt(size_t index)
+{
+    return index == 0 ? target_amiga_mouseCaptureOptionKey() : NULL;
+}
+
+static const char *
+target_amiga_romConfigGetActiveCustomOptionValue(const char *key)
+{
+    if (!key || strcmp(key, target_amiga_mouseCaptureOptionKey()) != 0) {
+        return NULL;
+    }
+    return target_amiga_getActiveMouseCaptureOverride();
+}
+
+static void
+target_amiga_romConfigSetActiveCustomOptionValue(const char *key, const char *value)
+{
+    if (!key || strcmp(key, target_amiga_mouseCaptureOptionKey()) != 0) {
+        return;
+    }
+    target_amiga_setActiveMouseCaptureOverride(value);
+}
+
+static void
+target_amiga_romConfigClearActiveCustomOptions(void)
+{
+    target_amiga_setActiveMouseCaptureOverride(NULL);
+}
+
+static int
+target_amiga_coreOptionsIsSyntheticOptionKey(const char *key)
+{
+    if (!key) {
+        return 0;
+    }
+    return strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0 ? 1 : 0;
+}
+
+static size_t
+target_amiga_coreOptionsSyntheticDefCount(void)
+{
+    return 1;
+}
+
+static const struct retro_core_option_v2_definition *
+target_amiga_coreOptionsSyntheticDefAt(size_t index)
+{
+    static const struct retro_core_option_v2_definition def = {
+        .key = "e9k_debugger_amiga_mouse_capture",
+        .desc = "Mouse Capture",
+        .default_value = "enabled",
+        .values = {
+            { "enabled", "Enabled" },
+            { "disabled", "Disabled" },
+            { NULL, NULL }
+        }
+    };
+    if (index != 0) {
+        return NULL;
+    }
+    return &def;
+}
+
+static size_t
+target_amiga_coreOptionsMapDebuggerInputSpecIndex(size_t specIndex)
+{
+    if (specIndex == 4) {
+        return 5;
+    }
+    if (specIndex == 5) {
+        return 4;
+    }
+    if (specIndex == 16) {
+        return 17;
+    }
+    if (specIndex == 17) {
+        return 16;
+    }
+    return specIndex;
+}
+
+static const char *
+target_amiga_coreOptionsDebuggerInputLabel(const char *optionKey, const char *defaultLabel)
+{
+    if (!optionKey || !*optionKey) {
+        return defaultLabel;
+    }
+    if (strcmp(optionKey, "e9k_debugger_input_button_a") == 0) {
+        return "Button 2";
+    }
+    if (strcmp(optionKey, "e9k_debugger_input_button_b") == 0) {
+        return "Button 1";
+    }
+    if (strcmp(optionKey, "e9k_debugger_input_p2_button_a") == 0) {
+        return "P2 Button 2";
+    }
+    if (strcmp(optionKey, "e9k_debugger_input_p2_button_b") == 0) {
+        return "P2 Button 1";
+    }
+    return defaultLabel;
+}
 
 static void
 target_amiga_setConfigDefaults(e9k_system_config_t *config)
@@ -181,7 +344,7 @@ target_amiga_validateSettings(void)
     const char *saveDir = debugger.settingsEdit.amiga.libretro.saveDir[0] ?
         debugger.settingsEdit.amiga.libretro.saveDir : debugger.settingsEdit.amiga.libretro.systemDir;
     const char *romPath = debugger.settingsEdit.amiga.libretro.romPath;
-    rom_config_saveSettingsForRom(saveDir, romPath,
+    rom_config_saveSettingsForRom(saveDir, romPath, target_amiga(),
                                   debugger.settingsEdit.amiga.libretro.exePath,
                                   debugger.settingsEdit.amiga.libretro.sourceDir,
                                   debugger.settingsEdit.amiga.libretro.toolchainPrefix);
@@ -345,6 +508,9 @@ target_amiga_coreOptionNeedsRestart(const char *key)
       return 0;
     }
   }
+  if (strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0) {
+    return 0;
+  }
   return 1;
 }
 
@@ -354,11 +520,63 @@ target_amiga_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_state
   (void)ctx;
   int anyChange = 0;
   int anyRestartChange = 0;
+  int anyRomConfigBindingChange = 0;
   
-  for (size_t i = 0; i < st->entryCount; ++i) {
-    const char *key = st->entries[i].key;
-    const char *value = st->entries[i].value;
-    if (!key || !*key) {
+    for (size_t i = 0; i < st->entryCount; ++i) {
+        const char *key = st->entries[i].key;
+        const char *value = st->entries[i].value;
+        if (!key || !*key) {
+            continue;
+        }
+    if (strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0) {
+      if (!rom_config_activeInit && (!e9ui || !e9ui->settingsModal)) {
+        rom_config_syncActiveFromCurrentSystem();
+      }
+      const char *existingOverride = target_amiga_getActiveMouseCaptureOverride();
+      const char *rawDesiredOverride = (value && *value) ? value : NULL;
+      const char *desiredOverride = target_amiga_normalizeMouseCaptureOverrideValue(rawDesiredOverride);
+      if (rawDesiredOverride && !desiredOverride) {
+        continue;
+      }
+      if (desiredOverride) {
+        const char *defValue = core_options_findDefaultValue(st, key);
+        const char *defOverride = target_amiga_normalizeMouseCaptureOverrideValue(defValue);
+        if (defOverride && strcmp(defOverride, desiredOverride) == 0) {
+          desiredOverride = NULL;
+        }
+      }
+      if ((existingOverride && !desiredOverride) ||
+          (!existingOverride && desiredOverride) ||
+          (existingOverride && desiredOverride && !core_options_stringsEqual(existingOverride, desiredOverride))) {
+        target_amiga_setActiveMouseCaptureOverride(desiredOverride);
+        if (desiredOverride && strcmp(desiredOverride, "disabled") == 0) {
+          (void)emu_mouseCaptureRelease(ctx);
+        }
+        anyChange = 1;
+        anyRomConfigBindingChange = 1;
+      }
+      continue;
+    }
+    if (debugger_input_bindings_isOptionKey(key)) {
+      const char *existingBinding = rom_config_getActiveInputBindingValue(key);
+      const char *desiredBinding = (value && *value) ? value : NULL;
+      if (desiredBinding) {
+        const char *defValue = core_options_findDefaultValue(st, key);
+        if (defValue && strcmp(defValue, desiredBinding) == 0) {
+          desiredBinding = NULL;
+        }
+      }
+      if (desiredBinding) {
+        if (!existingBinding || !core_options_stringsEqual(existingBinding, desiredBinding)) {
+          rom_config_setActiveInputBindingValue(key, desiredBinding);
+          anyChange = 1;
+          anyRomConfigBindingChange = 1;
+        }
+      } else if (existingBinding) {
+        rom_config_setActiveInputBindingValue(key, NULL);
+        anyChange = 1;
+        anyRomConfigBindingChange = 1;
+      }
       continue;
     }
     const char *defValue = core_options_findDefaultValue(st, key);
@@ -390,11 +608,15 @@ target_amiga_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_state
   if (anyChange) {
     settings_markCoreOptionsDirtyWithRestart(anyRestartChange);
   }
-  if (anyChange && e9ui->settingsSaveButton) {
-    e9ui_button_setGlowPulse(e9ui->settingsSaveButton, 1);
+  if (anyRomConfigBindingChange && (!e9ui || !e9ui->settingsModal)) {
+    rom_config_saveCurrentRomSettings();
   }
   settings_refreshSaveLabel();
-  e9ui_showTransientMessage(anyChange ? "CORE OPTIONS STAGED" : "CORE OPTIONS: NO CHANGES");
+  if (anyChange) {
+    e9ui_showTransientMessage((!e9ui || !e9ui->settingsModal) ? "CORE OPTIONS APPLIED" : "CORE OPTIONS STAGED");
+  } else {
+    e9ui_showTransientMessage("CORE OPTIONS: NO CHANGES");
+  }
   core_options_closeModal();
 }
 
@@ -402,6 +624,12 @@ target_amiga_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_state
 const char*
 target_amiga_coreOptionGetValue(const char* key)
 {
+  if (strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0) {
+    return target_amiga_getActiveMouseCaptureOverride();
+  }
+  if (debugger_input_bindings_isOptionKey(key)) {
+    return rom_config_getActiveInputBindingValue(key);
+  }
   return amiga_uaeGetPuaeOptionValue(key);
 }
 
@@ -439,6 +667,7 @@ target_amiga_pickElfToolchainPaths(const char** rawElf, const char** toolchainPr
 static void
 target_amiga_applyCoreOptions(void)
 {
+  target_amiga_configControllerPorts();
   const char *uaePath = debugger.libretro.romPath[0] ? debugger.libretro.romPath : debugger.config.amiga.libretro.romPath;
   if (uaePath && *uaePath) {
     amiga_uaeApplyPuaeOptionsToHost(uaePath);
@@ -505,9 +734,17 @@ target_amiga_getBadgeTexture(SDL_Renderer *renderer, target_iface_t* t, int* out
 
 static void
 target_amiga_configControllerPorts(void)
-{  
+{
+  const char *joyportMode = amiga_uaeGetPuaeOptionValue("puae_joyport");
+  unsigned port1Device = RETRO_DEVICE_MOUSE;
+  if (joyportMode &&
+      (strcmp(joyportMode, "joystick") == 0 ||
+       strcmp(joyportMode, "Joystick") == 0 ||
+       strcmp(joyportMode, "Joystick (Port 1)") == 0)) {
+    port1Device = RETRO_DEVICE_JOYPAD;
+  }
   libretro_host_setControllerPortDevice(0, RETRO_DEVICE_JOYPAD);
-  libretro_host_setControllerPortDevice(1, RETRO_DEVICE_MOUSE);
+  libretro_host_setControllerPortDevice(1, port1Device);
 }
 
 
@@ -951,6 +1188,16 @@ static target_iface_t _target_amiga = {
     .getBadgeTexture = target_amiga_getBadgeTexture,
     .configControllerPorts = target_amiga_configControllerPorts,
     .controllerMapButton = target_amiga_controllerMapButton,
+    .romConfigCustomOptionCount = target_amiga_romConfigCustomOptionCount,
+    .romConfigCustomOptionKeyAt = target_amiga_romConfigCustomOptionKeyAt,
+    .romConfigGetActiveCustomOptionValue = target_amiga_romConfigGetActiveCustomOptionValue,
+    .romConfigSetActiveCustomOptionValue = target_amiga_romConfigSetActiveCustomOptionValue,
+    .romConfigClearActiveCustomOptions = target_amiga_romConfigClearActiveCustomOptions,
+    .coreOptionsIsSyntheticOptionKey = target_amiga_coreOptionsIsSyntheticOptionKey,
+    .coreOptionsSyntheticDefCount = target_amiga_coreOptionsSyntheticDefCount,
+    .coreOptionsSyntheticDefAt = target_amiga_coreOptionsSyntheticDefAt,
+    .coreOptionsMapDebuggerInputSpecIndex = target_amiga_coreOptionsMapDebuggerInputSpecIndex,
+    .coreOptionsDebuggerInputLabel = target_amiga_coreOptionsDebuggerInputLabel,
   };
 
 target_iface_t *target_amiga(void) { return &_target_amiga; }  

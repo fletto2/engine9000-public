@@ -12,3 +12,24 @@
 #include "debugger.h"
 
 extern const emu_system_iface_t emu_ami_iface;
+
+int
+emu_ami_mouseCaptureCanEnable(void);
+
+size_t
+emu_ami_rangeBarCount(void);
+
+int
+emu_ami_rangeBarDescribe(size_t index, emu_range_bar_desc_t *outDesc);
+
+void
+emu_ami_rangeBarChanged(size_t index, float startPercent, float endPercent);
+
+void
+emu_ami_rangeBarDragging(size_t index, int dragging, float startPercent, float endPercent);
+
+void
+emu_ami_rangeBarTooltip(size_t index, float startPercent, float endPercent, char *out, size_t cap);
+
+int
+emu_ami_rangeBarSync(size_t index, e9ui_component_t *bar);

@@ -20,9 +20,12 @@
 #include "core_options.h"
 #include "debugger.h"
 #include "config.h"
+#include "hotkeys.h"
 #include "list.h"
 #include "system_badge.h"
 #include "rom_config.h"
+#include "e9ui_scroll.h"
+#include "state_buffer.h"
 
 //static
 //TODO    
@@ -33,6 +36,13 @@ settings_rebuildModalBody(e9ui_context_t *ctx);
 
 static e9ui_component_t *
 settings_makeSystemBadge(e9ui_context_t *ctx, target_iface_t* system);
+
+static void
+settings_uiDebuggerHotkeys(e9ui_context_t *ctx, void *user)
+{
+    (void)user;
+    hotkeys_showConfigModal(ctx);
+}
 
 static e9ui_component_t *
 settings_findFirstVisibleTextbox(e9ui_component_t *comp)
@@ -277,6 +287,31 @@ settings_needsRestart(void)
     return coreSystemChanged || selectedTarget->needsRestart();
 }
 
+static int
+settings_modalBodyViewportHeight(e9ui_context_t *ctx)
+{
+    if (!ctx) {
+        return 0;
+    }
+    int margin = e9ui_scale_px(ctx, 32);
+    int modalHeight = ctx->winH - margin * 2;
+    if (modalHeight < 1) {
+        modalHeight = 1;
+    }
+    TTF_Font *font = e9ui->theme.text.source ? e9ui->theme.text.source : ctx->font;
+    int textH = font ? TTF_FontHeight(font) : 16;
+    if (textH <= 0) {
+        textH = 16;
+    }
+    int titlePadY = e9ui_scale_px(ctx, 4);
+    int titleH = textH + titlePadY * 2;
+    int bodyH = modalHeight - titleH;
+    if (bodyH < 0) {
+        bodyH = 0;
+    }
+    return bodyH;
+}
+
 void
 settings_updateSaveLabel(void)
 {
@@ -340,42 +375,15 @@ settings_applyToolbarMode(void)
 }
 
 static int
-settings_checkboxGetMargin(const e9ui_context_t *ctx)
+settings_checkboxMeasureWidth(e9ui_component_t *checkbox, e9ui_context_t *ctx)
 {
-    int base = e9ui->theme.checkbox.margin;
-    if (base <= 0) {
-        base = E9UI_THEME_CHECKBOX_MARGIN;
+    int width = 0;
+    int height = 0;
+    if (!checkbox || !ctx) {
+        return 0;
     }
-    int scaled = e9ui_scale_px(ctx, base);
-    return scaled > 0 ? scaled : base;
-}
-
-static int
-settings_checkboxGetTextGap(const e9ui_context_t *ctx)
-{
-    int base = e9ui->theme.checkbox.textGap;
-    if (base <= 0) {
-        base = E9UI_THEME_CHECKBOX_TEXT_GAP;
-    }
-    int scaled = e9ui_scale_px(ctx, base);
-    return scaled > 0 ? scaled : base;
-}
-
-static int
-settings_checkboxMeasureWidth(const char *label, e9ui_context_t *ctx)
-{
-    TTF_Font *font = e9ui->theme.text.source ? e9ui->theme.text.source : (ctx ? ctx->font : NULL);
-    int textW = 0;
-    int textH = 0;
-    if (font && label && *label) {
-        TTF_SizeText(font, label, &textW, &textH);
-    }
-    int lineHeight = font ? TTF_FontHeight(font) : 16;
-    int pad = settings_checkboxGetMargin(ctx);
-    int height = pad + lineHeight + pad;
-    int size = height > 24 ? 24 : (height - 4 > 0 ? height - 4 : 16);
-    int gap = settings_checkboxGetTextGap(ctx);
-    return size + gap + textW;
+    e9ui_checkbox_measure(checkbox, ctx, &width, &height);
+    return width > 0 ? width : 0;
 }
 
 static int
@@ -419,6 +427,7 @@ static void
 settings_save(void)
 {
     int needsRestart = settings_needsRestart();
+    target_iface_t *previousTarget = target;
 
     target_iface_t *selectedTarget = debugger.settingsEdit.target ? debugger.settingsEdit.target : target;
     if (selectedTarget) {
@@ -426,6 +435,12 @@ settings_save(void)
     }
     settings_copyConfig(&debugger.config, &debugger.settingsEdit);
     target_setTarget(debugger.settingsEdit.target);
+    if (previousTarget != target) {
+        rom_config_clearActiveInputBindings();
+        if (target && target->romConfigClearActiveCustomOptions) {
+            target->romConfigClearActiveCustomOptions();
+        }
+    }
     crt_setEnabled(debugger.config.crtEnabled ? 1 : 0);
     debugger_libretroSelectConfig();
     rom_config_syncActiveFromCurrentSystem();
@@ -532,6 +547,10 @@ settings_applyRomConfigForSelection(settings_romselect_state_t *st)
     selectedTarget->applyRomConfigForSelection(st, &saveDir, &romPath);
     
     if (!romPath || !*romPath || !saveDir || !*saveDir) {
+        rom_config_clearActiveInputBindings();
+        if (selectedTarget && selectedTarget->romConfigClearActiveCustomOptions) {
+            selectedTarget->romConfigClearActiveCustomOptions();
+        }
         return;
     }
     char elfPath[PATH_MAX];
@@ -541,6 +560,7 @@ settings_applyRomConfigForSelection(settings_romselect_state_t *st)
     int hasSource = 0;
     int hasToolchain = 0;
     if (!rom_config_loadSettingsForRom(saveDir, romPath,
+                                       selectedTarget,
                                        elfPath, sizeof(elfPath),
                                        sourceDir, sizeof(sourceDir),
                                        toolchainPrefix, sizeof(toolchainPrefix),
@@ -706,6 +726,35 @@ settings_crtChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, v
 }
 
 static void
+settings_recordChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    int *flag = (int *)user;
+    if (!flag) {
+        return;
+    }
+    *flag = selected ? 1 : 0;
+    state_buffer_setRollingPaused(*flag ? 0 : 1);
+    settings_updateSaveLabel();
+    config_saveConfig();
+}
+
+static void
+settings_logosChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    int *flag = (int *)user;
+    if (!flag) {
+        return;
+    }
+    *flag = selected ? 1 : 0;
+    settings_markCoreOptionsDirtyWithRestart(1);
+    settings_updateSaveLabel();
+}
+
+static void
 settings_coreSystemSync(settings_coresystem_state_t *st, target_iface_t* system, e9ui_context_t *ctx)
 {
     if (!st || !system) {
@@ -824,6 +873,8 @@ settings_buildModalBody(e9ui_context_t *ctx)
     if (!ctx) {
         return NULL;
     }
+    int contentWidth = e9ui_scale_px(ctx, 640);
+    int formWidth = e9ui_scale_px(ctx, 600);
     target_iface_t *selectedTarget = debugger.settingsEdit.target ? debugger.settingsEdit.target : target;
 #if !E9K_ENABLE_MEGADRIVE
     if (selectedTarget == target_megadrive()) {
@@ -854,13 +905,13 @@ settings_buildModalBody(e9ui_context_t *ctx)
 
     e9ui_component_t *badge = settings_makeSystemBadge(ctx, selectedTarget ? selectedTarget : target);
     e9ui_component_t *rowHeader = NULL;
+    int rowHeaderBadgeWPx = e9ui_scale_px(ctx, 139);
+    int rowHeaderGapPx = e9ui_scale_px(ctx, 12);
     if (badge && rowCoreCenter) {
         rowHeader = e9ui_hstack_make();
         if (rowHeader) {
-            int badgeWPx = e9ui_scale_px(ctx, 139);
-            int gapPx = e9ui_scale_px(ctx, 12);
-            e9ui_hstack_addFixed(rowHeader, badge, badgeWPx);
-            e9ui_hstack_addFixed(rowHeader, e9ui_spacer_make(gapPx), gapPx);
+            e9ui_hstack_addFixed(rowHeader, badge, rowHeaderBadgeWPx);
+            e9ui_hstack_addFixed(rowHeader, e9ui_spacer_make(rowHeaderGapPx), rowHeaderGapPx);
             e9ui_hstack_addFlex(rowHeader, rowCoreCenter);
         } else {
             e9ui_childDestroy(badge, ctx);
@@ -874,6 +925,15 @@ settings_buildModalBody(e9ui_context_t *ctx)
                                                  debugger.settingsEdit.crtEnabled,
                                                  settings_crtChanged,
                                                  &debugger.settingsEdit.crtEnabled);
+    e9ui_component_t *cbRecord = e9ui_checkbox_make("RECORD",
+                                                    debugger.settingsEdit.recordEnabled,
+                                                    settings_recordChanged,
+                                                    &debugger.settingsEdit.recordEnabled);
+    e9ui_component_t *cbLogos = e9ui_checkbox_make("LOGOS",
+                                                   debugger.settingsEdit.logosEnabled,
+                                                   settings_logosChanged,
+                                                   &debugger.settingsEdit.logosEnabled);
+    e9ui_component_t *btnHotkeys = e9ui_button_make("Debugger Hotkeys", settings_uiDebuggerHotkeys, NULL);
     e9ui_component_t *rowGlobal = e9ui_hstack_make();
     e9ui_component_t *rowGlobalCenter = rowGlobal ? e9ui_center_make(rowGlobal) : NULL;
 
@@ -888,68 +948,131 @@ settings_buildModalBody(e9ui_context_t *ctx)
     }
 
     if (rowCore && ctx) {
-        int gap = e9ui_scale_px(ctx, 12);
-        int wNeogeo = cbNeogeo ? settings_checkboxMeasureWidth("NEO GEO", ctx) : 0;
-        int wAmiga = cbAmiga ? settings_checkboxMeasureWidth("AMIGA", ctx) : 0;
-        int wMegaDrive = cbMegaDrive ? settings_checkboxMeasureWidth("MEGA DRIVE", ctx) : 0;
+        int gap = e9ui_scale_px(ctx, 8);
+        int wNeogeo = cbNeogeo ? settings_checkboxMeasureWidth(cbNeogeo, ctx) : 0;
+        int wAmiga = cbAmiga ? settings_checkboxMeasureWidth(cbAmiga, ctx) : 0;
+        int wMegaDrive = cbMegaDrive ? settings_checkboxMeasureWidth(cbMegaDrive, ctx) : 0;
         int wCoreOptions = 0;
         int hCoreOptions = 0;
         if (btnCoreOptionsTop) {
             e9ui_button_measure(btnCoreOptionsTop, ctx, &wCoreOptions, &hCoreOptions);
             (void)hCoreOptions;
         }
-        int totalW = 0;
+        int leftW = 0;
         if (cbNeogeo) {
             e9ui_hstack_addFixed(rowCore, cbNeogeo, wNeogeo);
-            totalW += wNeogeo;
+            leftW += wNeogeo;
         }
         if (cbAmiga) {
-            if (totalW > 0) {
+            if (leftW > 0) {
                 e9ui_hstack_addFixed(rowCore, e9ui_spacer_make(gap), gap);
-                totalW += gap;
+                leftW += gap;
             }
             e9ui_hstack_addFixed(rowCore, cbAmiga, wAmiga);
-            totalW += wAmiga;
+            leftW += wAmiga;
         }
-    if (cbMegaDrive) {
-            if (totalW > 0) {
+        if (cbMegaDrive) {
+            if (leftW > 0) {
                 e9ui_hstack_addFixed(rowCore, e9ui_spacer_make(gap), gap);
-                totalW += gap;
+                leftW += gap;
             }
             e9ui_hstack_addFixed(rowCore, cbMegaDrive, wMegaDrive);
-            totalW += wMegaDrive;
+            leftW += wMegaDrive;
         }
         if (btnCoreOptionsTop && wCoreOptions > 0) {
-            if (totalW > 0) {
-                e9ui_hstack_addFixed(rowCore, e9ui_spacer_make(gap), gap);
-                totalW += gap;
+            if (leftW > 0) {
+                e9ui_hstack_addFlex(rowCore, e9ui_spacer_make(1));
             }
             e9ui_hstack_addFixed(rowCore, btnCoreOptionsTop, wCoreOptions);
-            totalW += wCoreOptions;
         }
         if (rowCoreCenter) {
-            e9ui_center_setSize(rowCoreCenter, e9ui_unscale_px(ctx, totalW), 0);
+            int rowCoreWidth = formWidth;
+            if (rowHeader) {
+                rowCoreWidth = formWidth - rowHeaderBadgeWPx - rowHeaderGapPx;
+            }
+            if (rowCoreWidth < 1) {
+                rowCoreWidth = 1;
+            }
+            e9ui_center_setSize(rowCoreCenter, e9ui_unscale_px(ctx, rowCoreWidth), 0);
         }
     }
     if (rowGlobal && ctx) {
-        int gap = e9ui_scale_px(ctx, 12);
-        int wFun = cbFun ? settings_checkboxMeasureWidth("FUN", ctx) : 0;
-        int wCrt = cbCrt ? settings_checkboxMeasureWidth("CRT", ctx) : 0;
-        int totalW = 0;
+        int gap = e9ui_scale_px(ctx, 8);
+        int wFun = cbFun ? settings_checkboxMeasureWidth(cbFun, ctx) : 0;
+        int wCrt = cbCrt ? settings_checkboxMeasureWidth(cbCrt, ctx) : 0;
+        int wRecord = cbRecord ? settings_checkboxMeasureWidth(cbRecord, ctx) : 0;
+        int wLogos = cbLogos ? settings_checkboxMeasureWidth(cbLogos, ctx) : 0;
+        int wHotkeys = 0;
+        int hHotkeys = 0;
+        if (btnHotkeys) {
+            e9ui_button_measure(btnHotkeys, ctx, &wHotkeys, &hHotkeys);
+            (void)hHotkeys;
+        }
+        int groupW = 0;
         if (cbFun) {
-            e9ui_hstack_addFixed(rowGlobal, cbFun, wFun);
-            totalW += wFun;
+            groupW += wFun;
         }
         if (cbCrt) {
-            if (totalW > 0) {
+            if (groupW > 0) {
+                groupW += gap;
+            }
+            groupW += wCrt;
+        }
+        if (cbRecord) {
+            if (groupW > 0) {
+                groupW += gap;
+            }
+            groupW += wRecord;
+        }
+        if (cbLogos) {
+            if (groupW > 0) {
+                groupW += gap;
+            }
+            groupW += wLogos;
+        }
+        if (btnHotkeys && wHotkeys > 0) {
+            if (groupW > 0) {
+                groupW += gap;
+            }
+            groupW += wHotkeys;
+        }
+        if (groupW > 0) {
+            e9ui_hstack_addFlex(rowGlobal, e9ui_spacer_make(1));
+        }
+        int addedAny = 0;
+        if (cbFun) {
+            e9ui_hstack_addFixed(rowGlobal, cbFun, wFun);
+            addedAny = 1;
+        }
+        if (cbCrt) {
+            if (addedAny) {
                 e9ui_hstack_addFixed(rowGlobal, e9ui_spacer_make(gap), gap);
-                totalW += gap;
             }
             e9ui_hstack_addFixed(rowGlobal, cbCrt, wCrt);
-            totalW += wCrt;
+            addedAny = 1;
+        }
+        if (cbRecord) {
+            if (addedAny) {
+                e9ui_hstack_addFixed(rowGlobal, e9ui_spacer_make(gap), gap);
+            }
+            e9ui_hstack_addFixed(rowGlobal, cbRecord, wRecord);
+            addedAny = 1;
+        }
+        if (cbLogos) {
+            if (addedAny) {
+                e9ui_hstack_addFixed(rowGlobal, e9ui_spacer_make(gap), gap);
+            }
+            e9ui_hstack_addFixed(rowGlobal, cbLogos, wLogos);
+            addedAny = 1;
+        }
+        if (btnHotkeys && wHotkeys > 0) {
+            if (addedAny) {
+                e9ui_hstack_addFixed(rowGlobal, e9ui_spacer_make(gap), gap);
+            }
+            e9ui_hstack_addFixed(rowGlobal, btnHotkeys, wHotkeys);
         }
         if (rowGlobalCenter) {
-            e9ui_center_setSize(rowGlobalCenter, e9ui_unscale_px(ctx, totalW), 0);
+            e9ui_center_setSize(rowGlobalCenter, e9ui_unscale_px(ctx, formWidth), 0);
         }
     }
 
@@ -977,7 +1100,6 @@ settings_buildModalBody(e9ui_context_t *ctx)
         e9ui_stack_addFixed(stack, rowGlobalCenter);
     }
 
-    int contentWidth = e9ui_scale_px(ctx, 640);
     int selectedBodyHeight = settings_componentPreferredHeight(targetModal.body, ctx, contentWidth);
     int maxBodyHeight = selectedBodyHeight;
     {
@@ -1002,16 +1124,37 @@ settings_buildModalBody(e9ui_context_t *ctx)
 #endif
 
     e9ui_component_t *center = e9ui_center_make(stack);
+    int centerFixedHeight = 0;
     if (center) {
-        int fixedHeight = 0;
         int stackHeight = settings_componentPreferredHeight(stack, ctx, contentWidth);
         if (stackHeight > 0 && selectedBodyHeight > 0 && maxBodyHeight > selectedBodyHeight) {
-            fixedHeight = stackHeight + (maxBodyHeight - selectedBodyHeight);
-            if (fixedHeight < stackHeight) {
-                fixedHeight = stackHeight;
+            centerFixedHeight = stackHeight + (maxBodyHeight - selectedBodyHeight);
+            if (centerFixedHeight < stackHeight) {
+                centerFixedHeight = stackHeight;
             }
         }
-        e9ui_center_setSize(center, 640, fixedHeight > 0 ? e9ui_unscale_px(ctx, fixedHeight) : 0);
+        e9ui_center_setSize(center, 640,
+                            centerFixedHeight > 0 ? e9ui_unscale_px(ctx, centerFixedHeight) : 0);
+    }
+    e9ui_component_t *scrollContent = center;
+    int centerContentHeight = center ? settings_componentPreferredHeight(center, ctx, contentWidth) : 0;
+    int bodyViewportHeight = settings_modalBodyViewportHeight(ctx);
+    if (center && centerContentHeight > 0 && bodyViewportHeight > centerContentHeight) {
+        int topSpacerPx = (bodyViewportHeight - centerContentHeight) / 2;
+        e9ui_component_t *scrollStack = e9ui_stack_makeVertical();
+        if (scrollStack) {
+            if (topSpacerPx > 0) {
+                e9ui_stack_addFixed(scrollStack, e9ui_vspacer_make(e9ui_unscale_px(ctx, topSpacerPx)));
+            }
+            e9ui_stack_addFixed(scrollStack, center);
+            scrollContent = scrollStack;
+        }
+    }
+    e9ui_component_t *centerScroll = center ? e9ui_scroll_make(scrollContent) : NULL;
+    if (centerScroll) {
+        int scrollContentHeight = settings_componentPreferredHeight(scrollContent, ctx, contentWidth);
+        e9ui_scroll_setContentHeightPx(centerScroll, scrollContentHeight);
+        scrollContent = centerScroll;
     }
     e9ui_component_t *btnDefaults = e9ui_button_make("Defaults", settings_uiDefaults, NULL);
     e9ui_component_t *btnSave = e9ui_button_make("Save", settings_uiSave, NULL);
@@ -1024,15 +1167,13 @@ settings_buildModalBody(e9ui_context_t *ctx)
     e9ui_flow_setWrap(buttons, 0);
     if (btnSave) {
         e9ui_button_setTheme(btnSave, e9ui_theme_button_preset_green());
-        e9ui_button_setGlowPulse(btnSave, 1);
         e9ui_flow_add(buttons, btnSave);
     }
     if (btnDefaults) {
         e9ui_flow_add(buttons, btnDefaults);
-    }    
+    }
     if (btnCancel) {
         e9ui_button_setTheme(btnCancel, e9ui_theme_button_preset_red());
-        e9ui_button_setGlowPulse(btnCancel, 1);
         e9ui_flow_add(buttons, btnCancel);
     }
     e9ui_component_t *footer = e9ui_stack_makeVertical();
@@ -1042,7 +1183,7 @@ settings_buildModalBody(e9ui_context_t *ctx)
     if (buttons) {
         e9ui_stack_addFixed(footer, buttons);
     }
-    e9ui_component_t *overlay = e9ui_overlay_make(center, footer);
+    e9ui_component_t *overlay = e9ui_overlay_make(scrollContent, footer);
     e9ui_overlay_setAnchor(overlay, e9ui_anchor_bottom_right);
     e9ui_overlay_setMargin(overlay, 12);
     return overlay;

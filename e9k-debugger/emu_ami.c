@@ -12,10 +12,13 @@
 #include <string.h>
 
 #include "debugger.h"
+#include "debugger_input_bindings.h"
 #include "debug.h"
 #include "e9ui.h"
+#include "range_bar.h"
 #include "custom_log.h"
 #include "custom_ui.h"
+#include "amiga_uae_options.h"
 #include "libretro.h"
 #include "libretro_host.h"
 
@@ -91,6 +94,256 @@ typedef struct emu_ami_blitter_vis_cache {
 
 static emu_ami_blitter_vis_cache_t emu_ami_blitterVisCache = {0};
 static int emu_ami_customLogCallbackBound = 0;
+
+static const char *
+emu_ami_mouseCaptureOptionKey(void)
+{
+    return "e9k_debugger_amiga_mouse_capture";
+}
+
+static int
+emu_ami_percentToVideoLine(float percent, int lineCount)
+{
+    float clamped = percent;
+
+    if (lineCount <= 1) {
+        return 0;
+    }
+    if (clamped < 0.0f) {
+        clamped = 0.0f;
+    }
+    if (clamped > 1.0f) {
+        clamped = 1.0f;
+    }
+    return (int)(clamped * (float)(lineCount - 1) + 0.5f);
+}
+
+static float
+emu_ami_videoLineToPercent(int videoLine, int lineCount)
+{
+    int clamped = videoLine;
+
+    if (lineCount <= 1) {
+        return 0.0f;
+    }
+    if (clamped < 0) {
+        clamped = 0;
+    }
+    if (clamped >= lineCount) {
+        clamped = lineCount - 1;
+    }
+    return (float)clamped / (float)(lineCount - 1);
+}
+
+static int
+emu_ami_rangeBarGetCoreRangeFromPercent(float startPercent,
+                                        float endPercent,
+                                        int *outStartLine,
+                                        int *outEndLine)
+{
+    int lineCount = 0;
+    int startVideoLine = 0;
+    int endVideoLine = 0;
+    int startLine = -1;
+    int endLine = -1;
+
+    if (!libretro_host_debugAmiGetVideoLineCount(&lineCount) || lineCount <= 0) {
+        return 0;
+    }
+    startVideoLine = emu_ami_percentToVideoLine(startPercent, lineCount);
+    endVideoLine = emu_ami_percentToVideoLine(endPercent, lineCount);
+    if (!libretro_host_debugAmiVideoLineToCoreLine(startVideoLine, &startLine)) {
+        return 0;
+    }
+    if (!libretro_host_debugAmiVideoLineToCoreLine(endVideoLine, &endLine)) {
+        return 0;
+    }
+    if (endLine < startLine) {
+        int temp = startLine;
+        startLine = endLine;
+        endLine = temp;
+    }
+    if (outStartLine) {
+        *outStartLine = startLine;
+    }
+    if (outEndLine) {
+        *outEndLine = endLine;
+    }
+    return 1;
+}
+
+static int
+emu_ami_rangeBarSetPercentFromCoreLines(e9ui_component_t *bar, int startLine, int endLine)
+{
+    int lineCount = 0;
+    int startVideoLine = -1;
+    int endVideoLine = -1;
+    float startPercent = 0.0f;
+    float endPercent = 0.0f;
+
+    if (!bar) {
+        return 0;
+    }
+    if (!libretro_host_debugAmiGetVideoLineCount(&lineCount) || lineCount <= 0) {
+        return 0;
+    }
+    if (!libretro_host_debugAmiCoreLineToVideoLine(startLine, &startVideoLine)) {
+        return 0;
+    }
+    if (!libretro_host_debugAmiCoreLineToVideoLine(endLine, &endVideoLine)) {
+        return 0;
+    }
+    startPercent = emu_ami_videoLineToPercent(startVideoLine, lineCount);
+    endPercent = emu_ami_videoLineToPercent(endVideoLine, lineCount);
+    if (endPercent < startPercent) {
+        float temp = startPercent;
+        startPercent = endPercent;
+        endPercent = temp;
+    }
+    range_bar_setRangePercent(bar, startPercent, endPercent);
+    return 1;
+}
+
+int
+emu_ami_mouseCaptureCanEnable(void)
+{
+    const char *overrideValue = NULL;
+    const char *joyportMode = amiga_uaeGetPuaeOptionValue("puae_joyport");
+
+    if (!target) {
+        return 0;
+    }
+    if (target->romConfigGetActiveCustomOptionValue) {
+        overrideValue = target->romConfigGetActiveCustomOptionValue(emu_ami_mouseCaptureOptionKey());
+    }
+    if (!overrideValue && target->coreOptionGetValue) {
+        overrideValue = target->coreOptionGetValue(emu_ami_mouseCaptureOptionKey());
+    }
+    if (overrideValue && strcmp(overrideValue, "disabled") == 0) {
+        return 0;
+    }
+    if (joyportMode &&
+        (strcmp(joyportMode, "joystick") == 0 ||
+         strcmp(joyportMode, "Joystick") == 0 ||
+         strcmp(joyportMode, "Joystick (Port 1)") == 0)) {
+        return 0;
+    }
+    return 1;
+}
+
+size_t
+emu_ami_rangeBarCount(void)
+{
+    return 2;
+}
+
+int
+emu_ami_rangeBarDescribe(size_t index, emu_range_bar_desc_t *outDesc)
+{
+    if (!outDesc) {
+        return 0;
+    }
+    memset(outDesc, 0, sizeof(*outDesc));
+    if (index == 0) {
+        outDesc->metaKey = "range_bar_left";
+        outDesc->side = (int)range_bar_sideLeft;
+    } else if (index == 1) {
+        outDesc->metaKey = "range_bar_right";
+        outDesc->side = (int)range_bar_sideRight;
+    } else {
+        return 0;
+    }
+    outDesc->marginTop = 10;
+    outDesc->marginBottom = 10;
+    outDesc->marginSide = 10;
+    outDesc->width = 12;
+    outDesc->hoverMargin = 18;
+    return 1;
+}
+
+void
+emu_ami_rangeBarChanged(size_t index, float startPercent, float endPercent)
+{
+    int startLine = -1;
+    int endLine = -1;
+
+    if (!emu_ami_rangeBarGetCoreRangeFromPercent(startPercent, endPercent, &startLine, &endLine)) {
+        return;
+    }
+    if (index == 1) {
+        custom_ui_setCopperLimitRange(startLine, endLine);
+        return;
+    }
+    if (index == 0) {
+        custom_ui_setBplptrLineLimitRange(startLine, endLine);
+    }
+}
+
+void
+emu_ami_rangeBarDragging(size_t index, int dragging, float startPercent, float endPercent)
+{
+    (void)index;
+    (void)dragging;
+    (void)startPercent;
+    (void)endPercent;
+}
+
+void
+emu_ami_rangeBarTooltip(size_t index, float startPercent, float endPercent, char *out, size_t cap)
+{
+    int startLine = -1;
+    int endLine = -1;
+    const char *label = "BPLPTR";
+
+    if (!out || cap == 0) {
+        return;
+    }
+    if (!emu_ami_rangeBarGetCoreRangeFromPercent(startPercent, endPercent, &startLine, &endLine)) {
+        return;
+    }
+    if (index == 1) {
+        label = "Copper";
+    }
+    snprintf(out, cap, "%s %d..%d", label, startLine, endLine);
+}
+
+int
+emu_ami_rangeBarSync(size_t index, e9ui_component_t *bar)
+{
+    int enabled = 0;
+    int startLine = 0;
+    int endLine = 0;
+
+    if (!bar) {
+        return 0;
+    }
+    if (!custom_ui_isOpen()) {
+        e9ui_setHidden(bar, 1);
+        return 0;
+    }
+    if (index == 1) {
+        enabled = custom_ui_getCopperLimitEnabled();
+        if (!custom_ui_getCopperLimitRange(&startLine, &endLine)) {
+            enabled = 0;
+        }
+    } else if (index == 0) {
+        enabled = custom_ui_getBplptrBlockEnabled();
+        if (!custom_ui_getBplptrLineLimitRange(&startLine, &endLine)) {
+            enabled = 0;
+        }
+    } else {
+        enabled = 0;
+    }
+    if (!enabled) {
+        e9ui_setHidden(bar, 1);
+        return 0;
+    }
+    if (!emu_ami_rangeBarSetPercentFromCoreLines(bar, startLine, endLine)) {
+        e9ui_setHidden(bar, 1);
+        return 0;
+    }
+    return 1;
+}
 
 static void
 emu_ami_onCustomLogFrame(const e9k_debug_ami_custom_log_entry_t *entries,
@@ -936,32 +1189,12 @@ emu_ami_renderBlitterVisOverlay(e9ui_context_t *ctx, SDL_Rect *dst)
 static int
 emu_ami_mapKeyToJoypad(SDL_Keycode key, unsigned *id)
 {
-    if (!id) {
-        return 0;
-    }
-    switch (key) {
-    case SDLK_UP:
-        *id = RETRO_DEVICE_ID_JOYPAD_UP;
-        return 1;
-    case SDLK_DOWN:
-        *id = RETRO_DEVICE_ID_JOYPAD_DOWN;
-        return 1;
-    case SDLK_LEFT:
-        *id = RETRO_DEVICE_ID_JOYPAD_LEFT;
-        return 1;
-    case SDLK_RIGHT:
-        *id = RETRO_DEVICE_ID_JOYPAD_RIGHT;
-        return 1;
-    case SDLK_LCTRL:
-        *id = RETRO_DEVICE_ID_JOYPAD_B;
-        return 1;
-    case SDLK_LALT:
-        *id = RETRO_DEVICE_ID_JOYPAD_A;
-        return 1;
-    default:
-        break;
-    }
-    return 0;
+    return debugger_input_bindings_mapKeyToJoypad(TARGET_AMIGA,
+                                                  (target && target->coreOptionGetValue)
+                                                      ? target->coreOptionGetValue
+                                                      : NULL,
+                                                  key,
+                                                  id);
 }
 
 uint16_t
@@ -1179,6 +1412,13 @@ const emu_system_iface_t emu_ami_iface = {
     .translateModifiers = emu_ami_translateModifiers,
     .translateKey = emu_ami_translateKey,
     .mapKeyToJoypad = emu_ami_mapKeyToJoypad,
+    .mouseCaptureCanEnable = emu_ami_mouseCaptureCanEnable,
+    .rangeBarCount = emu_ami_rangeBarCount,
+    .rangeBarDescribe = emu_ami_rangeBarDescribe,
+    .rangeBarChanged = emu_ami_rangeBarChanged,
+    .rangeBarDragging = emu_ami_rangeBarDragging,
+    .rangeBarTooltip = emu_ami_rangeBarTooltip,
+    .rangeBarSync = emu_ami_rangeBarSync,
     .createOverlays = emu_ami_createOverlays,
     .render = emu_ami_render,
     .destroy = emu_ami_destroy,

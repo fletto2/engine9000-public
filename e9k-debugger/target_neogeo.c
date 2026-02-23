@@ -2,6 +2,7 @@
 #include "target.h"
 #include "emu_geo.h"
 #include "rom_config.h"
+#include "debugger_input_bindings.h"
 #include "amiga_uae_options.h"
 #include "neogeo_core_options.h"
 #include "core_options.h"
@@ -485,7 +486,7 @@ target_neogeo_validateSettings(void)
     debugger.settingsEdit.neogeo.libretro.saveDir : debugger.settingsEdit.neogeo.libretro.systemDir;
 
   if (target_neogeo_effectiveRomPath(&debugger.settingsEdit.neogeo, romPath, sizeof(romPath))) {
-    rom_config_saveSettingsForRom(saveDir, romPath,
+    rom_config_saveSettingsForRom(saveDir, romPath, target_neogeo(),
 				  debugger.settingsEdit.neogeo.libretro.exePath,
 				  debugger.settingsEdit.neogeo.libretro.sourceDir,
 				  debugger.settingsEdit.neogeo.libretro.toolchainPrefix);
@@ -627,6 +628,8 @@ target_neogeo_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_stat
   (void)ctx;
   (void)st;
   int anyChange = 0;
+  int anyRomConfigBindingChange = 0;
+  int anyCoreOptionChange = 0;
   
   for (size_t i = 0; i < st->entryCount; ++i) {
     const char *key = st->entries[i].key;
@@ -635,6 +638,28 @@ target_neogeo_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_stat
       continue;
     }
     if (strcmp(key, "geolith_system_type") == 0) {
+      continue;
+    }
+    if (debugger_input_bindings_isOptionKey(key)) {
+      const char *existingBinding = rom_config_getActiveInputBindingValue(key);
+      const char *desiredBinding = (value && *value) ? value : NULL;
+      if (desiredBinding) {
+        const char *defValue = core_options_findDefaultValue(st, key);
+        if (defValue && strcmp(defValue, desiredBinding) == 0) {
+          desiredBinding = NULL;
+        }
+      }
+      if (desiredBinding) {
+        if (!existingBinding || !core_options_stringsEqual(existingBinding, desiredBinding)) {
+          rom_config_setActiveInputBindingValue(key, desiredBinding);
+          anyChange = 1;
+          anyRomConfigBindingChange = 1;
+        }
+      } else if (existingBinding) {
+        rom_config_setActiveInputBindingValue(key, NULL);
+        anyChange = 1;
+        anyRomConfigBindingChange = 1;
+      }
       continue;
     }
     const char *defValue = core_options_findDefaultValue(st, key);
@@ -649,22 +674,28 @@ target_neogeo_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_stat
       }
       neogeo_coreOptionsSetValue(key, NULL);
       anyChange = 1;
+      anyCoreOptionChange = 1;
     } else {
       if (existing && core_options_stringsEqual(existing, desired)) {
 	continue;
       }
       neogeo_coreOptionsSetValue(key, desired);
       anyChange = 1;
+      anyCoreOptionChange = 1;
     }
   }
   if (anyChange) {
-    settings_markCoreOptionsDirty();
+    settings_markCoreOptionsDirtyWithRestart(anyCoreOptionChange ? 1 : 0);
   }
-  if (anyChange && e9ui->settingsSaveButton) {
-    e9ui_button_setGlowPulse(e9ui->settingsSaveButton, 1);
+  if (anyRomConfigBindingChange && (!e9ui || !e9ui->settingsModal)) {
+    rom_config_saveCurrentRomSettings();
   }
   settings_refreshSaveLabel();
-  e9ui_showTransientMessage(anyChange ? "CORE OPTIONS STAGED" : "CORE OPTIONS: NO CHANGES");
+  if (anyChange) {
+    e9ui_showTransientMessage((!e9ui || !e9ui->settingsModal) ? "CORE OPTIONS APPLIED" : "CORE OPTIONS STAGED");
+  } else {
+    e9ui_showTransientMessage("CORE OPTIONS: NO CHANGES");
+  }
   core_options_closeModal();
 }
 
@@ -672,6 +703,9 @@ target_neogeo_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_stat
 const char*
 target_neogeo_coreOptionGetValue(const char* key)
 {
+  if (debugger_input_bindings_isOptionKey(key)) {
+    return rom_config_getActiveInputBindingValue(key);
+  }
   return  neogeo_coreOptionsGetValue(key);
 }
 
