@@ -28,6 +28,8 @@ typedef struct e9ui_button_state {
   int                 leftJustifyPad_px;
   int                 iconRightPad_px;
   int                 useMini;
+  int                 useMicro;
+  int                 useNano;
   int                 useCustomTheme;
   e9k_theme_button_t  customTheme;
   SDL_Texture        *bgCache;
@@ -284,6 +286,12 @@ e9ui_button_getTheme(const e9ui_button_state_t *st)
     if (st && st->useCustomTheme) {
         return &st->customTheme;
     }
+    if (st && st->useNano) {
+        return &e9ui->theme.nanoButton;
+    }
+    if (st && st->useMicro) {
+        return &e9ui->theme.microButton;
+    }
     if (st && st->useMini) {
         return &e9ui->theme.miniButton;
     }
@@ -447,9 +455,7 @@ e9ui_button_render(e9ui_component_t *self, e9ui_context_t *ctx)
         e9ui_button_drawBackground(ctx->renderer, r, fillColor, hi, sh, ed, radius);
     }
     if (focused && !disabled) {
-        SDL_SetRenderDrawColor(ctx->renderer, 96, 148, 204, 255);
-        SDL_Rect focusRect = { r.x - 1, r.y - 1, r.w + 2, r.h + 2 };
-        SDL_RenderDrawRect(ctx->renderer, &focusRect);
+        e9ui_drawFocusRingRect(ctx, r, 1);
     }
     // Content: optional icon + text
     int cy = r.y + r.h/2;
@@ -504,7 +510,39 @@ e9ui_button_render(e9ui_component_t *self, e9ui_context_t *ctx)
             contentStart = minStart;
         }
     }
-    if (st->icon) {
+    int hadClip = 0;
+    int drawContent = (st->icon || textTexture) ? 1 : 0;
+    SDL_Rect prevClip = { 0, 0, 0, 0 };
+    if (drawContent) {
+        SDL_Rect contentClip = {
+            r.x + padding + 2,
+            r.y + 1,
+            r.w - ((padding + 2) * 2),
+            r.h - 2
+        };
+        if (contentClip.w < 0) {
+            contentClip.w = 0;
+        }
+        if (contentClip.h < 0) {
+            contentClip.h = 0;
+        }
+        if (contentClip.w <= 0 || contentClip.h <= 0) {
+            drawContent = 0;
+        }
+        hadClip = SDL_RenderIsClipEnabled(ctx->renderer) ? 1 : 0;
+        if (drawContent && hadClip) {
+            SDL_RenderGetClipRect(ctx->renderer, &prevClip);
+            SDL_Rect clipped = contentClip;
+            if (SDL_IntersectRect(&prevClip, &contentClip, &clipped)) {
+                SDL_RenderSetClipRect(ctx->renderer, &clipped);
+            } else {
+                drawContent = 0;
+            }
+        } else if (drawContent) {
+            SDL_RenderSetClipRect(ctx->renderer, &contentClip);
+        }
+    }
+    if (drawContent && st->icon) {
         Uint8 prevR = 255, prevG = 255, prevB = 255, prevA = 255;
         SDL_GetTextureColorMod(st->icon, &prevR, &prevG, &prevB);
         SDL_GetTextureAlphaMod(st->icon, &prevA);
@@ -519,9 +557,16 @@ e9ui_button_render(e9ui_component_t *self, e9ui_context_t *ctx)
             SDL_SetTextureAlphaMod(st->icon, prevA);
         }
     }
-    if (textTexture) {
+    if (drawContent && textTexture) {
         SDL_Rect tr = { contentStart + iconRenderW + iconMargin, cy - textH/2, textW, textH };
         SDL_RenderCopy(ctx->renderer, textTexture, NULL, &tr);
+    }
+    if (st->icon || textTexture) {
+        if (hadClip) {
+            SDL_RenderSetClipRect(ctx->renderer, &prevClip);
+        } else {
+            SDL_RenderSetClipRect(ctx->renderer, NULL);
+        }
     }
 }
 
@@ -678,6 +723,8 @@ e9ui_button_make(const char *label, e9ui_button_cb onClick, void *user)
     st->iconW=0;
     st->iconH=0;
     st->useMini = 0;
+    st->useMicro = 0;
+    st->useNano = 0;
     st->largestLabel = NULL;
     st->bgCache = NULL;
     st->bgCacheW = 0;
@@ -835,6 +882,44 @@ e9ui_button_setMini(e9ui_component_t *btn, int enable)
         return;
     }
     st->useMini = enable ? 1 : 0;
+    if (enable) {
+        st->useMicro = 0;
+        st->useNano = 0;
+    }
+}
+
+void
+e9ui_button_setMicro(e9ui_component_t *btn, int enable)
+{
+    if (!btn) {
+        return;
+    }
+    e9ui_button_state_t *st = (e9ui_button_state_t*)btn->state;
+    if (!st) {
+        return;
+    }
+    st->useMicro = enable ? 1 : 0;
+    if (enable) {
+        st->useMini = 0;
+        st->useNano = 0;
+    }
+}
+
+void
+e9ui_button_setNano(e9ui_component_t *btn, int enable)
+{
+    if (!btn) {
+        return;
+    }
+    e9ui_button_state_t *st = (e9ui_button_state_t*)btn->state;
+    if (!st) {
+        return;
+    }
+    st->useNano = enable ? 1 : 0;
+    if (enable) {
+        st->useMini = 0;
+        st->useMicro = 0;
+    }
 }
 
 void

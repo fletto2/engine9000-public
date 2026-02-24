@@ -45,6 +45,28 @@
 // SDL_ttf style flags for mini button fonts.
 #define E9UI_THEME_MINI_BUTTON_FONT_STYLE E9UI_THEME_BUTTON_FONT_STYLE
 
+// Micro button defaults ------------------------------------------------------
+
+// Micro buttons are used for very narrow overlay panels.
+#define E9UI_THEME_MICRO_BUTTON_FONT_SIZE 11
+// Padding (logical pixels) applied on micro buttons.
+#define E9UI_THEME_MICRO_BUTTON_PADDING 0
+// Asset path for micro button fonts; defaults to the button font asset.
+#define E9UI_THEME_MICRO_BUTTON_FONT_ASSET E9UI_THEME_BUTTON_FONT_ASSET
+// SDL_ttf style flags for micro button fonts.
+#define E9UI_THEME_MICRO_BUTTON_FONT_STYLE E9UI_THEME_BUTTON_FONT_STYLE
+
+// Nano button defaults -------------------------------------------------------
+
+// Nano buttons are the smallest emergency fallback for very narrow overlay panels.
+#define E9UI_THEME_NANO_BUTTON_FONT_SIZE 7
+// Padding (logical pixels) applied on nano buttons.
+#define E9UI_THEME_NANO_BUTTON_PADDING 0
+// Asset path for nano button fonts; defaults to the button font asset.
+#define E9UI_THEME_NANO_BUTTON_FONT_ASSET E9UI_THEME_BUTTON_FONT_ASSET
+// SDL_ttf style flags for nano button fonts.
+#define E9UI_THEME_NANO_BUTTON_FONT_STYLE E9UI_THEME_BUTTON_FONT_STYLE
+
 // Titlebar defaults ----------------------------------------------------------
 
 // Background color for window titlebars and titled component headers.
@@ -92,5 +114,3 @@
 // Default window size used before user resize/persistence.
 #define E9UI_LAYOUT_WIN_W 1000
 #define E9UI_LAYOUT_WIN_H 700
-
-

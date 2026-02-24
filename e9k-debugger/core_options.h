@@ -21,6 +21,7 @@ typedef struct core_options_category_cb {
     struct core_options_modal_state *st;
     const char *categoryKey;
     e9ui_component_t *button;
+    int (*origHandleEvent)(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev);
 } core_options_category_cb_t;
 
 typedef struct core_options_option_cb {
@@ -29,7 +30,9 @@ typedef struct core_options_option_cb {
     const char *enabledValue;
     const char *disabledValue;
     e9ui_component_t *button;
+    e9ui_component_t *focusComp;
     int keyboardBinding;
+    int (*origHandleEvent)(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev);
 } core_options_option_cb_t;
 
 typedef struct core_options_modal_state {

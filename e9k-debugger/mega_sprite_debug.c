@@ -55,7 +55,7 @@ typedef struct mega_sprite_debug_state
     e9ui_window_t *windowHost;
     SDL_Window *window;
     SDL_Renderer *renderer;
-    e9ui_component_t *embeddedBodyHost;
+    e9ui_component_t *overlayBodyHost;
     SDL_Texture *texture;
     uint32_t *pixels;
     size_t pixelsCap;
@@ -87,24 +87,15 @@ typedef struct mega_sprite_debug_state
 
 static mega_sprite_debug_state_t mega_sprite_debug_state = {0};
 
-typedef struct mega_sprite_debug_embedded_body_state
+typedef struct mega_sprite_debug_overlay_body_state
 {
     int unused;
-} mega_sprite_debug_embedded_body_state_t;
+} mega_sprite_debug_overlay_body_state_t;
 
 static e9ui_window_backend_t
 mega_sprite_debug_windowBackend(void)
 {
-    return e9ui_window_backend_embedded;
-}
-
-static int
-mega_sprite_debug_isEmbeddedBackend(void)
-{
-    if (!mega_sprite_debug_state.windowHost) {
-        return 0;
-    }
-    return e9ui_windowIsEmbedded(mega_sprite_debug_state.windowHost);
+    return e9ui_window_backend_overlay;
 }
 
 static uint32_t
@@ -161,50 +152,6 @@ mega_sprite_debug_parseInt(const char *value, int *out)
 }
 
 static void
-mega_sprite_debug_captureWindowRect(void)
-{
-    if (mega_sprite_debug_isEmbeddedBackend()) {
-        e9ui_rect_t rect = e9ui_windowGetEmbeddedRect(mega_sprite_debug_state.windowHost);
-        const e9ui_context_t *scaleCtx = e9ui ? &e9ui->ctx : NULL;
-        if (scaleCtx && rect.w > 0 && rect.h > 0) {
-            mega_sprite_debug_state.winX = e9ui_unscale_px(scaleCtx, rect.x);
-            mega_sprite_debug_state.winY = e9ui_unscale_px(scaleCtx, rect.y);
-            mega_sprite_debug_state.winW = e9ui_unscale_px(scaleCtx, rect.w);
-            mega_sprite_debug_state.winH = e9ui_unscale_px(scaleCtx, rect.h);
-            mega_sprite_debug_state.winHasSaved = 1;
-        }
-        return;
-    }
-    if (!mega_sprite_debug_state.window) {
-        return;
-    }
-    SDL_GetWindowPosition(mega_sprite_debug_state.window, &mega_sprite_debug_state.winX, &mega_sprite_debug_state.winY);
-    SDL_GetWindowSize(mega_sprite_debug_state.window, &mega_sprite_debug_state.winW, &mega_sprite_debug_state.winH);
-    mega_sprite_debug_state.winHasSaved = 1;
-}
-
-static void
-mega_sprite_debug_refocusMain(void)
-{
-    SDL_Window *mainWin = e9ui->ctx.window;
-    if (!mainWin) {
-        return;
-    }
-    SDL_ShowWindow(mainWin);
-    SDL_RaiseWindow(mainWin);
-    SDL_SetWindowInputFocus(mainWin);
-}
-
-static void
-mega_sprite_debug_updateAlwaysOnTop(void)
-{
-    if (!mega_sprite_debug_state.windowHost) {
-        return;
-    }
-    e9ui_windowUpdateAlwaysOnTop(mega_sprite_debug_state.windowHost);
-}
-
-static void
 mega_sprite_debug_fillRect(uint32_t *pixels, int width, int height, int x, int y, int w, int h, uint32_t color)
 {
     if (!pixels || width <= 0 || height <= 0 || w <= 0 || h <= 0) {
@@ -232,7 +179,7 @@ mega_sprite_debug_fillRect(uint32_t *pixels, int width, int height, int x, int y
 }
 
 static e9ui_rect_t
-mega_sprite_debug_embeddedDefaultRect(const e9ui_context_t *ctx)
+mega_sprite_debug_windowDefaultRect(const e9ui_context_t *ctx)
 {
     e9ui_rect_t rect = {
         e9ui_scale_px(ctx, 96),
@@ -243,43 +190,8 @@ mega_sprite_debug_embeddedDefaultRect(const e9ui_context_t *ctx)
     return rect;
 }
 
-static e9ui_rect_t
-mega_sprite_debug_embeddedRectFromSaved(const e9ui_context_t *ctx)
-{
-    e9ui_rect_t rect = mega_sprite_debug_embeddedDefaultRect(ctx);
-    if (mega_sprite_debug_state.winHasSaved && mega_sprite_debug_state.winW > 0 && mega_sprite_debug_state.winH > 0) {
-        rect.x = e9ui_scale_px(ctx, mega_sprite_debug_state.winX);
-        rect.y = e9ui_scale_px(ctx, mega_sprite_debug_state.winY);
-        rect.w = e9ui_scale_px(ctx, mega_sprite_debug_state.winW);
-        rect.h = e9ui_scale_px(ctx, mega_sprite_debug_state.winH);
-    }
-    return rect;
-}
-
-static void
-mega_sprite_debug_embeddedClampRectSize(e9ui_rect_t *rect, const e9ui_context_t *ctx)
-{
-    if (!rect || !ctx) {
-        return;
-    }
-    int minW = e9ui_scale_px(ctx, 520);
-    int minH = e9ui_scale_px(ctx, 360);
-    if (rect->w < minW) {
-        rect->w = minW;
-    }
-    if (rect->h < minH) {
-        rect->h = minH;
-    }
-    if (ctx->winW > 0 && rect->w > ctx->winW) {
-        rect->w = ctx->winW;
-    }
-    if (ctx->winH > 0 && rect->h > ctx->winH) {
-        rect->h = ctx->winH;
-    }
-}
-
 static int
-mega_sprite_debug_embeddedBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+mega_sprite_debug_overlayBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
 {
     (void)self;
     (void)ctx;
@@ -288,7 +200,7 @@ mega_sprite_debug_embeddedBodyPreferredHeight(e9ui_component_t *self, e9ui_conte
 }
 
 static void
-mega_sprite_debug_embeddedBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+mega_sprite_debug_overlayBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
 {
     (void)ctx;
     if (!self) {
@@ -298,7 +210,7 @@ mega_sprite_debug_embeddedBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx
 }
 
 static int
-mega_sprite_debug_embeddedHandleLocalKey(SDL_Keycode key)
+mega_sprite_debug_overlayHandleLocalKey(SDL_Keycode key)
 {
     if (key == SDLK_l) {
         mega_sprite_debug_state.showLinks = mega_sprite_debug_state.showLinks ? 0 : 1;
@@ -325,7 +237,7 @@ static void
 mega_sprite_debug_renderFrameInternal(const e9k_debug_mega_sprite_state_t *st, int presentFrame);
 
 static int
-mega_sprite_debug_embeddedBodyHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+mega_sprite_debug_overlayBodyHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
 {
     (void)ctx;
     if (!self || !ev) {
@@ -338,13 +250,13 @@ mega_sprite_debug_embeddedBodyHandleEvent(e9ui_component_t *self, e9ui_context_t
         if ((ev->key.keysym.mod & (KMOD_CTRL | KMOD_GUI)) != 0) {
             return 0;
         }
-        return mega_sprite_debug_embeddedHandleLocalKey(ev->key.keysym.sym);
+        return mega_sprite_debug_overlayHandleLocalKey(ev->key.keysym.sym);
     }
     return 0;
 }
 
 static void
-mega_sprite_debug_embeddedBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
+mega_sprite_debug_overlayBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
 {
     if (!self || !ctx || !ctx->renderer) {
         return;
@@ -388,43 +300,43 @@ mega_sprite_debug_embeddedBodyRender(e9ui_component_t *self, e9ui_context_t *ctx
 }
 
 static void
-mega_sprite_debug_embeddedBodyDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+mega_sprite_debug_overlayBodyDtor(e9ui_component_t *self, e9ui_context_t *ctx)
 {
     (void)ctx;
     if (!self) {
         return;
     }
-    mega_sprite_debug_embedded_body_state_t *st = (mega_sprite_debug_embedded_body_state_t *)self->state;
+    mega_sprite_debug_overlay_body_state_t *st = (mega_sprite_debug_overlay_body_state_t *)self->state;
     alloc_free(st);
     self->state = NULL;
 }
 
 static e9ui_component_t *
-mega_sprite_debug_makeEmbeddedBodyHost(void)
+mega_sprite_debug_makeOverlayBodyHost(void)
 {
     e9ui_component_t *host = (e9ui_component_t *)alloc_calloc(1, sizeof(*host));
     if (!host) {
         return NULL;
     }
-    mega_sprite_debug_embedded_body_state_t *st =
-        (mega_sprite_debug_embedded_body_state_t *)alloc_calloc(1, sizeof(*st));
+    mega_sprite_debug_overlay_body_state_t *st =
+        (mega_sprite_debug_overlay_body_state_t *)alloc_calloc(1, sizeof(*st));
     if (!st) {
         alloc_free(host);
         return NULL;
     }
-    host->name = "mega_sprite_debug_embedded_body";
+    host->name = "mega_sprite_debug_overlay_body";
     host->state = st;
     host->focusable = 1;
-    host->preferredHeight = mega_sprite_debug_embeddedBodyPreferredHeight;
-    host->layout = mega_sprite_debug_embeddedBodyLayout;
-    host->render = mega_sprite_debug_embeddedBodyRender;
-    host->handleEvent = mega_sprite_debug_embeddedBodyHandleEvent;
-    host->dtor = mega_sprite_debug_embeddedBodyDtor;
+    host->preferredHeight = mega_sprite_debug_overlayBodyPreferredHeight;
+    host->layout = mega_sprite_debug_overlayBodyLayout;
+    host->render = mega_sprite_debug_overlayBodyRender;
+    host->handleEvent = mega_sprite_debug_overlayBodyHandleEvent;
+    host->dtor = mega_sprite_debug_overlayBodyDtor;
     return host;
 }
 
 static void
-mega_sprite_debug_embeddedWindowCloseRequested(e9ui_window_t *window, void *user)
+mega_sprite_debug_overlayWindowCloseRequested(e9ui_window_t *window, void *user)
 {
     (void)window;
     (void)user;
@@ -727,45 +639,40 @@ mega_sprite_debug_toggle(void)
         int lh = MEGA_SPRITE_DEBUG_MIN_H;
         mega_sprite_debug_state.logicalW = lw;
         mega_sprite_debug_state.logicalH = lh;
-        mega_sprite_debug_state.alwaysOnTopState = -1;
-        mega_sprite_debug_state.mainWindowFocused = 0;
-        if (e9ui && e9ui->ctx.window) {
-            uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
-            mega_sprite_debug_state.mainWindowFocused = (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
-            e9ui_windowSetMainWindowFocused(mega_sprite_debug_state.windowHost, mega_sprite_debug_state.mainWindowFocused);
-        }
-        mega_sprite_debug_state.megaWindowFocused = 0;
-        mega_sprite_debug_state.embeddedBodyHost = mega_sprite_debug_makeEmbeddedBodyHost();
-        if (!mega_sprite_debug_state.embeddedBodyHost) {
+        mega_sprite_debug_state.overlayBodyHost = mega_sprite_debug_makeOverlayBodyHost();
+        if (!mega_sprite_debug_state.overlayBodyHost) {
             e9ui_windowDestroy(mega_sprite_debug_state.windowHost);
             mega_sprite_debug_state.windowHost = NULL;
             return;
         }
-        e9ui_rect_t rect = mega_sprite_debug_embeddedRectFromSaved(&e9ui->ctx);
-        mega_sprite_debug_embeddedClampRectSize(&rect, &e9ui->ctx);
-        if (!mega_sprite_debug_state.winHasSaved) {
-            int winW = e9ui->ctx.winW > 0 ? e9ui->ctx.winW : 1280;
-            int winH = e9ui->ctx.winH > 0 ? e9ui->ctx.winH : 720;
-            rect.x = (winW - rect.w) / 2;
-            rect.y = (winH - rect.h) / 2;
-        }
-        if (!e9ui_windowOpenEmbedded(mega_sprite_debug_state.windowHost,
+        e9ui_rect_t rect = e9ui_windowResolveOpenRect(&e9ui->ctx,
+                                                               mega_sprite_debug_windowDefaultRect(&e9ui->ctx),
+                                                               520,
+                                                               360,
+                                                               1,
+                                                               mega_sprite_debug_state.winHasSaved ? 1 : 0,
+                                                               (mega_sprite_debug_state.winHasSaved &&
+                                                                mega_sprite_debug_state.winW > 0 &&
+                                                                mega_sprite_debug_state.winH > 0) ? 1 : 0,
+                                                               mega_sprite_debug_state.winX,
+                                                               mega_sprite_debug_state.winY,
+                                                               mega_sprite_debug_state.winW,
+                                                               mega_sprite_debug_state.winH);
+        if (!e9ui_windowOpen(mega_sprite_debug_state.windowHost,
                                      "Mega Sprite Debug",
                                      rect,
-                                     mega_sprite_debug_state.embeddedBodyHost,
-                                     mega_sprite_debug_embeddedWindowCloseRequested,
+                                     mega_sprite_debug_state.overlayBodyHost,
+                                     mega_sprite_debug_overlayWindowCloseRequested,
                                      NULL,
                                      &e9ui->ctx)) {
-            e9ui_childDestroy(mega_sprite_debug_state.embeddedBodyHost, &e9ui->ctx);
-            mega_sprite_debug_state.embeddedBodyHost = NULL;
+            e9ui_childDestroy(mega_sprite_debug_state.overlayBodyHost, &e9ui->ctx);
+            mega_sprite_debug_state.overlayBodyHost = NULL;
             e9ui_windowDestroy(mega_sprite_debug_state.windowHost);
             mega_sprite_debug_state.windowHost = NULL;
             return;
         }
         mega_sprite_debug_state.window = e9ui->ctx.window;
         mega_sprite_debug_state.renderer = e9ui->ctx.renderer;
-        mega_sprite_debug_updateAlwaysOnTop();
-        mega_sprite_debug_state.windowId = e9ui_windowGetWindowId(mega_sprite_debug_state.windowHost);
         mega_sprite_debug_state.open = 1;
         mega_sprite_debug_state.closeRequested = 0;
         mega_sprite_debug_state.showLinks = 1;
@@ -789,20 +696,15 @@ mega_sprite_debug_toggle(void)
         e9ui_windowDestroy(mega_sprite_debug_state.windowHost);
         mega_sprite_debug_state.windowHost = NULL;
     }
-    mega_sprite_debug_state.embeddedBodyHost = NULL;
+    mega_sprite_debug_state.overlayBodyHost = NULL;
     mega_sprite_debug_state.window = NULL;
     mega_sprite_debug_state.renderer = NULL;
-    mega_sprite_debug_state.windowId = 0;
     mega_sprite_debug_state.texW = 0;
     mega_sprite_debug_state.texH = 0;
     mega_sprite_debug_state.open = 0;
     mega_sprite_debug_state.closeRequested = 0;
-    mega_sprite_debug_state.alwaysOnTopState = 0;
-    mega_sprite_debug_state.mainWindowFocused = 0;
-    mega_sprite_debug_state.megaWindowFocused = 0;
     mega_sprite_debug_state.cachedValid = 0;
     mega_sprite_debug_state.hasLastState = 0;
-    mega_sprite_debug_refocusMain();
 }
 
 int
@@ -814,34 +716,7 @@ mega_sprite_debug_is_open(void)
 void
 mega_sprite_debug_handleWindowEvent(const SDL_Event *ev)
 {
-    if (!ev || ev->type != SDL_WINDOWEVENT) {
-        return;
-    }
-    if (!mega_sprite_debug_state.open || !mega_sprite_debug_state.windowId) {
-        return;
-    }
-    if (ev->window.windowID != mega_sprite_debug_state.windowId) {
-        return;
-    }
-    if (ev->window.event == SDL_WINDOWEVENT_CLOSE) {
-        mega_sprite_debug_toggle();
-    } else if (ev->window.event == SDL_WINDOWEVENT_RESIZED || ev->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-        mega_sprite_debug_state.winW = ev->window.data1;
-        mega_sprite_debug_state.winH = ev->window.data2;
-        mega_sprite_debug_state.winHasSaved = 1;
-        config_saveConfig();
-    } else if (ev->window.event == SDL_WINDOWEVENT_MOVED) {
-        mega_sprite_debug_state.winX = ev->window.data1;
-        mega_sprite_debug_state.winY = ev->window.data2;
-        mega_sprite_debug_state.winHasSaved = 1;
-        config_saveConfig();
-    } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-        mega_sprite_debug_state.megaWindowFocused = 1;
-        mega_sprite_debug_updateAlwaysOnTop();
-    } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-        mega_sprite_debug_state.megaWindowFocused = 0;
-        mega_sprite_debug_updateAlwaysOnTop();
-    }
+    (void)ev;
 }
 
 int
@@ -856,29 +731,20 @@ mega_sprite_debug_handleKeydown(const SDL_KeyboardEvent *kev)
     if (kev->repeat != 0) {
         return 0;
     }
-    return mega_sprite_debug_embeddedHandleLocalKey(kev->keysym.sym);
+    return mega_sprite_debug_overlayHandleLocalKey(kev->keysym.sym);
 }
 
 void
 mega_sprite_debug_setMainWindowFocused(int focused)
 {
-    mega_sprite_debug_state.mainWindowFocused = focused ? 1 : 0;
-    if (mega_sprite_debug_state.windowHost) {
-        e9ui_windowSetMainWindowFocused(mega_sprite_debug_state.windowHost, mega_sprite_debug_state.mainWindowFocused);
-    }
-    if (!mega_sprite_debug_state.open) {
-        return;
-    }
-    mega_sprite_debug_updateAlwaysOnTop();
+    (void)focused;
 }
 
 int
 mega_sprite_debug_ownsWindowId(uint32_t windowId)
 {
-    if (!mega_sprite_debug_state.open || !mega_sprite_debug_state.windowId) {
-        return 0;
-    }
-    return mega_sprite_debug_state.windowId == windowId;
+    (void)windowId;
+    return 0;
 }
 
 static void
@@ -1365,23 +1231,15 @@ mega_sprite_debug_render(const e9k_debug_mega_sprite_state_t *st)
     if (!mega_sprite_debug_state.open) {
         return;
     }
-    if (mega_sprite_debug_isEmbeddedBackend()) {
-        int prevHasSaved = mega_sprite_debug_state.winHasSaved;
-        int prevX = mega_sprite_debug_state.winX;
-        int prevY = mega_sprite_debug_state.winY;
-        int prevW = mega_sprite_debug_state.winW;
-        int prevH = mega_sprite_debug_state.winH;
-        mega_sprite_debug_captureWindowRect();
-        if (!prevHasSaved ||
-            mega_sprite_debug_state.winX != prevX ||
-            mega_sprite_debug_state.winY != prevY ||
-            mega_sprite_debug_state.winW != prevW ||
-            mega_sprite_debug_state.winH != prevH) {
-            config_saveConfig();
-        }
-        return;
+    if (e9ui_windowCaptureRectChanged(mega_sprite_debug_state.windowHost,
+                                      (e9ui ? &e9ui->ctx : NULL),
+                                      &mega_sprite_debug_state.winHasSaved,
+                                      &mega_sprite_debug_state.winX,
+                                      &mega_sprite_debug_state.winY,
+                                      &mega_sprite_debug_state.winW,
+                                      &mega_sprite_debug_state.winH)) {
+        config_saveConfig();
     }
-    mega_sprite_debug_renderFrameInternal(st ? st : (mega_sprite_debug_state.hasLastState ? &mega_sprite_debug_state.lastState : NULL), 1);
 }
 
 void
@@ -1391,7 +1249,13 @@ mega_sprite_debug_persistConfig(FILE *file)
         return;
     }
     if (mega_sprite_debug_state.open) {
-        mega_sprite_debug_captureWindowRect();
+        (void)e9ui_windowCaptureRectSnapshot(mega_sprite_debug_state.windowHost,
+                                                (e9ui ? &e9ui->ctx : NULL),
+                                                &mega_sprite_debug_state.winHasSaved,
+                                                &mega_sprite_debug_state.winX,
+                                                &mega_sprite_debug_state.winY,
+                                                &mega_sprite_debug_state.winW,
+                                                &mega_sprite_debug_state.winH);
     }
     if (!mega_sprite_debug_state.winHasSaved) {
         return;

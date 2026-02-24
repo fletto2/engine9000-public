@@ -636,11 +636,16 @@ text_select_componentContains(const e9ui_component_t *root, const e9ui_component
 static e9ui_component_t *
 text_select_topModal(void)
 {
-    if (!e9ui || !e9ui->root) {
+    if (!e9ui) {
+        return NULL;
+    }
+    e9ui_component_t *overlayRoot = e9ui_getOverlayHost();
+    e9ui_component_t *hostRoot = overlayRoot ? overlayRoot : e9ui->root;
+    if (!hostRoot) {
         return NULL;
     }
     e9ui_child_reverse_iterator iter;
-    if (!e9ui_child_iterateChildrenReverse(e9ui->root, &iter)) {
+    if (!e9ui_child_iterateChildrenReverse(hostRoot, &iter)) {
         return NULL;
     }
     for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);

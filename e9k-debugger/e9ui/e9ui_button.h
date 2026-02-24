@@ -29,6 +29,12 @@ void
 e9ui_button_setMini(e9ui_component_t *btn, int enable);
 
 void
+e9ui_button_setMicro(e9ui_component_t *btn, int enable);
+
+void
+e9ui_button_setNano(e9ui_component_t *btn, int enable);
+
+void
 e9ui_button_setGlowPulse(e9ui_component_t *btn, int enable);
 
 void

@@ -38,6 +38,7 @@
 #include "ui_test.h"
 #include "shader_ui.h"
 #include "custom_log.h"
+#include "hotkeys.h"
 #include "custom_ui.h"
 #include "memory_track_ui.h"
 #include "crt.h"
@@ -643,7 +644,17 @@ debugger_ctor(void)
   debugger.opts.completionListRows = 30; // default completion popup rows
   debugger.coreOptionsShowHelp = 1;
   linebuf_init(&debugger.console, 2000);
-  linebuf_push(&debugger.console, "--== PRESS F1 FOR HELP ==--");
+  {
+    char helpKey[64];
+    char helpMsg[128];
+    helpKey[0] = '\0';
+    if (hotkeys_formatActionBindingDisplay("help", helpKey, sizeof(helpKey)) && helpKey[0]) {
+      snprintf(helpMsg, sizeof(helpMsg), "--== PRESS %s FOR HELP ==--", helpKey);
+    } else {
+      snprintf(helpMsg, sizeof(helpMsg), "--== HELP HOTKEY UNBOUND ==--");
+    }
+    linebuf_push(&debugger.console, helpMsg);
+  }
   if (!analyse_init()) {
     debugger_analyseInitFailed = 1;
   }
@@ -663,8 +674,8 @@ debugger_ctor(void)
   debugger.vblankCaptureActive = 0;  
   debugger.uiFrameCounter = 0;
   debugger.uiRefreshHz = 0;
-  debugger.config.crtEnabled = 1;
-  debugger.config.recordEnabled = 1;
+  debugger.config.crtEnabled = 0;
+  debugger.config.recordEnabled = 0;
   debugger.config.logosEnabled = 1;
   snprintf(debugger.config.neogeo.libretro.toolchainPrefix, sizeof(debugger.config.neogeo.libretro.toolchainPrefix), "m68k-neogeo-elf");
   snprintf(debugger.config.amiga.libretro.toolchainPrefix, sizeof(debugger.config.amiga.libretro.toolchainPrefix), "m68k-amigaos-");

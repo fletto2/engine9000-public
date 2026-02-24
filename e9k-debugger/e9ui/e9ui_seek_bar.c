@@ -11,12 +11,13 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "seek_bar.h"
+#include "e9ui_seek_bar.h"
+#include "e9ui.h"
 #include "alloc.h"
 #include "state_buffer.h"
 #include "e9ui_text_cache.h"
 
-typedef struct seek_bar_state {
+typedef struct e9ui_seek_bar_state {
     float percent;
     int dragging;
     int margin_left;
@@ -26,18 +27,18 @@ typedef struct seek_bar_state {
     int hover_margin;
     float tooltip_scale;
     float tooltip_offset;
-    seek_bar_change_cb_t cb;
+    e9ui_seek_bar_change_cb_t cb;
     void *cb_user;
-    seek_bar_drag_cb_t drag_cb;
+    e9ui_seek_bar_drag_cb_t drag_cb;
     void *drag_user;
     char *tooltip_prefix;
     char *tooltip_unit;
-    seek_bar_tooltip_cb_t tooltip_cb;
+    e9ui_seek_bar_tooltip_cb_t tooltip_cb;
     void *tooltip_user;
-} seek_bar_state_t;
+} e9ui_seek_bar_state_t;
 
 static void
-seek_bar_updateFromX(seek_bar_state_t *st, int x, const e9ui_rect_t *bounds)
+e9ui_seek_bar_updateFromX(e9ui_seek_bar_state_t *st, int x, const e9ui_rect_t *bounds)
 {
     if (!st || !bounds || bounds->w <= 0) {
         return;
@@ -54,13 +55,64 @@ seek_bar_updateFromX(seek_bar_state_t *st, int x, const e9ui_rect_t *bounds)
 }
 
 static int
-seek_bar_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+e9ui_seek_bar_stepPercent(e9ui_seek_bar_state_t *st, float delta)
 {
-    (void)ctx;
-    if (!self || !self->state || !ev) {
+    if (!st) {
         return 0;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)self->state;
+    float next = st->percent + delta;
+    if (next < 0.0f) {
+        next = 0.0f;
+    }
+    if (next > 1.0f) {
+        next = 1.0f;
+    }
+    if (next == st->percent) {
+        return 0;
+    }
+    st->percent = next;
+    if (st->cb) {
+        st->cb(st->percent, st->cb_user);
+    }
+    return 1;
+}
+
+static int
+e9ui_seek_bar_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+{
+    if (!self || !ctx || !self->state || !ev || self->disabled) {
+        return 0;
+    }
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)self->state;
+
+    if (e9ui_getFocus(ctx) == self && ev->type == SDL_KEYDOWN) {
+        SDL_Keycode kc = ev->key.keysym.sym;
+        SDL_Keymod mods = ev->key.keysym.mod;
+        int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+        int shift = (mods & KMOD_SHIFT) ? 1 : 0;
+        float step = shift ? 0.10f : 0.01f;
+
+        if (!accel && kc == SDLK_TAB) {
+            e9ui_focusAdvance(ctx, self, shift);
+            return 1;
+        }
+
+        switch (kc) {
+        case SDLK_LEFT:
+        case SDLK_DOWN:
+            return e9ui_seek_bar_stepPercent(st, -step);
+        case SDLK_RIGHT:
+        case SDLK_UP:
+            return e9ui_seek_bar_stepPercent(st, step);
+        case SDLK_HOME:
+            return e9ui_seek_bar_stepPercent(st, -1.0f);
+        case SDLK_END:
+            return e9ui_seek_bar_stepPercent(st, 1.0f);
+        default:
+            break;
+        }
+    }
+
     if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT) {
         int mx = ev->button.x;
         int my = ev->button.y;
@@ -74,7 +126,7 @@ seek_bar_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_eve
             if (st->drag_cb) {
                 st->drag_cb(1, st->percent, st->drag_user);
             }
-            seek_bar_updateFromX(st, mx, &self->bounds);
+            e9ui_seek_bar_updateFromX(st, mx, &self->bounds);
             return 1;
         }
     }
@@ -89,7 +141,7 @@ seek_bar_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_eve
     }
     if (ev->type == SDL_MOUSEMOTION) {
         if (st->dragging) {
-            seek_bar_updateFromX(st, ev->motion.x, &self->bounds);
+            e9ui_seek_bar_updateFromX(st, ev->motion.x, &self->bounds);
             return 1;
         }
     }
@@ -97,7 +149,7 @@ seek_bar_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_eve
 }
 
 static void
-seek_bar_render(e9ui_component_t *self, e9ui_context_t *ctx)
+e9ui_seek_bar_render(e9ui_component_t *self, e9ui_context_t *ctx)
 {
     if (!self || !ctx || !ctx->renderer || !self->state) {
         return;
@@ -105,7 +157,7 @@ seek_bar_render(e9ui_component_t *self, e9ui_context_t *ctx)
     if (e9ui_getHidden(self)) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)self->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)self->state;
     SDL_Renderer *r = ctx->renderer;
     int x = self->bounds.x;
     int y = self->bounds.y;
@@ -133,8 +185,11 @@ seek_bar_render(e9ui_component_t *self, e9ui_context_t *ctx)
     if (knob_r < 6) knob_r = 6;
     int knob_x = x + filled_w;
     int knob_y = y + h / 2;
-    SDL_SetRenderDrawColor(r, 250, 250, 250, 255);
     SDL_Rect knob = { knob_x - knob_r, knob_y - knob_r, knob_r * 2, knob_r * 2 };
+    if (e9ui_getFocus(ctx) == self) {
+        e9ui_drawFocusRingRect(ctx, knob, 2);
+    }
+    SDL_SetRenderDrawColor(r, 250, 250, 250, 255);
     SDL_RenderFillRect(r, &knob);
 
     if (st->dragging) {
@@ -190,13 +245,13 @@ seek_bar_render(e9ui_component_t *self, e9ui_context_t *ctx)
 }
 
 e9ui_component_t *
-seek_bar_make(void)
+e9ui_seek_bar_make(void)
 {
     e9ui_component_t *c = (e9ui_component_t*)alloc_calloc(1, sizeof(*c));
     if (!c) {
         return NULL;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)alloc_calloc(1, sizeof(*st));
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)alloc_calloc(1, sizeof(*st));
     if (!st) {
         alloc_free(c);
         return NULL;
@@ -209,91 +264,92 @@ seek_bar_make(void)
     st->hover_margin = 18;
     st->tooltip_scale = 1.0f;
     st->tooltip_offset = 0.0f;
-    c->name = "seek_bar";
+    c->name = "e9ui_seek_bar";
     c->state = st;
-    c->render = seek_bar_render;
-    c->handleEvent = seek_bar_handleEvent;
+    c->render = e9ui_seek_bar_render;
+    c->handleEvent = e9ui_seek_bar_handleEvent;
+    c->focusable = 1;
     return c;
 }
 
 void
-seek_bar_setMargins(e9ui_component_t *comp, int left, int right, int bottom)
+e9ui_seek_bar_setMargins(e9ui_component_t *comp, int left, int right, int bottom)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     st->margin_left = left;
     st->margin_right = right;
     st->margin_bottom = bottom;
 }
 
 void
-seek_bar_setHeight(e9ui_component_t *comp, int height)
+e9ui_seek_bar_setHeight(e9ui_component_t *comp, int height)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     st->height = height;
 }
 
 void
-seek_bar_setHoverMargin(e9ui_component_t *comp, int margin)
+e9ui_seek_bar_setHoverMargin(e9ui_component_t *comp, int margin)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     st->hover_margin = margin;
 }
 
 int
-seek_bar_getHoverMargin(e9ui_component_t *comp)
+e9ui_seek_bar_getHoverMargin(e9ui_component_t *comp)
 {
     if (!comp || !comp->state) {
         return 0;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     return st->hover_margin;
 }
 
 void
-seek_bar_setCallback(e9ui_component_t *comp, seek_bar_change_cb_t cb, void *user)
+e9ui_seek_bar_setCallback(e9ui_component_t *comp, e9ui_seek_bar_change_cb_t cb, void *user)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     st->cb = cb;
     st->cb_user = user;
 }
 
 void
-seek_bar_setDragCallback(e9ui_component_t *comp, seek_bar_drag_cb_t cb, void *user)
+e9ui_seek_bar_setDragCallback(e9ui_component_t *comp, e9ui_seek_bar_drag_cb_t cb, void *user)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     st->drag_cb = cb;
     st->drag_user = user;
 }
 
 void
-seek_bar_setPercent(e9ui_component_t *comp, float percent)
+e9ui_seek_bar_setPercent(e9ui_component_t *comp, float percent)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     if (percent < 0.0f) percent = 0.0f;
     if (percent > 1.0f) percent = 1.0f;
     st->percent = percent;
 }
 
 void
-seek_bar_setVisible(e9ui_component_t *comp, int visible)
+e9ui_seek_bar_setVisible(e9ui_component_t *comp, int visible)
 {
     if (!comp) {
         return;
@@ -302,12 +358,12 @@ seek_bar_setVisible(e9ui_component_t *comp, int visible)
 }
 
 void
-seek_bar_setTooltipPrefix(e9ui_component_t *comp, const char *prefix)
+e9ui_seek_bar_setTooltipPrefix(e9ui_component_t *comp, const char *prefix)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     if (st->tooltip_prefix) {
         alloc_free(st->tooltip_prefix);
         st->tooltip_prefix = NULL;
@@ -318,12 +374,12 @@ seek_bar_setTooltipPrefix(e9ui_component_t *comp, const char *prefix)
 }
 
 void
-seek_bar_setTooltipUnit(e9ui_component_t *comp, const char *unit)
+e9ui_seek_bar_setTooltipUnit(e9ui_component_t *comp, const char *unit)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     if (st->tooltip_unit) {
         alloc_free(st->tooltip_unit);
         st->tooltip_unit = NULL;
@@ -334,12 +390,12 @@ seek_bar_setTooltipUnit(e9ui_component_t *comp, const char *unit)
 }
 
 void
-seek_bar_setTooltipScale(e9ui_component_t *comp, float scale)
+e9ui_seek_bar_setTooltipScale(e9ui_component_t *comp, float scale)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     if (scale <= 0.0f) {
         scale = 1.0f;
     }
@@ -347,33 +403,33 @@ seek_bar_setTooltipScale(e9ui_component_t *comp, float scale)
 }
 
 void
-seek_bar_setTooltipOffset(e9ui_component_t *comp, float offset)
+e9ui_seek_bar_setTooltipOffset(e9ui_component_t *comp, float offset)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     st->tooltip_offset = offset;
 }
 
 void
-seek_bar_setTooltipCallback(e9ui_component_t *comp, seek_bar_tooltip_cb_t cb, void *user)
+e9ui_seek_bar_setTooltipCallback(e9ui_component_t *comp, e9ui_seek_bar_tooltip_cb_t cb, void *user)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     st->tooltip_cb = cb;
     st->tooltip_user = user;
 }
 
 void
-seek_bar_layoutInParent(e9ui_component_t *comp, e9ui_context_t *ctx, e9ui_rect_t parent)
+e9ui_seek_bar_layoutInParent(e9ui_component_t *comp, e9ui_context_t *ctx, e9ui_rect_t parent)
 {
     if (!comp || !comp->state) {
         return;
     }
-    seek_bar_state_t *st = (seek_bar_state_t*)comp->state;
+    e9ui_seek_bar_state_t *st = (e9ui_seek_bar_state_t*)comp->state;
     int left = st->margin_left;
     int right = st->margin_right;
     int bottom = st->margin_bottom;

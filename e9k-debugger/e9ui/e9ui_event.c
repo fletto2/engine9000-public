@@ -27,7 +27,7 @@ e9ui_event_componentContainsBlockingWindow(e9ui_component_t *comp)
     }
     if (comp->name &&
         (strcmp(comp->name, "e9ui_modal") == 0 ||
-         strcmp(comp->name, "e9ui_window_embedded") == 0)) {
+         strcmp(comp->name, "e9ui_window_overlay") == 0)) {
         return 1;
     }
     e9ui_child_reverse_iterator iter;
@@ -137,6 +137,9 @@ e9ui_event_processMouseCallbacks(e9ui_component_t *comp, e9ui_context_t *ctx, co
             }
             if ((comp->onClick || comp->onMouseMove || comp->onMouseUp) && !comp->mousePressed) {
                 comp->mousePressed = 1;
+                comp->mousePressedButton = mouse_ev.button;
+                comp->mousePressedX = mouse_ev.x;
+                comp->mousePressedY = mouse_ev.y;
             }
             consumed = 1;
         }
@@ -147,12 +150,13 @@ e9ui_event_processMouseCallbacks(e9ui_component_t *comp, e9ui_context_t *ctx, co
         mouse_ev.y = ev->button.y;
         mouse_ev.button = e9ui_event_translateMouseButton(ev->button.button);
         inside = e9ui_event_pointInBounds(comp, mouse_ev.x, mouse_ev.y);
-        int wasPressed = comp->mousePressed;
+        int wasPressed = comp->mousePressed && comp->mousePressedButton == mouse_ev.button;
         if (wasPressed && comp->onMouseUp) {
             comp->onMouseUp(comp, ctx, &mouse_ev);
         }
         if (wasPressed) {
             comp->mousePressed = 0;
+            comp->mousePressedButton = E9UI_MOUSE_BUTTON_NONE;
             if (inside && comp->onClick && mouse_ev.button == E9UI_MOUSE_BUTTON_LEFT) {
                 comp->onClick(comp, ctx, &mouse_ev);
             }

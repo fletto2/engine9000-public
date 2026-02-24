@@ -1,11 +1,15 @@
-AMIGA_TESTS=test-amigasmoke \
+AMIGA_TESTS=test-amigacustom \
+	    test-amigalog \
+	    test-amigasmoke \
 	    test-amigavasm \
 	    test-amigacoreoptions \
             test-amigasavestate \
             test-amigaconfig \
             test-amigalocals 
 
-AMIGA_REMAKE=remake-test-amigavasm \
+AMIGA_REMAKE=remake-test-amigacustom \
+	     remake-test-amigalog \
+	     remake-test-amigavasm \
 	     remake-test-amigacoreoptions \
              remake-test-amigasavestate \
              remake-test-amigaconfig \
@@ -18,6 +22,12 @@ make-test-amigalocals: all tests/amiga/locals/locals.adf
 
 make-test-amigavasm: all tests/amiga/vasm/vasm.adf
 	./e9k-debugger --amiga --source-dir=./tests/amiga/vasm/ --uae=./tests/amiga/vasm/vasm.uae --hunk=./tests/amiga/vasm/vasm --make-test tests/results/amiga/vasm
+
+make-test-amigacustom: all tests/amiga/custom/custom.adf
+	./e9k-debugger --amiga --source-dir=./tests/amiga/custom/ --uae=./tests/amiga/custom/custom.uae --make-test tests/results/amiga/custom
+
+make-test-amigalog: all tests/amiga/custom/custom.adf
+	./e9k-debugger --amiga --source-dir=./tests/amiga/custom/ --uae=./tests/amiga/custom/custom.uae --make-test tests/results/amiga/log
 
 make-test-amigaconfig: all 
 	./e9k-debugger --amiga --make-test tests/results/amiga/config
@@ -39,6 +49,12 @@ remake-test-amigalocals: all tests/amiga/locals/locals.adf
 
 remake-test-amigavasm: all tests/amiga/vasm/vasm.adf
 	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/vasm/ --uae=./tests/amiga/vasm/vasm.uae --hunk=./tests/amiga/vasm/vasm --remake-test tests/results/amiga/vasm
+
+remake-test-amigacustom: all tests/amiga/custom/custom.adf
+	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/custom/ --uae=./tests/amiga/custom/custom.uae --remake-test tests/results/amiga/custom
+
+remake-test-amigalog: all tests/amiga/custom/custom.adf
+	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/custom/ --uae=./tests/amiga/custom/custom.uae --remake-test tests/results/amiga/log
 
 remake-test-amigaconfig: all 
 	./e9k-debugger --amiga --volume=0 --remake-test tests/results/amiga/config
@@ -66,6 +82,16 @@ test-amigalocals: all tests/amiga/locals/locals.adf
 test-amigavasm: all tests/amiga/vasm/vasm.adf
 	@printf "AMIGA VASM ($@) ..."
 	@./e9k-debugger $(HEADLESS) --volume=0 --amiga --source-dir=./tests/amiga/vasm/ --uae=./tests/amiga/vasm/vasm.uae --hunk=./tests/amiga/vasm/vasm --test tests/results/amiga/vasm >> test.log 2>&1
+	@echo " PASSED ✅"
+
+test-amigacustom: all tests/amiga/custom/custom.adf
+	@printf "AMIGA CUSTOM ($@) ..."
+	@./e9k-debugger $(HEADLESS) --volume=0 --amiga --source-dir=./tests/amiga/custom/ --uae=./tests/amiga/custom/custom.uae --test tests/results/amiga/custom >> test.log 2>&1
+	@echo " PASSED ✅"
+
+test-amigalog: all tests/amiga/custom/custom.adf
+	@printf "AMIGA LOG ($@) ..."
+	@./e9k-debugger $(HEADLESS) --volume=0 --amiga --source-dir=./tests/amiga/custom/ --uae=./tests/amiga/custom/custom.uae --test tests/results/amiga/log >> test.log 2>&1
 	@echo " PASSED ✅"
 
 test-amigacoreoptions: all tests/amiga/example/example.adf

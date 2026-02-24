@@ -70,6 +70,12 @@ static TTF_Font *e9ui_fpsFont = NULL;
 static int e9ui_fpsFontSize = 0;
 
 static void
+e9ui_updateState(e9ui_component_t *comp, e9ui_context_t *ctx);
+
+static void
+e9ui_updateAutoHide(e9ui_component_t *comp, e9ui_context_t *ctx);
+
+static void
 e9ui_updateFullscreenHintMessage(void)
 {
     char binding[64];
@@ -92,6 +98,180 @@ void
 e9ui_setFpsEnabled(int enabled)
 {
     e9ui_fpsEnabled = enabled ? 1 : 0;
+}
+
+static int
+e9ui_overlayHost_preferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)self;
+    (void)ctx;
+    (void)availW;
+    return 0;
+}
+
+static void
+e9ui_overlayHost_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+    e9ui_child_iterator iter;
+    if (!e9ui_child_iterateChildren(self, &iter)) {
+        return;
+    }
+    for (e9ui_child_iterator *it = e9ui_child_interateNext(&iter);
+         it;
+         it = e9ui_child_interateNext(&iter)) {
+        if (!it->child || e9ui_getHidden(it->child) || !it->child->layout) {
+            continue;
+        }
+        it->child->layout(it->child, ctx, bounds);
+    }
+}
+
+static void
+e9ui_overlayHost_render(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self) {
+        return;
+    }
+    e9ui_child_iterator iter;
+    if (!e9ui_child_iterateChildren(self, &iter)) {
+        return;
+    }
+    for (e9ui_child_iterator *it = e9ui_child_interateNext(&iter);
+         it;
+         it = e9ui_child_interateNext(&iter)) {
+        if (!it->child || e9ui_getHidden(it->child) || !it->child->render) {
+            continue;
+        }
+        it->child->render(it->child, ctx);
+    }
+}
+
+static e9ui_component_t *
+e9ui_makeOverlayHost(const char *name)
+{
+    e9ui_component_t *host = (e9ui_component_t *)alloc_calloc(1, sizeof(*host));
+    if (!host) {
+        return NULL;
+    }
+    host->name = name;
+    host->preferredHeight = e9ui_overlayHost_preferredHeight;
+    host->layout = e9ui_overlayHost_layout;
+    host->render = e9ui_overlayHost_render;
+    return host;
+}
+
+static e9ui_component_t *
+e9ui_activeContentRoot(void)
+{
+    if (!e9ui) {
+        return NULL;
+    }
+    return e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
+}
+
+e9ui_component_t *
+e9ui_getOverlayHost(void)
+{
+    if (!e9ui) {
+        return NULL;
+    }
+    return e9ui->overlayRoot;
+}
+
+static void
+e9ui_sceneUpdateState(void)
+{
+    e9ui_component_t *contentRoot = e9ui_activeContentRoot();
+    if (contentRoot) {
+        e9ui_updateState(contentRoot, &e9ui->ctx);
+    }
+    if (e9ui->overlayRoot) {
+        e9ui_updateState(e9ui->overlayRoot, &e9ui->ctx);
+    }
+}
+
+static void
+e9ui_sceneLayout(int width, int height)
+{
+    e9ui_rect_t full = (e9ui_rect_t){ 0, 0, width, height };
+    e9ui_component_t *contentRoot = e9ui_activeContentRoot();
+    if (contentRoot && contentRoot->layout) {
+        contentRoot->layout(contentRoot, &e9ui->ctx, full);
+    }
+    if (e9ui->overlayRoot && e9ui->overlayRoot->layout) {
+        e9ui->overlayRoot->layout(e9ui->overlayRoot, &e9ui->ctx, full);
+    }
+}
+
+static void
+e9ui_sceneUpdateAutoHide(void)
+{
+    e9ui_component_t *contentRoot = e9ui_activeContentRoot();
+    if (contentRoot) {
+        e9ui_updateAutoHide(contentRoot, &e9ui->ctx);
+    }
+    if (e9ui->overlayRoot) {
+        e9ui_updateAutoHide(e9ui->overlayRoot, &e9ui->ctx);
+    }
+}
+
+static void
+e9ui_sceneRender(void)
+{
+    e9ui_component_t *contentRoot = e9ui_activeContentRoot();
+    if (contentRoot && contentRoot->render) {
+        contentRoot->render(contentRoot, &e9ui->ctx);
+    }
+    if (e9ui->overlayRoot && e9ui->overlayRoot->render) {
+        e9ui->overlayRoot->render(e9ui->overlayRoot, &e9ui->ctx);
+    }
+}
+
+static int
+e9ui_sceneProcessEvent(const e9ui_event_t *ev)
+{
+    if (e9ui->overlayRoot) {
+        int allow_multiple = 0;
+        int consumed = 0;
+        if (ev && (ev->type == SDL_MOUSEMOTION || ev->type == SDL_MOUSEBUTTONUP)) {
+            allow_multiple = 1;
+        }
+        e9ui_child_reverse_iterator iter;
+        if (e9ui_child_iterateChildrenReverse(e9ui->overlayRoot, &iter)) {
+            for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+                 it;
+                 it = e9ui_child_iteratePrev(&iter)) {
+                if (!it->child) {
+                    continue;
+                }
+                if (e9ui_event_process(it->child, &e9ui->ctx, ev)) {
+                    consumed = 1;
+                    if (!allow_multiple) {
+                        return 1;
+                    }
+                }
+            }
+        }
+        if (consumed) {
+            return 1;
+        }
+    }
+    e9ui_component_t *contentRoot = e9ui_activeContentRoot();
+    if (contentRoot && e9ui_event_process(contentRoot, &e9ui->ctx, ev)) {
+        return 1;
+    }
+    return 0;
+}
+
+static void
+e9ui_closeOverlaysBeforeFullscreenTransition(void)
+{
+    e9ui_windowCloseAllOverlay();
+    e9ui_modal_closeAll(&e9ui->ctx);
 }
 
 static int
@@ -170,6 +350,40 @@ e9ui_drawRoundedFill(SDL_Renderer *renderer, const SDL_Rect *rect, SDL_Color col
     int x2 = rect->x + rect->w - 1 - xoff;
     SDL_RenderDrawLine(renderer, x1, rect->y + yy, x2, rect->y + yy);
   }
+}
+
+void
+e9ui_drawFocusRingRect(e9ui_context_t *ctx, SDL_Rect rect, int padPx)
+{
+  if (!ctx || !ctx->renderer || rect.w <= 0 || rect.h <= 0) {
+    return;
+  }
+
+  int pad = e9ui_scale_px(ctx, padPx);
+  if (pad <= 0) {
+    pad = padPx;
+  }
+  if (pad < 1) {
+    pad = 1;
+  }
+
+  SDL_Rect inner = {
+    rect.x - pad,
+    rect.y - pad,
+    rect.w + pad * 2,
+    rect.h + pad * 2
+  };
+  SDL_Rect outer = {
+    inner.x - 1,
+    inner.y - 1,
+    inner.w + 2,
+    inner.h + 2
+  };
+
+  SDL_SetRenderDrawColor(ctx->renderer, 36, 84, 150, 255);
+  SDL_RenderDrawRect(ctx->renderer, &outer);
+  SDL_SetRenderDrawColor(ctx->renderer, 120, 180, 255, 255);
+  SDL_RenderDrawRect(ctx->renderer, &inner);
 }
 
 static void
@@ -648,6 +862,37 @@ e9ui_focusComponentContains(e9ui_component_t *root, e9ui_component_t *target)
     return 0;
 }
 
+static int
+e9ui_focusIsOverlayContainer(const e9ui_component_t *comp)
+{
+    if (!comp || !comp->name) {
+        return 0;
+    }
+    return strcmp(comp->name, "e9ui_modal") == 0;
+}
+
+static e9ui_component_t *
+e9ui_focusTopOverlayRoot(e9ui_component_t *overlayRoot)
+{
+    if (!overlayRoot) {
+        return NULL;
+    }
+    e9ui_child_reverse_iterator iter;
+    if (!e9ui_child_iterateChildrenReverse(overlayRoot, &iter)) {
+        return NULL;
+    }
+    for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+         it;
+         it = e9ui_child_iteratePrev(&iter)) {
+        e9ui_component_t *child = it->child;
+        if (!child || e9ui_getHidden(child) || !e9ui_focusIsOverlayContainer(child)) {
+            continue;
+        }
+        return child;
+    }
+    return NULL;
+}
+
 e9ui_component_t *
 e9ui_focusTraversalRoot(e9ui_context_t *ctx, e9ui_component_t *current)
 {
@@ -656,30 +901,41 @@ e9ui_focusTraversalRoot(e9ui_context_t *ctx, e9ui_component_t *current)
     }
     e9ui_component_t *focusRoot = NULL;
     e9ui_component_t *focusFullscreen = NULL;
+    e9ui_component_t *focusOverlayRoot = NULL;
     if (ctx) {
         focusRoot = ctx->focusRoot;
         focusFullscreen = ctx->focusFullscreen;
+        if (e9ui && ctx == &e9ui->ctx) {
+            focusOverlayRoot = e9ui->overlayRoot;
+        }
     }
-    if (!focusRoot && e9ui) {
+    if (!focusRoot && e9ui && (!ctx || ctx == &e9ui->ctx)) {
         focusRoot = e9ui->root;
     }
-    if (!focusFullscreen && e9ui) {
+    if (!focusFullscreen && e9ui && (!ctx || ctx == &e9ui->ctx)) {
         focusFullscreen = e9ui->fullscreen;
     }
+    if (e9ui && (!ctx || ctx == &e9ui->ctx)) {
+        focusOverlayRoot = e9ui->overlayRoot;
+    }
+    e9ui_component_t *topOverlay = e9ui_focusTopOverlayRoot(focusOverlayRoot);
     if (!current) {
+        if (topOverlay) {
+            return topOverlay;
+        }
         return focusFullscreen ? focusFullscreen : focusRoot;
     }
-    if (focusRoot) {
+    if (topOverlay && e9ui_focusComponentContains(topOverlay, current)) {
+        return topOverlay;
+    }
+    if (focusOverlayRoot) {
         e9ui_child_reverse_iterator iter;
-        if (e9ui_child_iterateChildrenReverse(focusRoot, &iter)) {
+        if (e9ui_child_iterateChildrenReverse(focusOverlayRoot, &iter)) {
             for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
                  it;
                  it = e9ui_child_iteratePrev(&iter)) {
                 e9ui_component_t *child = it->child;
-                if (!child || e9ui_getHidden(child) || !child->name) {
-                    continue;
-                }
-                if (strcmp(child->name, "e9ui_modal") != 0) {
+                if (!child || e9ui_getHidden(child) || !e9ui_focusIsOverlayContainer(child)) {
                     continue;
                 }
                 if (e9ui_focusComponentContains(child, current)) {
@@ -1074,7 +1330,7 @@ e9ui_findTooltipRecursive(e9ui_component_t *comp, e9ui_context_t *ctx, int x, in
             }
             if (it->child->name &&
                 (strcmp(it->child->name, "e9ui_modal") == 0 ||
-                 strcmp(it->child->name, "e9ui_window_embedded") == 0)) {
+                 strcmp(it->child->name, "e9ui_window_overlay") == 0)) {
                 return best;
             }
         }
@@ -1095,7 +1351,7 @@ e9ui_pointerBlockedByOverlayRecursive(e9ui_component_t *comp, int x, int y)
     }
     if (comp->name &&
         (strcmp(comp->name, "e9ui_modal") == 0 ||
-         strcmp(comp->name, "e9ui_window_embedded") == 0)) {
+         strcmp(comp->name, "e9ui_window_overlay") == 0)) {
         return 1;
     }
     e9ui_child_reverse_iterator iter;
@@ -1118,11 +1374,11 @@ e9ui_pointerBlockedByOverlayRecursive(e9ui_component_t *comp, int x, int y)
 static int
 e9ui_pointerBlockedByOverlayAtCurrentMouse(void)
 {
-    e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
-    if (!root) {
+    e9ui_component_t *overlayRoot = e9ui_getOverlayHost();
+    if (!overlayRoot) {
         return 0;
     }
-    return e9ui_pointerBlockedByOverlayRecursive(root, e9ui->ctx.mouseX, e9ui->ctx.mouseY);
+    return e9ui_pointerBlockedByOverlayRecursive(overlayRoot, e9ui->ctx.mouseX, e9ui->ctx.mouseY);
 }
 
 static void
@@ -1250,8 +1506,9 @@ e9ui_drawTooltip(const e9ui_context_t *ctx, const char *text, int baseX, int bas
 static void
 e9ui_renderTooltipOverlay(void)
 {
-    e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
-    if (!root) {
+    e9ui_component_t *contentRoot = e9ui_activeContentRoot();
+    e9ui_component_t *overlayRoot = e9ui_getOverlayHost();
+    if (!contentRoot && !overlayRoot) {
         return;
     }
     static struct {
@@ -1263,8 +1520,23 @@ e9ui_renderTooltipOverlay(void)
         int active;
     } tooltip_state = {0};
 
-    e9ui_tooltip_result_t tooltip = e9ui_findTooltipRecursive(root, &e9ui->ctx,
-                                                              e9ui->ctx.mouseX, e9ui->ctx.mouseY, 0);
+    e9ui_tooltip_result_t tooltip = { NULL, -1, NULL };
+    if (overlayRoot) {
+        tooltip = e9ui_findTooltipRecursive(overlayRoot, &e9ui->ctx,
+                                            e9ui->ctx.mouseX, e9ui->ctx.mouseY, 0);
+    }
+    if (!tooltip.text && overlayRoot &&
+        e9ui_pointerBlockedByOverlayRecursive(overlayRoot, e9ui->ctx.mouseX, e9ui->ctx.mouseY)) {
+        tooltip_state.active = 0;
+        tooltip_state.text = NULL;
+        tooltip_state.comp = NULL;
+        tooltip_state.serial = 0u;
+        return;
+    }
+    if (!tooltip.text && contentRoot) {
+        tooltip = e9ui_findTooltipRecursive(contentRoot, &e9ui->ctx,
+                                            e9ui->ctx.mouseX, e9ui->ctx.mouseY, 0);
+    }
     if (!tooltip.text) {
         tooltip_state.active = 0;
         tooltip_state.text = NULL;
@@ -1315,6 +1587,9 @@ e9ui_findFocusable(e9ui_component_t *comp, e9ui_context_t *ctx)
 void
 e9ui_setFullscreenComponent(e9ui_component_t *comp)
 {
+    if (comp != e9ui->fullscreen) {
+        e9ui_closeOverlaysBeforeFullscreenTransition();
+    }
     e9ui_component_t *prev = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
     if (comp) {
     } else {
@@ -1362,6 +1637,7 @@ e9ui_setFullscreenComponent(e9ui_component_t *comp)
 void
 e9ui_clearFullscreenComponent(void)
 {
+    e9ui_closeOverlaysBeforeFullscreenTransition();
     e9ui_component_t *prev = e9ui->fullscreen;
     if (e9ui_transientMessage == e9ui_fullscreenMessage) {
         e9ui_fullscreenHintStart = 0;
@@ -1436,8 +1712,7 @@ e9ui_renderFrame(void)
   if (e9ui->transition.inTransition > 0) {
     return;
   }
-  e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
-  e9ui_updateState(root, &e9ui->ctx);
+  e9ui_sceneUpdateState();
  
   e9ui_updateFontScale();
   SDL_SetRenderDrawColor(e9ui->ctx.renderer, 16, 16, 16, 255);
@@ -1449,18 +1724,11 @@ e9ui_renderFrame(void)
   e9ui->ctx.winH = h;
   e9ui->ctx.mouseX = e9ui->mouseX;
   e9ui->ctx.mouseY = e9ui->mouseY;
-  
-  if (root && root->layout) {
-    e9ui_rect_t full = (e9ui_rect_t){0,0,w,h};
-    root->layout(root, &e9ui->ctx, full);
-  }
 
-  e9ui_updateAutoHide(root, &e9ui->ctx);
+  e9ui_sceneLayout(w, h);
+  e9ui_sceneUpdateAutoHide();
   e9ui_text_select_beginFrame(&e9ui->ctx);
-
-  if (root && root->render) {
-    root->render(root, &e9ui->ctx);
-  }
+  e9ui_sceneRender();
   e9ui_text_select_endFrame(&e9ui->ctx);
 
   e9ui_textbox_selectOverlayRender(&e9ui->ctx);
@@ -1488,8 +1756,7 @@ e9ui_renderFrame(void)
 void
 e9ui_renderFrameNoLayout(void)
 {
-  e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
-  e9ui_updateState(root, &e9ui->ctx);
+  e9ui_sceneUpdateState();
 
   SDL_SetRenderDrawColor(e9ui->ctx.renderer, 16, 16, 16, 255);
   SDL_RenderClear(e9ui->ctx.renderer);
@@ -1501,12 +1768,9 @@ e9ui_renderFrameNoLayout(void)
   e9ui->ctx.mouseX = e9ui->mouseX;
   e9ui->ctx.mouseY = e9ui->mouseY;
 
-  e9ui_updateAutoHide(root, &e9ui->ctx);
+  e9ui_sceneUpdateAutoHide();
   e9ui_text_select_beginFrame(&e9ui->ctx);
-
-  if (root && root->render) {
-    root->render(root, &e9ui->ctx);
-  }
+  e9ui_sceneRender();
   e9ui_text_select_endFrame(&e9ui->ctx);
 
   e9ui_textbox_selectOverlayRender(&e9ui->ctx);
@@ -1530,9 +1794,8 @@ void
 e9ui_renderFrameNoLayoutNoPresent(void)
 {
   e9ui->glCompositeCapture = 1;
-  
-  e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
-  e9ui_updateState(root, &e9ui->ctx);
+
+  e9ui_sceneUpdateState();
 
   SDL_SetRenderDrawColor(e9ui->ctx.renderer, 16, 16, 16, 255);
   SDL_RenderClear(e9ui->ctx.renderer);
@@ -1544,12 +1807,9 @@ e9ui_renderFrameNoLayoutNoPresent(void)
   e9ui->ctx.mouseX = e9ui->mouseX;
   e9ui->ctx.mouseY = e9ui->mouseY;
 
-  e9ui_updateAutoHide(root, &e9ui->ctx);
+  e9ui_sceneUpdateAutoHide();
   e9ui_text_select_beginFrame(&e9ui->ctx);
-
-  if (root && root->render) {
-    root->render(root, &e9ui->ctx);
-  }
+  e9ui_sceneRender();
   e9ui_text_select_endFrame(&e9ui->ctx);
 
   e9ui_textbox_selectOverlayRender(&e9ui->ctx);
@@ -1572,8 +1832,7 @@ e9ui_renderFrameNoLayoutNoPresent(void)
 void
 e9ui_renderFrameNoLayoutNoPresentNoClear(void)
 {
-  e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
-  e9ui_updateState(root, &e9ui->ctx);
+  e9ui_sceneUpdateState();
 
   int w,h; SDL_GetRendererOutputSize(e9ui->ctx.renderer, &w, &h);
 
@@ -1582,12 +1841,9 @@ e9ui_renderFrameNoLayoutNoPresentNoClear(void)
   e9ui->ctx.mouseX = e9ui->mouseX;
   e9ui->ctx.mouseY = e9ui->mouseY;
 
-  e9ui_updateAutoHide(root, &e9ui->ctx);
+  e9ui_sceneUpdateAutoHide();
   e9ui_text_select_beginFrame(&e9ui->ctx);
-
-  if (root && root->render) {
-    root->render(root, &e9ui->ctx);
-  }
+  e9ui_sceneRender();
   e9ui_text_select_endFrame(&e9ui->ctx);
 
   e9ui_textbox_selectOverlayRender(&e9ui->ctx);
@@ -1710,6 +1966,24 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     }
     int wantW = (e9ui->layout.winW > 0 ? e9ui->layout.winW : 1000);
     int wantH = (e9ui->layout.winH > 0 ? e9ui->layout.winH : 700);
+    int wantX = SDL_WINDOWPOS_CENTERED;
+    int wantY = SDL_WINDOWPOS_CENTERED;
+    int useDefaultWindowGeometry =
+        (!cliOverrideWindowSize &&
+         e9ui->layout.winX == E9UI_LAYOUT_WIN_X &&
+         e9ui->layout.winY == E9UI_LAYOUT_WIN_Y &&
+         e9ui->layout.winW == E9UI_LAYOUT_WIN_W &&
+         e9ui->layout.winH == E9UI_LAYOUT_WIN_H) ? 1 : 0;
+    if (useDefaultWindowGeometry && uiTestMode == UI_TEST_MODE_NONE) {
+        SDL_Rect usable = {0, 0, 0, 0};
+        if (SDL_GetDisplayUsableBounds(0, &usable) == 0 &&
+            usable.w > 0 && usable.h > 0) {
+            wantX = usable.x;
+            wantY = usable.y;
+            wantW = usable.w;
+            wantH = usable.h;
+        }
+    }
     if (e9ui->glCompositeEnabled && debugger_platform_glCompositeNeedsOpenGLHint()) {
       SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
     }
@@ -1720,7 +1994,7 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     if (startHidden) {
       winFlags |= SDL_WINDOW_HIDDEN;
     }
-    SDL_Window *win = SDL_CreateWindow("ENGINE9000 DEBUGGER/PROFILER 68K", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, wantW, wantH,
+    SDL_Window *win = SDL_CreateWindow("ENGINE9000 DEBUGGER/PROFILER 68K", wantX, wantY, wantW, wantH,
                                        winFlags);
     if (!win) {
         debug_error("SDL_CreateWindow failed: %s", SDL_GetError());
@@ -1773,6 +2047,10 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
   e9ui->ctx.onSplitChanged = e9ui_onSplitChanged;
   // Load themed fonts (button + text fonts)
   e9ui_theme_loadFonts();
+
+  if (!e9ui->overlayRoot) {
+    e9ui->overlayRoot = e9ui_makeOverlayHost("e9ui_overlay_host");
+  }
 
   e9ui_controllerInit();
     
@@ -2039,22 +2317,28 @@ e9ui_processEvents(void)
             continue;
         }
         else if (ev.type == SDL_KEYDOWN) {
+            e9ui->ctx.keyMods = ev.key.keysym.mod;
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
             }
-            e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
-            if (root && e9ui_windowDispatchEmbeddedKeydown(root, &e9ui->ctx, &ev)) {
+            e9ui_component_t *overlayRoot = e9ui_getOverlayHost();
+            e9ui_component_t *contentRoot = e9ui_activeContentRoot();
+            if (overlayRoot && e9ui_windowDispatchKeydown(overlayRoot, &e9ui->ctx, &ev)) {
+                continue;
+            }
+            if (contentRoot && e9ui_windowDispatchKeydown(contentRoot, &e9ui->ctx, &ev)) {
                 continue;
             }
             SDL_Keycode key = ev.key.keysym.sym;
             SDL_Keymod mods = ev.key.keysym.mod;
             int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+            int reverseTab = (mods & KMOD_SHIFT) ? 1 : 0;
             if (hotkeys_handleKeydown(&e9ui->ctx, &ev.key)) {
                 continue;
             }
             if (!accel && key == SDLK_TAB && !e9ui_getFocus(&e9ui->ctx)) {
-                int reverse = (mods & KMOD_SHIFT) ? 1 : 0;
-                e9ui_component_t *next = e9ui_focusFindNext(root, NULL, reverse);
+                e9ui_component_t *focusRoot = e9ui_focusTraversalRoot(&e9ui->ctx, NULL);
+                e9ui_component_t *next = e9ui_focusFindNext(focusRoot, NULL, reverseTab);
                 if (next) {
                     e9ui_setFocus(&e9ui->ctx, next);
                     continue;
@@ -2066,10 +2350,12 @@ e9ui_processEvents(void)
             if (!consumed && focused && focused->handleEvent) {
                 consumed = focused->handleEvent(focused, &e9ui->ctx, &ev);
             }
-            if (!consumed && root && root->handleEvent) {
-                (void)root->handleEvent(root, &e9ui->ctx, &ev);
+            if (!consumed && contentRoot && contentRoot->handleEvent) {
+                (void)contentRoot->handleEvent(contentRoot, &e9ui->ctx, &ev);
             }
             continue;
+        } else if (ev.type == SDL_KEYUP) {
+            e9ui->ctx.keyMods = ev.key.keysym.mod;
         } else if (ev.type == SDL_TEXTINPUT) {
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
@@ -2082,10 +2368,7 @@ e9ui_processEvents(void)
             continue;
         }
         // For mouse and other events, bubble through tree for hit-testing and focus updates
-        e9ui_component_t *root = e9ui->fullscreen ? e9ui->fullscreen : e9ui->root;
-	if (root) {
-	  e9ui_event_process(root, &e9ui->ctx, &ev);
-	}
+        (void)e9ui_sceneProcessEvent(&ev);
 	if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT && !e9ui->ctx.focusClickHandled) {
 	  if (!sprite_debug_is_window_id(ev.button.windowID) && !mega_sprite_debug_ownsWindowId(ev.button.windowID)) {
 	    e9ui_setFocus(&e9ui->ctx, NULL);
@@ -2122,7 +2405,9 @@ e9ui_shutdown(void)
   e9ui_theme_unloadFonts();
   e9ui_text_cache_clear();
   e9ui_text_select_shutdown();
-  
+
+  e9ui_childDestroy(e9ui->overlayRoot, &e9ui->ctx);
+  e9ui->overlayRoot = NULL;
   e9ui_childDestroy(e9ui->root, &e9ui->ctx);
   e9ui->root = NULL;
   e9ui->toolbar = NULL;

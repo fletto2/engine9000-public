@@ -23,6 +23,7 @@ typedef struct e9ui_context {
     int           mouseY;
     int           mousePrevX;
     int           mousePrevY;
+    SDL_Keymod    keyMods;
     int           cursorOverride;
     float         dpiScale; 
     struct e9ui_component *_focus;

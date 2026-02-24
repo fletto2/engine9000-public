@@ -151,7 +151,7 @@ scroll_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event
                 wheelX = -wheelX;
                 wheelY = -wheelY;
             }
-            SDL_Keymod mods = SDL_GetModState();
+            SDL_Keymod mods = ctx->keyMods;
             if (wheelX == 0 && (mods & KMOD_SHIFT)) {
                 wheelX = wheelY;
                 wheelY = 0;

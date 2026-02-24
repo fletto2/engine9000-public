@@ -126,11 +126,12 @@ e9ui_checkbox_render(e9ui_component_t *self, e9ui_context_t *ctx)
     SDL_Color borderCol = {80, 80, 90, 255};
     if (disabled) {
         borderCol = (SDL_Color){64, 64, 72, 255};
-    } else if (e9ui_getFocus(ctx) == self) {
-        borderCol = (SDL_Color){96, 148, 204, 255};
     }
     SDL_SetRenderDrawColor(ctx->renderer, borderCol.r, borderCol.g, borderCol.b, borderCol.a);
     SDL_RenderDrawRect(ctx->renderer, &box);
+    if (!disabled && e9ui_getFocus(ctx) == self) {
+        e9ui_drawFocusRingRect(ctx, box, 1);
+    }
     if (st->selected) {
         int innerPad = e9ui_scale_px(ctx, 2);
         if (innerPad <= 0) {

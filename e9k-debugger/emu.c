@@ -11,7 +11,7 @@
 #include "gl_composite.h"
 #include "alloc.h"
 #include "libretro_host.h"
-#include "seek_bar.h"
+#include "e9ui_seek_bar.h"
 #include "range_bar.h"
 #include "debug.h"
 #include "state_buffer.h"
@@ -23,6 +23,8 @@
 #include "shader_ui.h"
 #include "emu_geo.h"
 #define EMU_RANGE_BAR_MAX 4
+#define EMU_OVERLAY_BUTTON_MICRO_THRESHOLD_W 959
+#define EMU_OVERLAY_BUTTON_NANO_THRESHOLD_W 860
 
 typedef struct emu_range_bar_binding {
     size_t index;
@@ -42,7 +44,18 @@ typedef struct geo9000_state {
 typedef struct geo9000_button_stack_state {
     int padding;
     int gap;
+    int microPadding;
+    int microGap;
+    int nanoPadding;
+    int nanoGap;
+    int compactMode;
 } emu_button_stack_state_t;
+
+typedef enum emu_overlay_button_mode {
+    emu_overlay_button_mode_mini = 0,
+    emu_overlay_button_mode_micro = 1,
+    emu_overlay_button_mode_nano = 2
+} emu_overlay_button_mode_t;
 
 static int emu_mouseCaptured = 0;
 static char emu_mouseCaptureMessage[160];
@@ -125,6 +138,104 @@ emu_mouseCaptureValidate(e9ui_context_t *ctx)
 }
 
 static void
+emu_buttonStackSetCompactMode(e9ui_component_t *self, int compactMode)
+{
+    if (!self || !self->state) {
+        return;
+    }
+    emu_button_stack_state_t *st = (emu_button_stack_state_t*)self->state;
+    if (compactMode < emu_overlay_button_mode_mini) {
+        compactMode = emu_overlay_button_mode_mini;
+    }
+    if (compactMode > emu_overlay_button_mode_nano) {
+        compactMode = emu_overlay_button_mode_nano;
+    }
+    if (st->compactMode == compactMode) {
+        return;
+    }
+    st->compactMode = compactMode;
+    e9ui_child_iterator iter;
+    e9ui_child_iterator *it = e9ui_child_iterateChildren(self, &iter);
+    while (e9ui_child_interateNext(it)) {
+        e9ui_component_t *child = it->child;
+        if (!child) {
+            continue;
+        }
+        if (compactMode == emu_overlay_button_mode_nano) {
+            e9ui_button_setNano(child, 1);
+        } else if (compactMode == emu_overlay_button_mode_micro) {
+            e9ui_button_setMicro(child, 1);
+        } else {
+            e9ui_button_setMini(child, 1);
+        }
+    }
+}
+
+static int
+emu_buttonStackPushClip(e9ui_component_t *self, e9ui_context_t *ctx, SDL_Rect *prevClip, SDL_bool *hadPrevClip)
+{
+    if (!self || !ctx || !ctx->renderer || !prevClip || !hadPrevClip) {
+        return 0;
+    }
+    SDL_Renderer *renderer = ctx->renderer;
+    *hadPrevClip = SDL_RenderIsClipEnabled(renderer);
+    if (*hadPrevClip) {
+        SDL_RenderGetClipRect(renderer, prevClip);
+    } else {
+        prevClip->x = 0;
+        prevClip->y = 0;
+        prevClip->w = 0;
+        prevClip->h = 0;
+    }
+
+    SDL_Rect stackClip = {
+        self->bounds.x,
+        self->bounds.y,
+        self->bounds.w,
+        self->bounds.h
+    };
+    if (self->autoHideHasClip) {
+        SDL_Rect panelClip = {
+            self->autoHideClip.x,
+            self->autoHideClip.y,
+            self->autoHideClip.w,
+            self->autoHideClip.h
+        };
+        SDL_Rect mergedStackClip;
+        if (!SDL_IntersectRect(&stackClip, &panelClip, &mergedStackClip)) {
+            return 0;
+        }
+        stackClip = mergedStackClip;
+    }
+    if (stackClip.w <= 0 || stackClip.h <= 0) {
+        return 0;
+    }
+    if (*hadPrevClip) {
+        SDL_Rect merged;
+        if (!SDL_IntersectRect(prevClip, &stackClip, &merged)) {
+            return 0;
+        }
+        SDL_RenderSetClipRect(renderer, &merged);
+        return 1;
+    }
+    SDL_RenderSetClipRect(renderer, &stackClip);
+    return 1;
+}
+
+static void
+emu_buttonStackPopClip(e9ui_context_t *ctx, SDL_Rect *prevClip, SDL_bool hadPrevClip)
+{
+    if (!ctx || !ctx->renderer) {
+        return;
+    }
+    if (hadPrevClip) {
+        SDL_RenderSetClipRect(ctx->renderer, prevClip);
+    } else {
+        SDL_RenderSetClipRect(ctx->renderer, NULL);
+    }
+}
+
+static void
 emu_buttonStackMeasure(e9ui_component_t *self, e9ui_context_t *ctx, int *outW, int *outH)
 {
     if (outW) {
@@ -137,8 +248,17 @@ emu_buttonStackMeasure(e9ui_component_t *self, e9ui_context_t *ctx, int *outW, i
         return;
     }
     emu_button_stack_state_t *st = (emu_button_stack_state_t*)self->state;
-    int pad = e9ui_scale_px(ctx, st->padding);
-    int gap = e9ui_scale_px(ctx, st->gap);
+    int basePad = st->padding;
+    int baseGap = st->gap;
+    if (st->compactMode == emu_overlay_button_mode_micro) {
+        basePad = st->microPadding;
+        baseGap = st->microGap;
+    } else if (st->compactMode == emu_overlay_button_mode_nano) {
+        basePad = st->nanoPadding;
+        baseGap = st->nanoGap;
+    }
+    int pad = e9ui_scale_px(ctx, basePad);
+    int gap = e9ui_scale_px(ctx, baseGap);
     int maxH = 0;
     int totalW = 0;
     int count = 0;
@@ -186,8 +306,17 @@ emu_buttonStackLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t b
     }
     emu_button_stack_state_t *st = (emu_button_stack_state_t*)self->state;
     self->bounds = bounds;
-    int pad = e9ui_scale_px(ctx, st->padding);
-    int gap = e9ui_scale_px(ctx, st->gap);
+    int basePad = st->padding;
+    int baseGap = st->gap;
+    if (st->compactMode == emu_overlay_button_mode_micro) {
+        basePad = st->microPadding;
+        baseGap = st->microGap;
+    } else if (st->compactMode == emu_overlay_button_mode_nano) {
+        basePad = st->nanoPadding;
+        baseGap = st->nanoGap;
+    }
+    int pad = e9ui_scale_px(ctx, basePad);
+    int gap = e9ui_scale_px(ctx, baseGap);
     int maxH = 0;
     e9ui_child_iterator iter;
     e9ui_child_iterator *it = e9ui_child_iterateChildren(self, &iter);
@@ -227,6 +356,11 @@ emu_buttonStackRender(e9ui_component_t *self, e9ui_context_t *ctx)
     if (!self || !ctx) {
         return;
     }
+    SDL_Rect prevClip;
+    SDL_bool hadPrevClip = SDL_FALSE;
+    if (!emu_buttonStackPushClip(self, ctx, &prevClip, &hadPrevClip)) {
+        return;
+    }
     e9ui_child_iterator iter;
     e9ui_child_iterator *it = e9ui_child_iterateChildren(self, &iter);
     while (e9ui_child_interateNext(it)) {
@@ -235,6 +369,7 @@ emu_buttonStackRender(e9ui_component_t *self, e9ui_context_t *ctx)
             child->render(child, ctx);
         }
     }
+    emu_buttonStackPopClip(ctx, &prevClip, hadPrevClip);
 }
 
 static e9ui_component_t *
@@ -253,6 +388,11 @@ emu_buttonStackMake(void)
     }
     st->padding = 6;
     st->gap = 6;
+    st->microPadding = 2;
+    st->microGap = 2;
+    st->nanoPadding = 1;
+    st->nanoGap = 1;
+    st->compactMode = emu_overlay_button_mode_mini;
     comp->name = "emu_button_stack";
     comp->state = st;
     comp->preferredHeight = emu_buttonStackPreferredHeight;
@@ -380,7 +520,7 @@ emu_seekBarDragging(int dragging, float percent, void *user)
     if (!dragging) {
         state_buffer_trimAfterPercent(percent);
         if (seek) {
-            seek_bar_setPercent(seek, 1.0f);
+            e9ui_seek_bar_setPercent(seek, 1.0f);
         }
     }
 }
@@ -605,6 +745,13 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
     if (state && state->buttonStackMeta) {
         e9ui_component_t *stack = e9ui_child_find(self, state->buttonStackMeta);
         if (stack) {
+            int overlayButtonMode = emu_overlay_button_mode_mini;
+            if (self->bounds.w <= EMU_OVERLAY_BUTTON_NANO_THRESHOLD_W) {
+                overlayButtonMode = emu_overlay_button_mode_nano;
+            } else if (self->bounds.w <= EMU_OVERLAY_BUTTON_MICRO_THRESHOLD_W) {
+                overlayButtonMode = emu_overlay_button_mode_micro;
+            }
+            emu_buttonStackSetCompactMode(stack, overlayButtonMode);
             int margin = e9ui_scale_px(ctx, 8);
             int stackW = 0;
             int stackH = 0;
@@ -630,7 +777,7 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
             e9ui_component_t *seek = e9ui_child_find(self, state->seekBarMeta);
             if (seek) {
                 e9ui_rect_t vid_bounds = { dst.x, dst.y, dst.w, dst.h };
-                seek_bar_layoutInParent(seek, ctx, vid_bounds);
+                e9ui_seek_bar_layoutInParent(seek, ctx, vid_bounds);
                 e9ui_setAutoHideClip(seek, &self->bounds);
                 if (!e9ui_getHidden(seek) && seek->render) {
                     seek->render(seek, ctx);
@@ -690,15 +837,15 @@ emu_makeComponent(void)
         }
     }
 
-    e9ui_component_t *seek = seek_bar_make();
+    e9ui_component_t *seek = e9ui_seek_bar_make();
     if (seek) {
-        seek_bar_setMargins(seek, 30, 30, 10);
-        seek_bar_setHeight(seek, 14);
-        seek_bar_setHoverMargin(seek, 18);
-        seek_bar_setCallback(seek, emu_seekBarChanged, NULL);
-        seek_bar_setDragCallback(seek, emu_seekBarDragging, seek);
-        seek_bar_setTooltipCallback(seek, emu_seekTooltip, NULL);
-        e9ui_setAutoHide(seek, 1, seek_bar_getHoverMargin(seek));
+        e9ui_seek_bar_setMargins(seek, 30, 30, 10);
+        e9ui_seek_bar_setHeight(seek, 14);
+        e9ui_seek_bar_setHoverMargin(seek, 18);
+        e9ui_seek_bar_setCallback(seek, emu_seekBarChanged, NULL);
+        e9ui_seek_bar_setDragCallback(seek, emu_seekBarDragging, seek);
+        e9ui_seek_bar_setTooltipCallback(seek, emu_seekTooltip, NULL);
+        e9ui_setAutoHide(seek, 1, e9ui_seek_bar_getHoverMargin(seek));
         state->seekBarMeta = alloc_strdup("seek_bar");
         e9ui_child_add(comp, seek, state->seekBarMeta);
     }

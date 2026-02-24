@@ -1637,9 +1637,12 @@ textbox_renderComp(e9ui_component_t *self, e9ui_context_t *ctx)
     if (st->frame_visible) {
         SDL_SetRenderDrawColor(ctx->renderer, 30, 30, 34, 255);
         SDL_RenderFillRect(ctx->renderer, &area);
-        SDL_Color borderCol = (e9ui_getFocus(ctx) == self) ? (SDL_Color){96,148,204,255} : (SDL_Color){80,80,90,255};
+        SDL_Color borderCol = (SDL_Color){80,80,90,255};
         SDL_SetRenderDrawColor(ctx->renderer, borderCol.r, borderCol.g, borderCol.b, borderCol.a);
         SDL_RenderDrawRect(ctx->renderer, &area);
+        if (!self->disabled && e9ui_getFocus(ctx) == self) {
+            e9ui_drawFocusRingRect(ctx, area, 1);
+        }
     }
     TTF_Font *font = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : ctx->font;
     if (!font) {
@@ -1983,7 +1986,31 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
     if (!st) {
         return 0;
     }
-    if (!ctx || e9ui_getFocus(ctx) != self || !st->editable) {
+    if (!ctx || e9ui_getFocus(ctx) != self) {
+        return 0;
+    }
+    if (ev->type == SDL_KEYDOWN) {
+        SDL_Keycode kc = ev->key.keysym.sym;
+        SDL_Keymod mods = ev->key.keysym.mod;
+        int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+        int shift = (mods & KMOD_SHIFT);
+        if (!accel && kc == SDLK_TAB) {
+            if (st->editable) {
+                textbox_notifySubmit(st, ctx);
+            }
+            e9ui_focusAdvance(ctx, self, shift ? 1 : 0);
+            return 1;
+        }
+        if (st->select_optionCount > 0 &&
+            (kc == SDLK_RETURN || kc == SDLK_KP_ENTER || kc == SDLK_SPACE)) {
+            textbox_selectOverlay_toggle(ctx, self);
+            return 1;
+        }
+        if (st->key_cb && st->key_cb(ctx, kc, mods, st->key_user)) {
+            return 1;
+        }
+    }
+    if (!st->editable) {
         return 0;
     }
     TTF_Font *font = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : ctx->font;
@@ -2044,14 +2071,6 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
     int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
     int alt = (mods & KMOD_ALT) ? 1 : 0;
     int shift = (mods & KMOD_SHIFT);
-    if (st->key_cb && st->key_cb(ctx, kc, mods, st->key_user)) {
-        return 1;
-    }
-    if (!accel && kc == SDLK_TAB) {
-        textbox_notifySubmit(st, ctx);
-        e9ui_focusAdvance(ctx, self, shift ? 1 : 0);
-        return 1;
-    }
     if (accel && kc == SDLK_z) {
         if (shift) {
             textbox_doRedo(st, ctx, font, viewW);

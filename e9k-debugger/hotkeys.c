@@ -87,32 +87,32 @@ typedef struct hotkeys_action_registration
 } hotkeys_action_registration_t;
 
 static const hotkeys_config_spec_t hotkeys_configSpecs[] = {
+    { "help", "Help", SDLK_F1, 0 },
+    { "screenshot", "Screenshot", SDLK_F2, 0 },
+    { "cycle_core_restart", "Cycle Core + Restart", SDLK_F3, 0 },
+    { "rolling_save_toggle", "Rolling Save Pause/Resume", SDLK_F4, 0 },
+    { "warp", "Warp", SDLK_F5, 0 },
+    { "audio_toggle", "Audio Toggle", SDLK_F6, 0 },
+    { "save_state", "Save State", SDLK_F7, 0 },
+    { "restore_state", "Restore State", SDLK_F8, KMOD_SHIFT },
+    { "restart", "Restart", SDLK_F8, 0 },
+    { "reset_core", "Reset Core", SDLK_F9, 0 },
+    { "hotkeys_toggle", "Hotkeys On/Off", SDLK_F11, 0 },
+    { "settings", "Settings", SDLK_F12, 0 },
+    { "fullscreen", "Fullscreen", SDLK_RETURN, KMOD_ALT },
+    { "mouse_release", "Mouse Release", SDLK_LALT, (SDL_Keymod)(KMOD_CTRL | KMOD_ALT) },
     { "prompt_focus", "Prompt Focus", SDLK_TAB, 0 },
     { "continue", "Continue", SDLK_c, 0 },
     { "pause", "Pause", SDLK_p, 0 },
     { "step", "Step", SDLK_s, 0 },
     { "next", "Next", SDLK_n, 0 },
     { "step_inst", "Step Inst", SDLK_i, 0 },
-    { "warp", "Warp", SDLK_F5, 0 },
     { "frame_back", "Frame Step Back", SDLK_b, 0 },
     { "frame_step", "Frame Step", SDLK_f, 0 },
     { "frame_continue", "Frame Continue", SDLK_g, 0 },
-    { "save_state", "Save State", SDLK_F7, 0 },
-    { "restore_state", "Restore State", SDLK_F8, KMOD_SHIFT },
-    { "restart", "Restart", SDLK_F8, 0 },
-    { "reset_core", "Reset Core", SDLK_F9, 0 },
-    { "audio_toggle", "Audio Toggle", SDLK_F6, 0 },
-    { "settings", "Settings", SDLK_F12, 0 },
-    { "help", "Help", SDLK_F1, 0 },
-    { "screenshot", "Screenshot", SDLK_F2, 0 },
-    { "cycle_core_restart", "Cycle Core + Restart", SDLK_F3, 0 },
-    { "rolling_save_toggle", "Rolling Save Pause/Resume", SDLK_F4, 0 },
-    { "fullscreen", "Fullscreen", SDLK_RETURN, KMOD_ALT },
-    { "hotkeys_toggle", "Hotkeys On/Off", SDLK_F11, 0 },
-    { "mouse_release", "Mouse Release", SDLK_LALT, (SDL_Keymod)(KMOD_CTRL | KMOD_ALT) },
-    { "checkpoint_prev", "Checkpoint Prev", SDLK_COMMA, 0 },
-    { "checkpoint_reset", "Checkpoint Reset", SDLK_PERIOD, 0 },
-    { "checkpoint_next", "Checkpoint Next", SDLK_SLASH, 0 }
+    { "checkpoint_prev", "Checkpoint Prev", SDLK_UNKNOWN, 0 },
+    { "checkpoint_reset", "Checkpoint Reset", SDLK_UNKNOWN, 0 },
+    { "checkpoint_next", "Checkpoint Next", SDLK_UNKNOWN, 0 }
 };
 
 static hotkeys_config_override_t hotkeys_configOverrides[
@@ -1125,6 +1125,71 @@ hotkeys_configContainerDtor(e9ui_component_t *self, e9ui_context_t *ctx)
     self->state = NULL;
 }
 
+typedef enum hotkeys_config_section {
+    hotkeys_config_section_global = 0,
+    hotkeys_config_section_execution,
+    hotkeys_config_section_checkpoints
+} hotkeys_config_section_t;
+
+static hotkeys_config_section_t
+hotkeys_configSectionForActionId(const char *actionId)
+{
+    if (!actionId) {
+        return hotkeys_config_section_global;
+    }
+    if (strcmp(actionId, "prompt_focus") == 0 ||
+        strcmp(actionId, "continue") == 0 ||
+        strcmp(actionId, "pause") == 0 ||
+        strcmp(actionId, "step") == 0 ||
+        strcmp(actionId, "next") == 0 ||
+        strcmp(actionId, "step_inst") == 0 ||
+        strcmp(actionId, "frame_back") == 0 ||
+        strcmp(actionId, "frame_step") == 0 ||
+        strcmp(actionId, "frame_continue") == 0) {
+        if (strcmp(actionId, "prompt_focus") != 0) {
+            return hotkeys_config_section_execution;
+        }
+    }
+    if (strcmp(actionId, "checkpoint_prev") == 0 ||
+        strcmp(actionId, "checkpoint_reset") == 0 ||
+        strcmp(actionId, "checkpoint_next") == 0) {
+        return hotkeys_config_section_checkpoints;
+    }
+    return hotkeys_config_section_global;
+}
+
+static const char *
+hotkeys_configSectionLabel(hotkeys_config_section_t section)
+{
+    switch (section) {
+    case hotkeys_config_section_execution:
+        return "DEBUG";
+    case hotkeys_config_section_checkpoints:
+        return "CHECKPOINTS";
+    case hotkeys_config_section_global:
+    default:
+        return "GENERAL";
+    }
+}
+
+static void
+hotkeys_configAddSectionHeading(e9ui_component_t *stack, e9ui_context_t *ctx, hotkeys_config_section_t section, int addTopGap)
+{
+    if (!stack || !ctx) {
+        return;
+    }
+    if (addTopGap) {
+        e9ui_stack_addFixed(stack, e9ui_vspacer_make(10));
+    }
+    e9ui_component_t *heading = e9ui_text_make(hotkeys_configSectionLabel(section));
+    if (heading) {
+        e9ui_text_setBold(heading, 1);
+        e9ui_text_setColor(heading, (SDL_Color){235, 235, 235, 255});
+        e9ui_stack_addFixed(stack, heading);
+        e9ui_stack_addFixed(stack, e9ui_vspacer_make(6));
+    }
+}
+
 static e9ui_component_t *
 hotkeys_makeConfigBody(hotkeys_config_modal_state_t *st, e9ui_context_t *ctx)
 {
@@ -1132,17 +1197,32 @@ hotkeys_makeConfigBody(hotkeys_config_modal_state_t *st, e9ui_context_t *ctx)
         return NULL;
     }
 
-    e9ui_component_t *stack = e9ui_stack_makeVertical();
-    if (!stack) {
+    e9ui_component_t *leftStack = e9ui_stack_makeVertical();
+    e9ui_component_t *rightStack = e9ui_stack_makeVertical();
+    if (!leftStack || !rightStack) {
         return NULL;
     }
-    st->stack = stack;
+    st->stack = leftStack;
 
-    const int labelWidthPx = 340;
+    const int labelWidthPx = 260;
     const int rowGapPx = 6;
+    int leftHasHeading = 0;
+    int rightHasHeading = 0;
+    hotkeys_config_section_t leftLastSection = hotkeys_config_section_global;
+    hotkeys_config_section_t rightLastSection = hotkeys_config_section_global;
     for (size_t i = 0; i < st->entryCount; ++i) {
         hotkeys_config_entry_t *entry = &st->entries[i];
         const hotkeys_config_spec_t *spec = &hotkeys_configSpecs[entry->specIndex];
+        hotkeys_config_section_t section = hotkeys_configSectionForActionId(spec->id);
+        e9ui_component_t *targetStack = (section == hotkeys_config_section_global) ? leftStack : rightStack;
+        int *hasHeading = (section == hotkeys_config_section_global) ? &leftHasHeading : &rightHasHeading;
+        hotkeys_config_section_t *lastSection =
+            (section == hotkeys_config_section_global) ? &leftLastSection : &rightLastSection;
+        if (!(*hasHeading) || section != *lastSection) {
+            hotkeys_configAddSectionHeading(targetStack, ctx, section, (*hasHeading) ? 1 : 0);
+            *hasHeading = 1;
+            *lastSection = section;
+        }
         e9ui_component_t *row = e9ui_hstack_make();
         if (!row) {
             continue;
@@ -1186,19 +1266,32 @@ hotkeys_makeConfigBody(hotkeys_config_modal_state_t *st, e9ui_context_t *ctx)
             e9ui_hstack_addFixed(row, e9ui_spacer_make(gapPx), gapPx);
             e9ui_hstack_addFixed(row, btnUnbind, unbindW);
         }
-        e9ui_stack_addFixed(stack, row);
-        e9ui_stack_addFixed(stack, e9ui_vspacer_make(rowGapPx));
+        e9ui_stack_addFixed(targetStack, row);
+        e9ui_stack_addFixed(targetStack, e9ui_vspacer_make(rowGapPx));
     }
-    e9ui_stack_addFixed(stack, e9ui_vspacer_make(72));
+    e9ui_stack_addFixed(leftStack, e9ui_vspacer_make(72));
+    e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(72));
 
-    e9ui_component_t *scroll = e9ui_scroll_make(stack);
+    e9ui_component_t *columns = e9ui_hstack_make();
+    if (!columns) {
+        return NULL;
+    }
+    int colGapPx = e9ui_scale_px(ctx, 16);
+    if (colGapPx < 8) {
+        colGapPx = 8;
+    }
+    e9ui_hstack_addFlex(columns, leftStack);
+    e9ui_hstack_addFixed(columns, e9ui_spacer_make(colGapPx), colGapPx);
+    e9ui_hstack_addFlex(columns, rightStack);
+
+    e9ui_component_t *scroll = e9ui_scroll_make(columns);
     st->scroll = scroll;
 
-    e9ui_component_t *content = e9ui_box_make(scroll ? scroll : stack);
+    e9ui_component_t *content = e9ui_box_make(scroll ? scroll : columns);
     if (content) {
         e9ui_box_setPadding(content, 20);
     } else {
-        content = scroll ? scroll : stack;
+        content = scroll ? scroll : columns;
     }
 
     e9ui_component_t *btnSave = e9ui_button_make("Save", hotkeys_configSaveClicked, st);
@@ -1257,11 +1350,18 @@ hotkeys_makeConfigBody(hotkeys_config_modal_state_t *st, e9ui_context_t *ctx)
 static e9ui_component_t *
 hotkeys_findTopModal(void)
 {
-    if (!e9ui || !e9ui->root) {
+    if (!e9ui) {
+        return NULL;
+    }
+    e9ui_component_t *searchRoot = e9ui_getOverlayHost();
+    if (!searchRoot) {
+        searchRoot = e9ui->root;
+    }
+    if (!searchRoot) {
         return NULL;
     }
     e9ui_child_reverse_iterator iter;
-    if (!e9ui_child_iterateChildrenReverse(e9ui->root, &iter)) {
+    if (!e9ui_child_iterateChildrenReverse(searchRoot, &iter)) {
         return NULL;
     }
     for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);

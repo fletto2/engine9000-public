@@ -243,19 +243,75 @@ e9ui_component_t *
 e9ui_modal_show(e9ui_context_t *ctx, const char *title, e9ui_rect_t rect,
            e9ui_modal_close_cb_t onClose, void *user)
 {
-    if (!ctx || !e9ui->root) {
+    if (!ctx || !e9ui) {
+        return NULL;
+    }
+    e9ui_component_t *hostRoot = e9ui_getOverlayHost();
+    if (!hostRoot) {
+        hostRoot = e9ui->root;
+    }
+    if (!hostRoot) {
         return NULL;
     }
     e9ui_component_t *modal = e9ui_modal_make(title, rect, onClose, user);
     if (!modal) {
         return NULL;
     }
-    if (e9ui->root->name && strcmp(e9ui->root->name, "e9ui_stack") == 0) {
-        e9ui_stack_addFixed(e9ui->root, modal);
+    if (hostRoot->name && strcmp(hostRoot->name, "e9ui_stack") == 0) {
+        e9ui_stack_addFixed(hostRoot, modal);
     } else {
-        e9ui_child_add(e9ui->root, modal, alloc_strdup("modal"));
+        e9ui_child_add(hostRoot, modal, alloc_strdup("modal"));
     }
     return modal;
+}
+
+void
+e9ui_modal_closeAll(e9ui_context_t *ctx)
+{
+    if (!e9ui) {
+        return;
+    }
+    e9ui_component_t *hostRoot = e9ui_getOverlayHost();
+    if (!hostRoot) {
+        hostRoot = e9ui->root;
+    }
+    if (!hostRoot) {
+        return;
+    }
+    e9ui_context_t *useCtx = ctx ? ctx : &e9ui->ctx;
+    for (;;) {
+        e9ui_component_t *modal = NULL;
+        e9ui_child_reverse_iterator iter;
+        if (!e9ui_child_iterateChildrenReverse(hostRoot, &iter)) {
+            break;
+        }
+        for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+             it;
+             it = e9ui_child_iteratePrev(&iter)) {
+            if (!it->child || !it->child->name) {
+                continue;
+            }
+            if (strcmp(it->child->name, "e9ui_modal") == 0) {
+                modal = it->child;
+                break;
+            }
+        }
+        if (!modal) {
+            break;
+        }
+        e9ui_modal_state_t *st = (e9ui_modal_state_t *)modal->state;
+        if (st && st->onClose) {
+            st->onClose(modal, st->onCloseUser);
+        }
+        if (e9ui->pendingRemove == modal) {
+            e9ui->pendingRemove = NULL;
+        }
+        if (hostRoot->name && strcmp(hostRoot->name, "e9ui_stack") == 0) {
+            e9ui_stack_remove(hostRoot, useCtx, modal);
+        } else {
+            e9ui_childRemove(hostRoot, modal, useCtx);
+        }
+    }
 }
 
 void

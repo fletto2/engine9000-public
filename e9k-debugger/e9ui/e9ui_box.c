@@ -452,13 +452,22 @@ e9ui_box_titlebarClick(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_m
     if (mouse_ev->y < self->bounds.y || mouse_ev->y >= self->bounds.y + titleH) {
         return;
     }
+    if (self->mousePressedY < self->bounds.y || self->mousePressedY >= self->bounds.y + titleH) {
+        return;
+    }
     if (!st->collapsed) {
         SDL_Rect titleRect = { self->bounds.x, self->bounds.y, self->bounds.w, titleH };
         SDL_Rect fsRect;
         if (e9ui_box_getFullscreenButtonRect(st, ctx, titleRect, &fsRect)) {
-            if (mouse_ev->x >= fsRect.x && mouse_ev->x < fsRect.x + fsRect.w &&
-                mouse_ev->y >= fsRect.y && mouse_ev->y < fsRect.y + fsRect.h) {
+            int releaseInFullscreen = mouse_ev->x >= fsRect.x && mouse_ev->x < fsRect.x + fsRect.w &&
+                                      mouse_ev->y >= fsRect.y && mouse_ev->y < fsRect.y + fsRect.h;
+            int pressInFullscreen = self->mousePressedX >= fsRect.x && self->mousePressedX < fsRect.x + fsRect.w &&
+                                    self->mousePressedY >= fsRect.y && self->mousePressedY < fsRect.y + fsRect.h;
+            if (releaseInFullscreen && pressInFullscreen) {
                 e9ui_setFullscreenComponent(self);
+                return;
+            }
+            if (releaseInFullscreen || pressInFullscreen) {
                 return;
             }
         }

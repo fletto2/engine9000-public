@@ -146,9 +146,7 @@ config_persistConfig(FILE *f)
         fprintf(f, "comp.config.megadrive.audio_ms=%d\n", debugger.config.megadrive.libretro.audioBufferMs);
     }
     fprintf(f, "comp.config.megadrive.audio_enabled=%d\n", debugger.config.megadrive.libretro.audioEnabled);
-    if (!debugger.config.crtEnabled) {
-        fprintf(f, "comp.config.crt_enabled=0\n");
-    }
+    fprintf(f, "comp.config.crt_enabled=%d\n", debugger.config.crtEnabled ? 1 : 0);
     if (!debugger.config.recordEnabled) {
         fprintf(f, "comp.config.record_enabled=0\n");
     }

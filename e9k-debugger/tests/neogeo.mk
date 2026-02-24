@@ -1,10 +1,16 @@
-NEOGEO_TESTS=test-neogeosavestate test-neogeostepping
-NEOGEO_REMAKE=remake-test-neogeosavestate remake-test-neogeostepping
+NEOGEO_TESTS=test-neogeosavestate test-neogeostepping test-neogeosprite test-neogeotracker
+NEOGEO_REMAKE=remake-test-neogeosavestate remake-test-neogeostepping remake-test-neogeosprite remake-test-neogeotracker
 
 # makers
 
 make-test-neogeosavestate: all 
 	./e9k-debugger --neogeo --rom=./tests/neogeo/basic/basic.neo --make-test tests/results/neogeo/savestate
+
+make-test-neogeosprite: all 
+	./e9k-debugger --neogeo --rom=./tests/neogeo/basic/basic.neo --make-test tests/results/neogeo/sprite
+
+make-test-neogeotracker: all 
+	./e9k-debugger --neogeo --rom=./tests/neogeo/basic/basic.neo --make-test tests/results/neogeo/tracker
 
 make-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
 	./e9k-debugger --neogeo --source-dir=./tests/neogeo/stepping --elf=./tests/neogeo/stepping/build/rom.elf --rom=./tests/neogeo/stepping/build/stepping.neo --make-test tests/results/neogeo/stepping
@@ -14,6 +20,12 @@ make-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
 
 remake-test-neogeosavestate: all 
 	./e9k-debugger --neogeo --volume=0 --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/savestate
+
+remake-test-neogeosprite: all 
+	./e9k-debugger --neogeo --volume=0 --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/sprite
+
+remake-test-neogeotracker: all 
+	./e9k-debugger --neogeo --volume=0 --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/tracker
 
 remake-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
 	./e9k-debugger --neogeo --volume=0 --source-dir=./tests/neogeo/stepping --elf=./tests/neogeo/stepping/build/rom.elf --rom=./tests/neogeo/stepping/build/stepping.neo --remake-test tests/results/neogeo/stepping
@@ -25,6 +37,16 @@ remake-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
 test-neogeosavestate: all
 	@printf "NEO GEO SAVE STATE ($@) ..." 
 	@./e9k-debugger $(HEADLESS) --neogeo --rom=./tests/neogeo/basic/basic.neo --test tests/results/neogeo/savestate >> test.log 2>&1
+	@echo "PASSED ✅"
+
+test-neogeosprite: all
+	@printf "NEO GEO SPRITE DEBUG ($@) ..." 
+	@./e9k-debugger $(HEADLESS) --neogeo --rom=./tests/neogeo/basic/basic.neo --test tests/results/neogeo/sprite >> test.log 2>&1
+	@echo "PASSED ✅"
+
+test-neogeotracker: all
+	@printf "NEO GEO MEMORY TRACKER ($@) ..." 
+	@./e9k-debugger $(HEADLESS) --neogeo --rom=./tests/neogeo/basic/basic.neo --test tests/results/neogeo/tracker >> test.log 2>&1
 	@echo "PASSED ✅"
 
 test-neogeostepping: tests/neogeo/stepping/build/rom.elf

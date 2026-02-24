@@ -68,6 +68,9 @@ typedef struct e9ui_component {
   e9ui_mouse_callback_t onMouseUp;
   int mouseInside;
   int mousePressed;
+  e9ui_mouse_button_t mousePressedButton;
+  int mousePressedX;
+  int mousePressedY;
   int collapsed;
   int collapsedHeight;
 
@@ -91,6 +94,4 @@ typedef struct {
   e9ui_component_t* component;
   void* meta;
 } e9ui_component_child_t;
-
-
 

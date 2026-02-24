@@ -49,6 +49,18 @@ core_options_clearOptionCbs(core_options_modal_state_t *st);
 static void
 core_options_clearCategoryCbs(core_options_modal_state_t *st);
 
+static int
+core_options_categoryButtonHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev);
+
+static int
+core_options_optionFocusHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev);
+
+static int
+core_options_optionTextboxKeyHandler(e9ui_context_t *ctx, SDL_Keycode key, SDL_Keymod mods, void *user);
+
+static void
+core_options_focusInitialControl(core_options_modal_state_t *st, e9ui_context_t *ctx);
+
 static void
 core_options_endKeyCapture(core_options_modal_state_t *st, e9ui_context_t *ctx, int restoreButtonLabel);
 
@@ -105,6 +117,203 @@ core_options_uiClosed(e9ui_component_t *modal, void *user)
     (void)modal;
     (void)user;
     core_options_closeModal();
+}
+
+static e9ui_component_t *
+core_options_selectedCategoryButton(const core_options_modal_state_t *st)
+{
+    if (!st) {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < st->categoryCallbackCount; ++i) {
+        core_options_category_cb_t *cb = st->categoryCallbacks[i];
+        if (!cb || !cb->button || cb->button->disabled || e9ui_getHidden(cb->button)) {
+            continue;
+        }
+        if (!st->selectedCategoryKey && !cb->categoryKey) {
+            return cb->button;
+        }
+        if (st->selectedCategoryKey && cb->categoryKey &&
+            strcmp(st->selectedCategoryKey, cb->categoryKey) == 0) {
+            return cb->button;
+        }
+    }
+    return NULL;
+}
+
+static core_options_modal_state_t *
+core_options_currentState(void)
+{
+    if (!e9ui || !e9ui->coreOptionsModal) {
+        return NULL;
+    }
+
+    e9ui_child_iterator modalIter;
+    for (e9ui_child_iterator *it = e9ui_child_iterateChildren(e9ui->coreOptionsModal, &modalIter);
+         e9ui_child_interateNext(it); ) {
+        if (!it->child) {
+            continue;
+        }
+        const char *meta = it->meta ? (const char *)it->meta : NULL;
+        if (!meta || strcmp(meta, "modal_body") != 0) {
+            continue;
+        }
+
+        e9ui_child_iterator bodyIter;
+        for (e9ui_child_iterator *bit = e9ui_child_iterateChildren(it->child, &bodyIter);
+             e9ui_child_interateNext(bit); ) {
+            if (!bit->child || !bit->child->state) {
+                continue;
+            }
+            if (bit->child->name && strcmp(bit->child->name, "core_options_container") == 0) {
+                return (core_options_modal_state_t *)bit->child->state;
+            }
+        }
+    }
+    return NULL;
+}
+
+static int
+core_options_focusSelectedCategory(core_options_modal_state_t *st, e9ui_context_t *ctx)
+{
+    if (!st || !ctx) {
+        return 0;
+    }
+    e9ui_component_t *button = core_options_selectedCategoryButton(st);
+    if (!button) {
+        return 0;
+    }
+    e9ui_setFocus(ctx, button);
+    return 1;
+}
+
+static int
+core_options_focusFirstOption(core_options_modal_state_t *st, e9ui_context_t *ctx)
+{
+    if (!st || !ctx || !st->optionsStack) {
+        return 0;
+    }
+    e9ui_component_t *next = e9ui_focusFindNext(st->optionsStack, NULL, 0);
+    if (!next) {
+        return 0;
+    }
+    e9ui_setFocus(ctx, next);
+    return 1;
+}
+
+static core_options_category_cb_t *
+core_options_findCategoryCbForButton(core_options_modal_state_t *st, const e9ui_component_t *button)
+{
+    if (!st || !button) {
+        return NULL;
+    }
+    for (size_t i = 0; i < st->categoryCallbackCount; ++i) {
+        core_options_category_cb_t *cb = st->categoryCallbacks[i];
+        if (cb && cb->button == button) {
+            return cb;
+        }
+    }
+    return NULL;
+}
+
+static core_options_option_cb_t *
+core_options_findOptionCbForFocusComp(core_options_modal_state_t *st, const e9ui_component_t *comp)
+{
+    if (!st || !comp) {
+        return NULL;
+    }
+    for (size_t i = 0; i < st->optionCallbackCount; ++i) {
+        core_options_option_cb_t *cb = st->optionCallbacks[i];
+        if (cb && cb->focusComp == comp) {
+            return cb;
+        }
+    }
+    return NULL;
+}
+
+static int
+core_options_categoryButtonHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+{
+    core_options_modal_state_t *st = core_options_currentState();
+    core_options_category_cb_t *cb = core_options_findCategoryCbForButton(st, self);
+
+    if (self && ctx && ev && cb && e9ui_getFocus(ctx) == self && ev->type == SDL_KEYDOWN) {
+        SDL_Keymod mods = ev->key.keysym.mod;
+        int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+        if (!accel && ev->key.keysym.sym == SDLK_RIGHT) {
+            if (core_options_focusFirstOption(cb->st, ctx)) {
+                return 1;
+            }
+        }
+    }
+
+    if (cb && cb->origHandleEvent) {
+        return cb->origHandleEvent(self, ctx, ev);
+    }
+    return 0;
+}
+
+static int
+core_options_optionFocusHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+{
+    core_options_modal_state_t *st = core_options_currentState();
+    core_options_option_cb_t *cb = core_options_findOptionCbForFocusComp(st, self);
+
+    if (self && ctx && ev && cb && e9ui_getFocus(ctx) == self && ev->type == SDL_KEYDOWN) {
+        SDL_Keymod mods = ev->key.keysym.mod;
+        int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+        if (!accel && ev->key.keysym.sym == SDLK_LEFT) {
+            if (core_options_focusSelectedCategory(cb->st, ctx)) {
+                return 1;
+            }
+        }
+    }
+
+    if (cb && cb->origHandleEvent) {
+        return cb->origHandleEvent(self, ctx, ev);
+    }
+    return 0;
+}
+
+static int
+core_options_optionTextboxKeyHandler(e9ui_context_t *ctx, SDL_Keycode key, SDL_Keymod mods, void *user)
+{
+    core_options_option_cb_t *cb = (core_options_option_cb_t*)user;
+    int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+    if (!ctx || !cb || !cb->st) {
+        return 0;
+    }
+    if (!accel && key == SDLK_LEFT) {
+        if (core_options_focusSelectedCategory(cb->st, ctx)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+core_options_focusInitialControl(core_options_modal_state_t *st, e9ui_context_t *ctx)
+{
+    if (!st || !ctx) {
+        return;
+    }
+
+    for (size_t i = 0; i < st->categoryCallbackCount; ++i) {
+        core_options_category_cb_t *cb = st->categoryCallbacks[i];
+        if (!cb || !cb->button || cb->button->disabled || e9ui_getHidden(cb->button)) {
+            continue;
+        }
+        e9ui_setFocus(ctx, cb->button);
+        return;
+    }
+
+    if (e9ui->coreOptionsModal) {
+        e9ui_component_t *next = e9ui_focusFindNext(e9ui->coreOptionsModal, NULL, 0);
+        if (next) {
+            e9ui_setFocus(ctx, next);
+        }
+    }
 }
 
 static void
@@ -1033,6 +1242,9 @@ core_options_makeKeybindRow(core_options_modal_state_t *st,
     e9ui_component_t *button = e9ui_button_make("Unbound", core_options_keybindButtonClicked, cb);
     if (button) {
         cb->button = button;
+        cb->focusComp = button;
+        cb->origHandleEvent = button->handleEvent;
+        button->handleEvent = core_options_optionFocusHandleEvent;
         rowSt->button = button;
         e9ui_button_setLeftJustify(button, 16);
         e9ui_button_setLargestLabel(button, "Press key...");
@@ -1138,6 +1350,13 @@ core_options_buildOptionsForCategory(core_options_modal_state_t *st, e9ui_contex
             if (debugger.coreOptionsShowHelp && def->info && *def->info) {
                 e9ui_labeled_checkbox_setInfo(chk, def->info);
             }
+            if (cb) {
+                cb->focusComp = e9ui_labeled_checkbox_getCheckbox(chk);
+                if (cb->focusComp) {
+                    cb->origHandleEvent = cb->focusComp->handleEvent;
+                    cb->focusComp->handleEvent = core_options_optionFocusHandleEvent;
+                }
+            }
             e9ui_stack_addFixed(st->optionsStack, chk);
         } else {
             e9ui_component_t *select = e9ui_labeled_select_make(label, labelWidthPx, totalWidthPx,
@@ -1153,6 +1372,10 @@ core_options_buildOptionsForCategory(core_options_modal_state_t *st, e9ui_contex
                 const char *defValue = def->default_value;
                 e9ui_component_t *textbox = e9ui_labeled_select_getButton(select);
                 if (textbox && textbox->name && strcmp(textbox->name, "e9ui_textbox") == 0) {
+                    if (cb) {
+                        cb->focusComp = textbox;
+                        e9ui_textbox_setKeyHandler(textbox, core_options_optionTextboxKeyHandler, cb);
+                    }
                     if (value && defValue && strcmp(value, defValue) == 0) {
                         e9ui_textbox_setTextColor(textbox, 1, (SDL_Color){140, 140, 140, 255});
                     } else {
@@ -1354,7 +1577,29 @@ core_options_containerHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, c
         return 0;
     }
     core_options_modal_state_t *st = (core_options_modal_state_t *)self->state;
-    if (!st || !st->capturingKeybind || e9ui_getFocus(ctx) != self) {
+    if (!st) {
+        return 0;
+    }
+
+    SDL_Keycode key = ev->key.keysym.sym;
+    SDL_Keymod mods = ev->key.keysym.mod;
+    int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+    e9ui_component_t *focus = e9ui_getFocus(ctx);
+
+    if (!st->capturingKeybind && !accel && focus && !ev->key.repeat) {
+        if (key == SDLK_RIGHT && core_options_findCategoryCbForButton(st, focus)) {
+            if (core_options_focusFirstOption(st, ctx)) {
+                return 1;
+            }
+        }
+        if (key == SDLK_LEFT && core_options_findOptionCbForFocusComp(st, focus)) {
+            if (core_options_focusSelectedCategory(st, ctx)) {
+                return 1;
+            }
+        }
+    }
+
+    if (!st->capturingKeybind || focus != self) {
         return 0;
     }
     if (ev->key.repeat) {
@@ -1362,7 +1607,6 @@ core_options_containerHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, c
     }
 
     core_options_option_cb_t *cb = st->capturingKeybind;
-    SDL_Keycode key = ev->key.keysym.sym;
 
     if (key == SDLK_ESCAPE) {
         core_options_endKeyCapture(st, ctx, 1);
@@ -1513,6 +1757,8 @@ core_options_buildCategories(core_options_modal_state_t *st, e9ui_context_t *ctx
         if (btnGeneral) {
             if (generalCb) {
                 generalCb->button = btnGeneral;
+                generalCb->origHandleEvent = btnGeneral->handleEvent;
+                btnGeneral->handleEvent = core_options_categoryButtonHandleEvent;
             }
             e9ui_button_setLeftJustify(btnGeneral, 16);
             e9ui_button_setIconRightPadding(btnGeneral, 16);
@@ -1547,6 +1793,8 @@ core_options_buildCategories(core_options_modal_state_t *st, e9ui_context_t *ctx
                 continue;
             }
             cb->button = btn;
+            cb->origHandleEvent = btn->handleEvent;
+            btn->handleEvent = core_options_categoryButtonHandleEvent;
             e9ui_button_setLeftJustify(btn, 16);
             e9ui_button_setIconRightPadding(btn, 16);
             const char *icon = core_options_categoryIconAssetForKey(cat->key);
@@ -1760,6 +2008,7 @@ core_options_showModal(e9ui_context_t *ctx)
     core_options_buildOptionsForCategory(st, ctx);
 
     e9ui_modal_setBodyChild(e9ui->coreOptionsModal, body, ctx);
+    core_options_focusInitialControl(st, ctx);
 }
 
 void

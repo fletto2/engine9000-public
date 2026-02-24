@@ -124,6 +124,30 @@ e9ui_theme_loadFonts(void)
                                                               miniFallback,
                                                               msize,
                                                               e9ui->theme.miniButton.fontStyle);
+    // Micro button font
+    if (e9ui->theme.microButton.font) {
+        TTF_CloseFont(e9ui->theme.microButton.font);
+        e9ui->theme.microButton.font = NULL;
+    }
+    int baseMicro = e9ui->theme.microButton.fontSize > 0 ? e9ui->theme.microButton.fontSize : baseMini;
+    int xsize = e9ui_theme_scaledSize(baseMicro);
+    const char *microFallback = e9ui->theme.button.fontAsset ? e9ui->theme.button.fontAsset : E9UI_THEME_MICRO_BUTTON_FONT_ASSET;
+    e9ui->theme.microButton.font = e9ui_theme_openFontAsset(e9ui->theme.microButton.fontAsset,
+                                                               microFallback,
+                                                               xsize,
+                                                               e9ui->theme.microButton.fontStyle);
+    // Nano button font
+    if (e9ui->theme.nanoButton.font) {
+        TTF_CloseFont(e9ui->theme.nanoButton.font);
+        e9ui->theme.nanoButton.font = NULL;
+    }
+    int baseNano = e9ui->theme.nanoButton.fontSize > 0 ? e9ui->theme.nanoButton.fontSize : baseMicro;
+    int nsize = e9ui_theme_scaledSize(baseNano);
+    const char *nanoFallback = e9ui->theme.button.fontAsset ? e9ui->theme.button.fontAsset : E9UI_THEME_NANO_BUTTON_FONT_ASSET;
+    e9ui->theme.nanoButton.font = e9ui_theme_openFontAsset(e9ui->theme.nanoButton.fontAsset,
+                                                              nanoFallback,
+                                                              nsize,
+                                                              e9ui->theme.nanoButton.fontStyle);
     // Text fonts default to button font size if not explicitly set
     int baseText = e9ui->theme.text.fontSize > 0 ? e9ui->theme.text.fontSize : baseButton;
     int tsize = e9ui_theme_scaledSize(baseText);
@@ -163,6 +187,14 @@ e9ui_theme_unloadFonts(void)
     if (e9ui->theme.miniButton.font) {
         TTF_CloseFont(e9ui->theme.miniButton.font);
         e9ui->theme.miniButton.font = NULL;
+    }
+    if (e9ui->theme.microButton.font) {
+        TTF_CloseFont(e9ui->theme.microButton.font);
+        e9ui->theme.microButton.font = NULL;
+    }
+    if (e9ui->theme.nanoButton.font) {
+        TTF_CloseFont(e9ui->theme.nanoButton.font);
+        e9ui->theme.nanoButton.font = NULL;
     }
     if (e9ui->theme.text.source) {
         TTF_CloseFont(e9ui->theme.text.source);
@@ -214,6 +246,30 @@ e9ui_theme_ctor(void)
     e9ui->theme.miniButton.font = NULL;
     e9ui->theme.miniButton.fontAsset = E9UI_THEME_MINI_BUTTON_FONT_ASSET;
     e9ui->theme.miniButton.fontStyle = E9UI_THEME_MINI_BUTTON_FONT_STYLE;
+    e9ui->theme.microButton.mask = 0;
+    e9ui->theme.microButton.highlight = e9ui->theme.button.highlight;
+    e9ui->theme.microButton.background = e9ui->theme.button.background;
+    e9ui->theme.microButton.pressedBackground = e9ui->theme.button.pressedBackground;
+    e9ui->theme.microButton.shadow = e9ui->theme.button.shadow;
+    e9ui->theme.microButton.text = e9ui->theme.button.text;
+    e9ui->theme.microButton.borderRadius = e9ui->theme.button.borderRadius;
+    e9ui->theme.microButton.fontSize = E9UI_THEME_MICRO_BUTTON_FONT_SIZE;
+    e9ui->theme.microButton.padding = E9UI_THEME_MICRO_BUTTON_PADDING;
+    e9ui->theme.microButton.font = NULL;
+    e9ui->theme.microButton.fontAsset = E9UI_THEME_MICRO_BUTTON_FONT_ASSET;
+    e9ui->theme.microButton.fontStyle = E9UI_THEME_MICRO_BUTTON_FONT_STYLE;
+    e9ui->theme.nanoButton.mask = 0;
+    e9ui->theme.nanoButton.highlight = e9ui->theme.button.highlight;
+    e9ui->theme.nanoButton.background = e9ui->theme.button.background;
+    e9ui->theme.nanoButton.pressedBackground = e9ui->theme.button.pressedBackground;
+    e9ui->theme.nanoButton.shadow = e9ui->theme.button.shadow;
+    e9ui->theme.nanoButton.text = e9ui->theme.button.text;
+    e9ui->theme.nanoButton.borderRadius = e9ui->theme.button.borderRadius;
+    e9ui->theme.nanoButton.fontSize = E9UI_THEME_NANO_BUTTON_FONT_SIZE;
+    e9ui->theme.nanoButton.padding = E9UI_THEME_NANO_BUTTON_PADDING;
+    e9ui->theme.nanoButton.font = NULL;
+    e9ui->theme.nanoButton.fontAsset = E9UI_THEME_NANO_BUTTON_FONT_ASSET;
+    e9ui->theme.nanoButton.fontStyle = E9UI_THEME_NANO_BUTTON_FONT_STYLE;
     e9ui->theme.titlebar.background = E9UI_THEME_TITLEBAR_BACKGROUND;
     e9ui->theme.titlebar.text = E9UI_THEME_TITLEBAR_TEXT;
     e9ui->theme.text.fontSize = E9UI_THEME_TEXT_FONT_SIZE;

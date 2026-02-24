@@ -8,6 +8,7 @@
 
 #include "debugger_input_bindings.h"
 
+#include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -195,6 +196,38 @@ static const debugger_input_bindings_spec_t debugger_input_bindings_specs[] = {
     }
 };
 
+static void
+debugger_input_bindings_applyDisplayCase(char *s)
+{
+    if (!s) {
+        return;
+    }
+    char *tokenStart = s;
+    while (*tokenStart) {
+        char *tokenEnd = tokenStart;
+        while (*tokenEnd && *tokenEnd != '+') {
+            ++tokenEnd;
+        }
+        size_t tokenLen = (size_t)(tokenEnd - tokenStart);
+        int isSingleAlpha = (tokenLen == 1 && isalpha((unsigned char)tokenStart[0])) ? 1 : 0;
+        for (char *p = tokenStart; p < tokenEnd; ++p) {
+            if (!isalpha((unsigned char)*p)) {
+                continue;
+            }
+            if (isSingleAlpha) {
+                *p = (char)tolower((unsigned char)*p);
+            } else {
+                *p = (char)toupper((unsigned char)*p);
+            }
+        }
+        if (*tokenEnd == '+') {
+            tokenStart = tokenEnd + 1;
+        } else {
+            break;
+        }
+    }
+}
+
 static int
 debugger_input_bindings_keysMatch(SDL_Keycode configuredKey, SDL_Keycode pressedKey)
 {
@@ -380,8 +413,6 @@ debugger_input_bindings_formatDisplayValue(const char *value, char *out, size_t 
 
     SDL_Keycode key = SDLK_UNKNOWN;
     if (!debugger_input_bindings_parseStoredValue(value, &key) || key == SDLK_UNKNOWN) {
-        snprintf(out, outCap, "Unbound");
-        out[outCap - 1] = '\0';
         return;
     }
 
@@ -393,6 +424,7 @@ debugger_input_bindings_formatDisplayValue(const char *value, char *out, size_t 
     }
     snprintf(out, outCap, "%s", name);
     out[outCap - 1] = '\0';
+    debugger_input_bindings_applyDisplayCase(out);
 }
 
 int

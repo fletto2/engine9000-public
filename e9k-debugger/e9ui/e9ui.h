@@ -32,6 +32,8 @@
 #include "e9ui_labeled_textbox.h"
 #include "e9ui_labeled_checkbox.h"
 #include "e9ui_labeled_select.h"
+#include "e9ui_seek_bar.h"
+#include "e9ui_slider.h"
 #include "e9ui_modal.h"
 #include "e9ui_event.h"
 #include "e9ui_text_cache.h"
@@ -97,6 +99,8 @@ typedef struct e9k_layout_config {
 typedef struct {
   e9k_theme_button_t button;
   e9k_theme_button_t miniButton;
+  e9k_theme_button_t microButton;
+  e9k_theme_button_t nanoButton;
   e9k_theme_text_t   text;
   e9k_theme_titlebar_t titlebar;
   e9k_theme_checkbox_t checkbox;
@@ -144,6 +148,7 @@ typedef struct {
   e9ui_component_t *pendingRemove; 
   e9ui_component_t *sourceBox; 
   e9ui_component_t *fullscreen;
+  e9ui_component_t *overlayRoot;
   e9ui_theme_t theme;
   char sourceTitle[PATH_MAX];
   e9k_hotkey_registry_t hotkeys;
@@ -202,6 +207,9 @@ void
 e9ui_focusAdvance(e9ui_context_t *ctx, e9ui_component_t *current, int reverse);
 
 void
+e9ui_drawFocusRingRect(e9ui_context_t *ctx, SDL_Rect rect, int padPx);
+
+void
 e9ui_setFullscreenComponent(e9ui_component_t *comp);
 
 void
@@ -232,6 +240,9 @@ e9ui_drawSelectableText(e9ui_context_t *ctx,
 
 e9ui_component_t *
 e9ui_getFullscreenComponent(void);
+
+e9ui_component_t *
+e9ui_getOverlayHost(void);
 
 int
 e9ui_isFullscreenComponent(const e9ui_component_t *comp);

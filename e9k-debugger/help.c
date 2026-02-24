@@ -460,8 +460,8 @@ help_showModal(e9ui_context_t *ctx)
                                    "Restore state",
                                    "Restart",
                                    "Reset core",
+                                   "Toggle hotkeys",				   
                                    "Settings",
-                                   "Toggle hotkeys",
                                    "Toggle fullscreen",
                                    "Release mouse capture",
                                    "Close modal",
@@ -489,8 +489,8 @@ help_showModal(e9ui_context_t *ctx)
         "restore_state",
         "restart",
         "reset_core",
-        "settings",
         "hotkeys_toggle",
+        "settings",	
         "fullscreen",
         "mouse_release",
         NULL,
@@ -523,7 +523,7 @@ help_showModal(e9ui_context_t *ctx)
         NULL,
         NULL,
         NULL,
-        "esc",
+        "ESC",
         NULL,
         NULL,
         NULL,
@@ -533,7 +533,7 @@ help_showModal(e9ui_context_t *ctx)
         NULL,
         NULL,
         NULL,
-        "ctrl+c",
+        "CTRL+c",
         NULL,
         NULL,
         NULL
@@ -559,15 +559,15 @@ help_showModal(e9ui_context_t *ctx)
     e9ui_text_setFontSize(titleSourcePane, headingSize);
     e9ui_text_setColor(titleSourcePane, headingColor);
     const char *sourcePaneKeys[] = {
-        "Ctrl+S",
-        "Ctrl+R",
-        "Esc",
-        "Up/Down",
-        "Shift+Up/Down",
-        "Ctrl+Up/Down",
-        "Alt+Up/Down",
-        "PageUp/PageDown",
-        "Home/End"
+        "CTRL+s",
+        "CTRL+r",
+        "ESC",
+        "UP/DOWN",
+        "SHIFT+UP/DOWN",
+        "CTRL+UP/DOWN",
+        "ALT+UP/DOWN",
+        "PAGEUP/PAGEDOWN",
+        "HOME/END"
     };
     const char *sourcePaneVals[] = {
         "Search",
@@ -626,29 +626,29 @@ help_showModal(e9ui_context_t *ctx)
     e9ui_component_t *titleMegaDriveKeyboard = e9ui_text_make("MEGA DRIVE KEYBOARD");
     e9ui_text_setBold(titleMegaDriveKeyboard, 1);
     e9ui_text_setColor(titleMegaDriveKeyboard, headingColor);
-    const char *megaKbKeys[] = { "Arrows", "L/R Alt", "L/R Ctrl", "L/R Shift", "Space", "1", "5" };
-    const char *megaKbVals[] = { "D-pad", "A", "B", "C", "D", "Start", "Select" };
+    const char *megaKbKeys[] = { "Arrows", "L/R aLT", "L/R CTRL", "L/R SHIFT", "SPACE", "1", "5" };
+    const char *megaKbVals[] = { "D-pad", "A", "B", "C", "D", "START", "SELECT" };
     int megaKbKeyW = help_measureKeyWidth(ctx, megaKbKeys, sizeof(megaKbKeys) / sizeof(megaKbKeys[0]));
 
     e9ui_component_t *titleMegaDriveController = e9ui_text_make("MEGA DRIVE JOYSTICK CONTROLS");
     e9ui_text_setBold(titleMegaDriveController, 1);
     e9ui_text_setColor(titleMegaDriveController, headingColor);
-    const char *megaPadKeys[] = { "Left stick / D-pad", "A", "B", "X", "Y", "LB", "RB", "Start", "Back" };
-    const char *megaPadVals[] = { "Directions", "A", "B", "C", "D", "L", "R", "Start", "Select" };
+    const char *megaPadKeys[] = { "Left stick / D-PAD", "A", "B", "X", "Y", "LB", "RB", "START", "BACK" };
+    const char *megaPadVals[] = { "Directions", "A", "B", "C", "D", "L", "R", "START", "SELECT" };
     int megaPadKeyW = help_measureKeyWidth(ctx, megaPadKeys, sizeof(megaPadKeys) / sizeof(megaPadKeys[0]));
 
     e9ui_component_t *titleNeoGeoKeyboard = e9ui_text_make("NEO GEO KEYBOARD");
     e9ui_text_setBold(titleNeoGeoKeyboard, 1);
     e9ui_text_setColor(titleNeoGeoKeyboard, headingColor);
-    const char *neoKbKeys[] = { "Arrows", "L/R Alt", "L/R Ctrl", "L/R Shift", "Space", "1", "5" };
-    const char *neoKbVals[] = { "D-pad", "A", "B", "C", "D", "Start", "Select" };
+    const char *neoKbKeys[] = { "Arrows", "L/R ALT", "L/R CTRL", "L/R SHIFT", "SPACE", "1", "5" };
+    const char *neoKbVals[] = { "D-pad", "A", "B", "C", "D", "START", "SELECT" };
     int neoKbKeyW = help_measureKeyWidth(ctx, neoKbKeys, sizeof(neoKbKeys) / sizeof(neoKbKeys[0]));
 
     e9ui_component_t *titleNeoGeoController = e9ui_text_make("NEO GEO JOYSTICK CONTROLS");
     e9ui_text_setBold(titleNeoGeoController, 1);
     e9ui_text_setColor(titleNeoGeoController, headingColor);
-    const char *neoPadKeys[] = { "Left stick / D-pad", "A", "B", "X", "Y", "LB", "RB", "Start", "Back" };
-    const char *neoPadVals[] = { "Directions", "A", "B", "C", "D", "L", "R", "Start", "Select" };
+    const char *neoPadKeys[] = { "Left stick / D-PAD", "A", "B", "X", "Y", "LB", "RB", "START", "BACK" };
+    const char *neoPadVals[] = { "Directions", "A", "B", "C", "D", "L", "R", "START", "SELECT" };
     int neoPadKeyW = help_measureKeyWidth(ctx, neoPadKeys, sizeof(neoPadKeys) / sizeof(neoPadKeys[0]));
 
     help_add(stackLeft, titleShortcuts, ctx, colW, &contentHLeft);

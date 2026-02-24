@@ -19,7 +19,7 @@
 #include "debugger.h"
 #include "e9ui.h"
 #include "e9ui_scroll.h"
-#include "seek_bar.h"
+#include "e9ui_seek_bar.h"
 #include "libretro_host.h"
 
 #define CUSTOM_UI_TITLE "ENGINE9000 DEBUGGER - CUSTOM"
@@ -130,9 +130,9 @@ typedef struct custom_ui_seek_row_state {
     int rowPadding;
 } custom_ui_seek_row_state_t;
 
-typedef struct custom_ui_embedded_body_state {
+typedef struct custom_ui_overlay_body_state {
     custom_ui_state_t *ui;
-} custom_ui_embedded_body_state_t;
+} custom_ui_overlay_body_state_t;
 
 static custom_ui_state_t custom_ui_state = {
     .blitterEnabled = 1,
@@ -174,45 +174,17 @@ custom_ui_parseInt(const char *value, int *out)
     return 1;
 }
 
-static void
-custom_ui_captureWindowRect(void)
-{
-    custom_ui_state_t *ui = &custom_ui_state;
-    if (!ui || !ui->windowHost) {
-        return;
-    }
-    if (e9ui_windowIsEmbedded(ui->windowHost)) {
-        e9ui_rect_t rect = e9ui_windowGetEmbeddedRect(ui->windowHost);
-        const e9ui_context_t *scaleCtx = e9ui ? &e9ui->ctx : &ui->ctx;
-        if (rect.w > 0 && rect.h > 0) {
-            ui->winX = e9ui_unscale_px(scaleCtx, rect.x);
-            ui->winY = e9ui_unscale_px(scaleCtx, rect.y);
-            ui->winW = e9ui_unscale_px(scaleCtx, rect.w);
-            ui->winH = e9ui_unscale_px(scaleCtx, rect.h);
-            ui->winHasSaved = 1;
-        }
-        return;
-    }
-    SDL_Window *window = e9ui_windowGetSdlWindow(ui->windowHost);
-    if (!window) {
-        return;
-    }
-    SDL_GetWindowPosition(window, &ui->winX, &ui->winY);
-    SDL_GetWindowSize(window, &ui->winW, &ui->winH);
-    ui->winHasSaved = 1;
-}
-
 static int
 custom_ui_clampCopperLine(int line);
 
 static e9ui_window_backend_t
 custom_ui_windowBackend(void)
 {
-    return e9ui_window_backend_embedded;
+    return e9ui_window_backend_overlay;
 }
 
 static e9ui_rect_t
-custom_ui_embeddedDefaultRect(const e9ui_context_t *ctx)
+custom_ui_windowDefaultRect(const e9ui_context_t *ctx)
 {
     e9ui_rect_t rect = {
         e9ui_scale_px(ctx, 64),
@@ -221,86 +193,6 @@ custom_ui_embeddedDefaultRect(const e9ui_context_t *ctx)
         e9ui_scale_px(ctx, 560)
     };
     return rect;
-}
-
-static e9ui_rect_t
-custom_ui_embeddedRectFromSaved(const custom_ui_state_t *ui, const e9ui_context_t *ctx)
-{
-    e9ui_rect_t rect = custom_ui_embeddedDefaultRect(ctx);
-    if (!ui || !ui->winHasSaved || ui->winW <= 0 || ui->winH <= 0) {
-        return rect;
-    }
-    rect.x = e9ui_scale_px(ctx, ui->winX);
-    rect.y = e9ui_scale_px(ctx, ui->winY);
-    rect.w = e9ui_scale_px(ctx, ui->winW);
-    rect.h = e9ui_scale_px(ctx, ui->winH);
-    return rect;
-}
-
-static void
-custom_ui_embeddedClampRectToMainWindow(e9ui_rect_t *rect, const e9ui_context_t *ctx)
-{
-    if (!rect || !ctx) {
-        return;
-    }
-    int minW = e9ui_scale_px(ctx, 420);
-    int minH = e9ui_scale_px(ctx, 420);
-    if (rect->w < minW) {
-        rect->w = minW;
-    }
-    if (rect->h < minH) {
-        rect->h = minH;
-    }
-    int winW = ctx->winW > 0 ? ctx->winW : 0;
-    int winH = ctx->winH > 0 ? ctx->winH : 0;
-    if (winW > 0 && rect->w > winW) {
-        rect->w = winW;
-    }
-    if (winH > 0 && rect->h > winH) {
-        rect->h = winH;
-    }
-}
-
-static int
-custom_ui_isEmbeddedBackend(const custom_ui_state_t *ui)
-{
-    if (!ui || !ui->windowHost) {
-        return 0;
-    }
-    return e9ui_windowIsEmbedded(ui->windowHost);
-}
-
-static void
-custom_ui_updateAlwaysOnTop(custom_ui_state_t *ui)
-{
-    if (!ui) {
-        return;
-    }
-    if (custom_ui_isEmbeddedBackend(ui)) {
-        return;
-    }
-    e9ui_windowUpdateAlwaysOnTop(ui->windowHost);
-}
-
-static float
-custom_ui_computeDpiScale(const e9ui_context_t *ctx)
-{
-    if (!ctx || !ctx->window || !ctx->renderer) {
-        return 1.0f;
-    }
-    int winW = 0;
-    int winH = 0;
-    int renW = 0;
-    int renH = 0;
-    SDL_GetWindowSize(ctx->window, &winW, &winH);
-    SDL_GetRendererOutputSize(ctx->renderer, &renW, &renH);
-    if (winW <= 0 || winH <= 0) {
-        return 1.0f;
-    }
-    float scaleX = (float)renW / (float)winW;
-    float scaleY = (float)renH / (float)winH;
-    float scale = scaleX > scaleY ? scaleX : scaleY;
-    return scale < 1.0f ? 1.0f : scale;
 }
 
 static float
@@ -345,7 +237,7 @@ custom_ui_syncBlitterVisDecaySeekBar(custom_ui_state_t *ui)
     if (!ui || !ui->blitterVisDecaySeekBar) {
         return;
     }
-    seek_bar_setPercent(ui->blitterVisDecaySeekBar, custom_ui_blitterVisDecayToPercent(ui->blitterVisDecay));
+    e9ui_seek_bar_setPercent(ui->blitterVisDecaySeekBar, custom_ui_blitterVisDecayToPercent(ui->blitterVisDecay));
 }
 
 static int
@@ -434,11 +326,11 @@ custom_ui_blitterVisDecaySeekRowMake(e9ui_component_t **outBar)
     st->rightInset = 14;
     st->barHeight = 10;
     st->rowPadding = 3;
-    st->bar = seek_bar_make();
+    st->bar = e9ui_seek_bar_make();
     if (st->bar) {
-        seek_bar_setMargins(st->bar, 0, 0, 0);
-        seek_bar_setHeight(st->bar, 10);
-        seek_bar_setHoverMargin(st->bar, 6);
+        e9ui_seek_bar_setMargins(st->bar, 0, 0, 0);
+        e9ui_seek_bar_setHeight(st->bar, 10);
+        e9ui_seek_bar_setHoverMargin(st->bar, 6);
     }
     row->name = "custom_ui_seek_row";
     row->state = st;
@@ -453,22 +345,6 @@ custom_ui_blitterVisDecaySeekRowMake(e9ui_component_t **outBar)
         *outBar = st->bar;
     }
     return row;
-}
-
-static void
-custom_ui_refocusMain(void)
-{
-    SDL_Window *mainWin = e9ui->ctx.window;
-    if (!mainWin) {
-        return;
-    }
-    SDL_ShowWindow(mainWin);
-    SDL_RaiseWindow(mainWin);
-    SDL_SetWindowInputFocus(mainWin);
-    e9ui_component_t *geo = e9ui_findById(e9ui->root, "geo_view");
-    if (geo) {
-        e9ui_setFocus(&e9ui->ctx, geo);
-    }
 }
 
 static void
@@ -1814,8 +1690,8 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
         return NULL;
     }
     if (blitterVisDecaySeekBar) {
-        seek_bar_setCallback(blitterVisDecaySeekBar, custom_ui_blitterVisDecaySeekChanged, ui);
-        seek_bar_setTooltipCallback(blitterVisDecaySeekBar, custom_ui_blitterVisDecaySeekTooltip, ui);
+        e9ui_seek_bar_setCallback(blitterVisDecaySeekBar, custom_ui_blitterVisDecaySeekChanged, ui);
+        e9ui_seek_bar_setTooltipCallback(blitterVisDecaySeekBar, custom_ui_blitterVisDecaySeekTooltip, ui);
     }
     ui->blitterVisDecaySeekRow = blitterVisDecaySeekRow;
     ui->blitterVisDecaySeekBar = blitterVisDecaySeekBar;
@@ -1995,7 +1871,7 @@ custom_ui_prepareFrame(custom_ui_state_t *ui, const e9ui_context_t *frameCtx)
 }
 
 static int
-custom_ui_embeddedBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+custom_ui_overlayBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
 {
     (void)self;
     (void)ctx;
@@ -2004,13 +1880,13 @@ custom_ui_embeddedBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ct
 }
 
 static void
-custom_ui_embeddedBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+custom_ui_overlayBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
 {
     if (!self) {
         return;
     }
     self->bounds = bounds;
-    custom_ui_embedded_body_state_t *st = (custom_ui_embedded_body_state_t *)self->state;
+    custom_ui_overlay_body_state_t *st = (custom_ui_overlay_body_state_t *)self->state;
     if (!st || !st->ui || !st->ui->root || !st->ui->root->layout) {
         return;
     }
@@ -2018,12 +1894,12 @@ custom_ui_embeddedBodyLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_r
 }
 
 static void
-custom_ui_embeddedBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
+custom_ui_overlayBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
 {
     if (!self || !ctx) {
         return;
     }
-    custom_ui_embedded_body_state_t *st = (custom_ui_embedded_body_state_t *)self->state;
+    custom_ui_overlay_body_state_t *st = (custom_ui_overlay_body_state_t *)self->state;
     if (!st || !st->ui || !st->ui->root) {
         return;
     }
@@ -2034,7 +1910,7 @@ custom_ui_embeddedBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
 }
 
 static e9ui_component_t *
-custom_ui_makeEmbeddedBodyHost(custom_ui_state_t *ui)
+custom_ui_makeOverlayBodyHost(custom_ui_state_t *ui)
 {
     if (!ui || !ui->root) {
         return NULL;
@@ -2043,23 +1919,23 @@ custom_ui_makeEmbeddedBodyHost(custom_ui_state_t *ui)
     if (!host) {
         return NULL;
     }
-    custom_ui_embedded_body_state_t *st = (custom_ui_embedded_body_state_t *)alloc_calloc(1, sizeof(*st));
+    custom_ui_overlay_body_state_t *st = (custom_ui_overlay_body_state_t *)alloc_calloc(1, sizeof(*st));
     if (!st) {
         alloc_free(host);
         return NULL;
     }
     st->ui = ui;
-    host->name = "custom_ui_embedded_body";
+    host->name = "custom_ui_overlay_body";
     host->state = st;
-    host->preferredHeight = custom_ui_embeddedBodyPreferredHeight;
-    host->layout = custom_ui_embeddedBodyLayout;
-    host->render = custom_ui_embeddedBodyRender;
+    host->preferredHeight = custom_ui_overlayBodyPreferredHeight;
+    host->layout = custom_ui_overlayBodyLayout;
+    host->render = custom_ui_overlayBodyRender;
     e9ui_child_add(host, ui->root, alloc_strdup("custom_ui_root"));
     return host;
 }
 
 static void
-custom_ui_embeddedWindowCloseRequested(e9ui_window_t *window, void *user)
+custom_ui_overlayWindowCloseRequested(e9ui_window_t *window, void *user)
 {
     (void)window;
     custom_ui_state_t *ui = (custom_ui_state_t *)user;
@@ -2139,70 +2015,35 @@ custom_ui_init(void)
         custom_ui_shutdown();
         return 0;
     }
-    if (custom_ui_isEmbeddedBackend(ui)) {
-        e9ui_rect_t rect = custom_ui_embeddedRectFromSaved(ui, &e9ui->ctx);
-        custom_ui_embeddedClampRectToMainWindow(&rect, &e9ui->ctx);
-        if (!ui->winHasSaved) {
-            int winW = e9ui->ctx.winW > 0 ? e9ui->ctx.winW : 1280;
-            int winH = e9ui->ctx.winH > 0 ? e9ui->ctx.winH : 720;
-            rect.x = (winW - rect.w) / 2;
-            rect.y = (winH - rect.h) / 2;
-            custom_ui_embeddedClampRectToMainWindow(&rect, &e9ui->ctx);
-        }
-        e9ui_component_t *embeddedBodyHost = custom_ui_makeEmbeddedBodyHost(ui);
-        if (!embeddedBodyHost) {
+    {
+        e9ui_rect_t rect = e9ui_windowResolveOpenRect(&e9ui->ctx,
+                                                               custom_ui_windowDefaultRect(&e9ui->ctx),
+                                                               420,
+                                                               420,
+                                                               1,
+                                                               ui->winHasSaved ? 1 : 0,
+                                                               (ui->winHasSaved && ui->winW > 0 && ui->winH > 0) ? 1 : 0,
+                                                               ui->winX,
+                                                               ui->winY,
+                                                               ui->winW,
+                                                               ui->winH);
+        e9ui_component_t *overlayBodyHost = custom_ui_makeOverlayBodyHost(ui);
+        if (!overlayBodyHost) {
             custom_ui_shutdown();
             return 0;
         }
-        if (!e9ui_windowOpenEmbedded(ui->windowHost,
+        if (!e9ui_windowOpen(ui->windowHost,
                                      CUSTOM_UI_TITLE,
                                      rect,
-                                     embeddedBodyHost,
-                                     custom_ui_embeddedWindowCloseRequested,
+                                     overlayBodyHost,
+                                     custom_ui_overlayWindowCloseRequested,
                                      ui,
                                      &e9ui->ctx)) {
-            e9ui_childDestroy(embeddedBodyHost, &e9ui->ctx);
+            e9ui_childDestroy(overlayBodyHost, &e9ui->ctx);
             custom_ui_shutdown();
             return 0;
         }
         ui->ctx = e9ui->ctx;
-    } else {
-        if (!e9ui_windowOpenSdl(ui->windowHost,
-                                CUSTOM_UI_TITLE,
-                                SDL_WINDOWPOS_CENTERED,
-                                SDL_WINDOWPOS_CENTERED,
-                                560,
-                                560,
-                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI)) {
-            debug_error("custom ui: SDL_CreateWindow failed: %s", SDL_GetError());
-            e9ui_windowDestroy(ui->windowHost);
-            ui->windowHost = NULL;
-            return 0;
-        }
-        if (!e9ui_windowCreateSdlRenderer(ui->windowHost, -1, SDL_RENDERER_ACCELERATED)) {
-            debug_error("custom ui: SDL_CreateRenderer failed: %s", SDL_GetError());
-            e9ui_windowDestroy(ui->windowHost);
-            ui->windowHost = NULL;
-            return 0;
-        }
-        SDL_Window *win = e9ui_windowGetSdlWindow(ui->windowHost);
-        SDL_Renderer *ren = e9ui_windowGetSdlRenderer(ui->windowHost);
-        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-        if (ui->winHasSaved) {
-            SDL_SetWindowPosition(win, ui->winX, ui->winY);
-            SDL_SetWindowSize(win, ui->winW, ui->winH);
-        }
-
-        ui->ctx.window = win;
-        ui->ctx.renderer = ren;
-        ui->ctx.font = e9ui->ctx.font;
-        ui->ctx.dpiScale = custom_ui_computeDpiScale(&ui->ctx);
-        if (e9ui && e9ui->ctx.window) {
-            uint32_t mainFlags = SDL_GetWindowFlags(e9ui->ctx.window);
-            e9ui_windowSetMainWindowFocused(ui->windowHost, (mainFlags & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0);
-        }
-        e9ui_windowRefreshSelfFocusedFromFlags(ui->windowHost);
-        custom_ui_updateAlwaysOnTop(ui);
     }
 
     custom_ui_applyAllOptions();
@@ -2217,15 +2058,6 @@ custom_ui_shutdown(void)
     if (!ui->open) {
         return;
     }
-    int embedded = custom_ui_isEmbeddedBackend(ui);
-    if (ui->root && !embedded) {
-        e9ui_childDestroy(ui->root, &ui->ctx);
-        ui->root = NULL;
-    }
-    SDL_Renderer *renderer = e9ui_windowGetSdlRenderer(ui->windowHost);
-    if (renderer) {
-        e9ui_text_cache_clearRenderer(renderer);
-    }
     if (ui->windowHost) {
         e9ui_windowDestroy(ui->windowHost);
         ui->windowHost = NULL;
@@ -2237,7 +2069,6 @@ custom_ui_shutdown(void)
     ui->warnedMissingOption = 0;
     ui->pendingRemove = NULL;
     memset(&ui->ctx, 0, sizeof(ui->ctx));
-    custom_ui_refocusMain();
 }
 
 void
@@ -2259,18 +2090,13 @@ custom_ui_isOpen(void)
 uint32_t
 custom_ui_getWindowId(void)
 {
-    return e9ui_windowGetWindowId(custom_ui_state.windowHost);
+    return 0;
 }
 
 void
 custom_ui_setMainWindowFocused(int focused)
 {
-    custom_ui_state_t *ui = &custom_ui_state;
-    e9ui_windowSetMainWindowFocused(ui->windowHost, focused);
-    if (!ui->open) {
-        return;
-    }
-    custom_ui_updateAlwaysOnTop(ui);
+    (void)focused;
 }
 
 int
@@ -2390,96 +2216,7 @@ custom_ui_setBplptrLineLimitRange(int start, int end)
 void
 custom_ui_handleEvent(SDL_Event *ev)
 {
-    if (!ev || !custom_ui_state.open) {
-        return;
-    }
-    custom_ui_state_t *ui = &custom_ui_state;
-    if (ui->closeRequested) {
-        return;
-    }
-
-    e9ui_component_t *root = ui->fullscreen ? ui->fullscreen : ui->root;
-    ui->ctx.focusClickHandled = 0;
-    ui->ctx.cursorOverride = 0;
-    ui->ctx.focusRoot = ui->root;
-    ui->ctx.focusFullscreen = ui->fullscreen;
-
-    if (ev->type == SDL_WINDOWEVENT && ev->window.event == SDL_WINDOWEVENT_CLOSE) {
-        ui->closeRequested = 1;
-        return;
-    }
-
-    if (ev->type == SDL_MOUSEMOTION) {
-        int prevX = ui->ctx.mouseX;
-        int prevY = ui->ctx.mouseY;
-        ui->ctx.mousePrevX = prevX;
-        ui->ctx.mousePrevY = prevY;
-        int scaledX = e9ui_scale_coord(&ui->ctx, ev->motion.x);
-        int scaledY = e9ui_scale_coord(&ui->ctx, ev->motion.y);
-        ev->motion.x = scaledX;
-        ev->motion.y = scaledY;
-        ev->motion.xrel = scaledX - prevX;
-        ev->motion.yrel = scaledY - prevY;
-        ui->ctx.mouseX = scaledX;
-        ui->ctx.mouseY = scaledY;
-    } else if (ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP) {
-        int scaledX = e9ui_scale_coord(&ui->ctx, ev->button.x);
-        int scaledY = e9ui_scale_coord(&ui->ctx, ev->button.y);
-        ev->button.x = scaledX;
-        ev->button.y = scaledY;
-        ui->ctx.mouseX = scaledX;
-        ui->ctx.mouseY = scaledY;
-    } else if (ev->type == SDL_MOUSEWHEEL) {
-        int mouseX = 0;
-        int mouseY = 0;
-        SDL_GetMouseState(&mouseX, &mouseY);
-        ui->ctx.mouseX = e9ui_scale_coord(&ui->ctx, mouseX);
-        ui->ctx.mouseY = e9ui_scale_coord(&ui->ctx, mouseY);
-    } else if (ev->type == SDL_WINDOWEVENT) {
-        if (ev->window.event == SDL_WINDOWEVENT_RESIZED ||
-            ev->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-            ui->ctx.dpiScale = custom_ui_computeDpiScale(&ui->ctx);
-            ui->winW = ev->window.data1;
-            ui->winH = ev->window.data2;
-            ui->winHasSaved = 1;
-            config_saveConfig();
-        } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-            e9ui_windowSetSelfFocused(ui->windowHost, 1);
-            custom_ui_updateAlwaysOnTop(ui);
-        } else if (ev->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-            e9ui_windowSetSelfFocused(ui->windowHost, 0);
-            custom_ui_updateAlwaysOnTop(ui);
-        } else if (ev->window.event == SDL_WINDOWEVENT_MOVED) {
-            ui->winX = ev->window.data1;
-            ui->winY = ev->window.data2;
-            ui->winHasSaved = 1;
-            config_saveConfig();
-        }
-    } else if (ev->type == SDL_KEYDOWN) {
-        if (ev->key.keysym.sym == SDLK_ESCAPE) {
-            ui->closeRequested = 1;
-            return;
-        }
-        SDL_Keymod mods = ev->key.keysym.mod;
-        int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
-        if (!accel && ev->key.keysym.sym == SDLK_TAB && !e9ui_getFocus(&ui->ctx)) {
-            int reverse = (mods & KMOD_SHIFT) ? 1 : 0;
-            e9ui_component_t *next = e9ui_focusFindNext(root, NULL, reverse);
-            if (next) {
-                e9ui_setFocus(&ui->ctx, next);
-                return;
-            }
-        }
-    }
-
-    if (root) {
-        e9ui_event_process(root, &ui->ctx, ev);
-    }
-    if (ev->type == SDL_MOUSEBUTTONDOWN &&
-        ev->button.button == SDL_BUTTON_LEFT &&
-        !ui->ctx.focusClickHandled) {
-        e9ui_setFocus(&ui->ctx, NULL);
-    }
+    (void)ev;
 }
 
 void
@@ -2493,50 +2230,15 @@ custom_ui_render(void)
         custom_ui_shutdown();
         return;
     }
-    if (custom_ui_isEmbeddedBackend(ui)) {
-        int prevHasSaved = ui->winHasSaved;
-        int prevX = ui->winX;
-        int prevY = ui->winY;
-        int prevW = ui->winW;
-        int prevH = ui->winH;
-        custom_ui_captureWindowRect();
-        if (!prevHasSaved ||
-            ui->winX != prevX ||
-            ui->winY != prevY ||
-            ui->winW != prevW ||
-            ui->winH != prevH) {
-            config_saveConfig();
-        }
-        return;
+    if (e9ui_windowCaptureRectChanged(ui->windowHost,
+                                      (e9ui ? &e9ui->ctx : &ui->ctx),
+                                      &ui->winHasSaved,
+                                      &ui->winX,
+                                      &ui->winY,
+                                      &ui->winW,
+                                      &ui->winH)) {
+        config_saveConfig();
     }
-    SDL_Window *window = e9ui_windowGetSdlWindow(ui->windowHost);
-    SDL_Renderer *renderer = e9ui_windowGetSdlRenderer(ui->windowHost);
-    if (!renderer) {
-        return;
-    }
-    custom_ui_prepareFrame(ui, NULL);
-
-    ui->ctx.font = e9ui->ctx.font;
-    ui->ctx.window = window;
-    ui->ctx.renderer = renderer;
-
-    SDL_SetRenderDrawColor(renderer, 12, 12, 12, 255);
-    SDL_RenderClear(renderer);
-    int winW = 0;
-    int winH = 0;
-    SDL_GetRendererOutputSize(renderer, &winW, &winH);
-    ui->ctx.winW = winW;
-    ui->ctx.winH = winH;
-
-    e9ui_component_t *root = ui->fullscreen ? ui->fullscreen : ui->root;
-    if (root && root->layout) {
-        e9ui_rect_t full = { 0, 0, winW, winH };
-        root->layout(root, &ui->ctx, full);
-    }
-    if (root && root->render) {
-        root->render(root, &ui->ctx);
-    }
-    SDL_RenderPresent(renderer);
 }
 
 void
@@ -2547,7 +2249,13 @@ custom_ui_persistConfig(FILE *file)
         return;
     }
     if (ui->open) {
-        custom_ui_captureWindowRect();
+        (void)e9ui_windowCaptureRectSnapshot(ui->windowHost,
+                                                (e9ui ? &e9ui->ctx : &ui->ctx),
+                                                &ui->winHasSaved,
+                                                &ui->winX,
+                                                &ui->winY,
+                                                &ui->winW,
+                                                &ui->winH);
     }
     if (!ui->winHasSaved) {
         return;

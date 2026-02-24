@@ -145,8 +145,24 @@ runtime_runLoop(void)
         if (debugger.restartRequested) {
             break;
         }
-        if (e9ui->pendingRemove && e9ui->root) {
-            e9ui_childRemove(e9ui->root, e9ui->pendingRemove, &e9ui->ctx);
+        if (e9ui->pendingRemove) {
+            e9ui_component_t *hostRoot = e9ui_getOverlayHost();
+            e9ui_component_t *removeParent = NULL;
+            if (hostRoot) {
+                for (list_t *ptr = hostRoot->children; ptr; ptr = ptr->next) {
+                    e9ui_component_child_t *container = (e9ui_component_child_t *)ptr->data;
+                    if (container && container->component == e9ui->pendingRemove) {
+                        removeParent = hostRoot;
+                        break;
+                    }
+                }
+            }
+            if (!removeParent && e9ui->root) {
+                removeParent = e9ui->root;
+            }
+            if (removeParent) {
+                e9ui_childRemove(removeParent, e9ui->pendingRemove, &e9ui->ctx);
+            }
             e9ui->pendingRemove = NULL;
         }
         settings_pollRebuild(&e9ui->ctx);

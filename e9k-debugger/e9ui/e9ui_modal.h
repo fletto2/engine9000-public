@@ -20,6 +20,8 @@ e9ui_modal_show(e9ui_context_t *ctx, const char *title, e9ui_rect_t rect,
            e9ui_modal_close_cb_t onClose, void *user);
 
 void
-e9ui_modal_setBodyChild(e9ui_component_t *modal, e9ui_component_t *child, e9ui_context_t *ctx);
+e9ui_modal_closeAll(e9ui_context_t *ctx);
 
+void
+e9ui_modal_setBodyChild(e9ui_component_t *modal, e9ui_component_t *child, e9ui_context_t *ctx);
 
