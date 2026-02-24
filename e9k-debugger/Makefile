@@ -20,8 +20,8 @@ INCLUDES += $(BASE_INCLUDES)
 INCLUDES += $(PKG_CFLAGS)
 
 ifneq ($(filter -j%,$(MAKEFLAGS)),)
-  ifeq ($(origin .FEATURES),default)
-    ifneq ($(filter output-sync,$(.FEATURES)),)
+  ifneq ($(filter output-sync,$(.FEATURES)),)
+    ifneq ($(filter %test%,$(MAKECMDGOALS)),)
       MAKEFLAGS += --output-sync=target
     endif
   endif
