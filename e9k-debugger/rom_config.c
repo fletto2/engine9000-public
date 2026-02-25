@@ -1313,8 +1313,6 @@ rom_config_loadRuntimeStateOnBoot(void)
         protect_clear();
         breakpoints_markDirty();
         trainer_markDirty();
-        rom_config_clearActiveInputBindings();
-        rom_config_clearActiveTargetCustomOptions(target);
         rom_config_freeData(&data);
         return;
     }

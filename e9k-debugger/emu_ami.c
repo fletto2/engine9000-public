@@ -207,25 +207,22 @@ emu_ami_rangeBarSetPercentFromCoreLines(e9ui_component_t *bar, int startLine, in
 int
 emu_ami_mouseCaptureCanEnable(void)
 {
-    const char *overrideValue = NULL;
-    const char *joyportMode = amiga_uaeGetPuaeOptionValue("puae_joyport");
+    const char *settingValue = NULL;
+    const char *customValue = NULL;
+    const char *coreValue = NULL;
 
     if (!target) {
         return 0;
     }
     if (target->romConfigGetActiveCustomOptionValue) {
-        overrideValue = target->romConfigGetActiveCustomOptionValue(emu_ami_mouseCaptureOptionKey());
+        customValue = target->romConfigGetActiveCustomOptionValue(emu_ami_mouseCaptureOptionKey());
+        settingValue = customValue;
     }
-    if (!overrideValue && target->coreOptionGetValue) {
-        overrideValue = target->coreOptionGetValue(emu_ami_mouseCaptureOptionKey());
+    if (!settingValue && target->coreOptionGetValue) {
+        coreValue = target->coreOptionGetValue(emu_ami_mouseCaptureOptionKey());
+        settingValue = coreValue;
     }
-    if (overrideValue && strcmp(overrideValue, "disabled") == 0) {
-        return 0;
-    }
-    if (joyportMode &&
-        (strcmp(joyportMode, "joystick") == 0 ||
-         strcmp(joyportMode, "Joystick") == 0 ||
-         strcmp(joyportMode, "Joystick (Port 1)") == 0)) {
+    if (settingValue && strcmp(settingValue, "disabled") == 0) {
         return 0;
     }
     return 1;

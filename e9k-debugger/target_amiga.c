@@ -126,7 +126,7 @@ target_amiga_coreOptionsSyntheticDefAt(size_t index)
     static const struct retro_core_option_v2_definition def = {
         .key = "e9k_debugger_amiga_mouse_capture",
         .desc = "Mouse Capture",
-        .default_value = "enabled",
+        .default_value = "disabled",
         .values = {
             { "enabled", "Enabled" },
             { "disabled", "Disabled" },
@@ -630,7 +630,12 @@ const char*
 target_amiga_coreOptionGetValue(const char* key)
 {
   if (strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0) {
-    return target_amiga_getActiveMouseCaptureOverride();
+    const char *overrideValue = target_amiga_getActiveMouseCaptureOverride();
+    if (overrideValue && *overrideValue) {
+      return overrideValue;
+    }
+    const struct retro_core_option_v2_definition *def = target_amiga_coreOptionsSyntheticDefAt(0);
+    return def ? def->default_value : NULL;
   }
   if (debugger_input_bindings_isOptionKey(key)) {
     return rom_config_getActiveInputBindingValue(key);
