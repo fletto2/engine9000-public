@@ -231,6 +231,17 @@ e9ui_sceneRender(void)
     }
 }
 
+static void
+e9ui_resetRendererOverlayState(e9ui_context_t *ctx)
+{
+    if (!ctx || !ctx->renderer) {
+        return;
+    }
+    SDL_RenderSetClipRect(ctx->renderer, NULL);
+    SDL_RenderSetViewport(ctx->renderer, NULL);
+    SDL_RenderSetScale(ctx->renderer, 1.0f, 1.0f);
+}
+
 static int
 e9ui_sceneProcessEvent(const e9ui_event_t *ev)
 {
@@ -389,7 +400,7 @@ e9ui_drawFocusRingRect(e9ui_context_t *ctx, SDL_Rect rect, int padPx)
 static void
 e9ui_renderTransientMessage(e9ui_context_t *ctx, int w, int h)
 {
-  if (!ctx || !ctx->renderer || e9ui_fullscreenHintStart == 0 || !e9ui_transientMessage) {
+  if (!ctx || !ctx->renderer || !e9ui_transientMessage) {
     return;
   }
   uint32_t now = debugger_uiTicks();
@@ -408,7 +419,7 @@ e9ui_renderTransientMessage(e9ui_context_t *ctx, int w, int h)
   if (size <= 0) {
     size = 16;
   }
-  if (size != e9ui_fullscreenHintSize) {
+  if (size != e9ui_fullscreenHintSize || !e9ui_fullscreenHintFont) {
     if (e9ui_fullscreenHintFont) {
       TTF_CloseFont(e9ui_fullscreenHintFont);
       e9ui_fullscreenHintFont = NULL;
@@ -471,7 +482,7 @@ e9ui_renderFpsOverlay(e9ui_context_t *ctx, int w, int h)
   if (size <= 0) {
     size = 8;
   }
-  if (size != e9ui_fpsFontSize) {
+  if (size != e9ui_fpsFontSize || !e9ui_fpsFont) {
     if (e9ui_fpsFont) {
       TTF_CloseFont(e9ui_fpsFont);
       e9ui_fpsFont = NULL;
@@ -804,6 +815,55 @@ e9ui_setFocus(e9ui_context_t *ctx, e9ui_component_t *comp)
   if (comp && prev != comp && comp->name && strcmp(comp->name, "e9ui_textbox") == 0) {
     e9ui_textbox_selectAllExternal(comp);
   }
+}
+
+int
+e9ui_cursorIsCapturedBy(const e9ui_context_t *ctx, const void *owner)
+{
+    if (!ctx || !owner) {
+        return 0;
+    }
+    return ctx->cursorCaptureOwner == owner ? 1 : 0;
+}
+
+void
+e9ui_cursorRequest(e9ui_context_t *ctx, void *owner, SDL_Cursor *cursor)
+{
+    if (!ctx || !cursor) {
+        return;
+    }
+    if (ctx->cursorCaptureOwner && ctx->cursorCaptureOwner != owner) {
+        return;
+    }
+    if (ctx->cursorCaptureOwner == owner) {
+        ctx->cursorCapture = cursor;
+    }
+    ctx->cursorOverride = 1;
+    SDL_SetCursor(cursor);
+}
+
+void
+e9ui_cursorCapture(e9ui_context_t *ctx, void *owner, SDL_Cursor *cursor)
+{
+    if (!ctx || !owner || !cursor) {
+        return;
+    }
+    ctx->cursorCaptureOwner = owner;
+    ctx->cursorCapture = cursor;
+    e9ui_cursorRequest(ctx, owner, cursor);
+}
+
+void
+e9ui_cursorRelease(e9ui_context_t *ctx, void *owner)
+{
+    if (!ctx || !owner) {
+        return;
+    }
+    if (ctx->cursorCaptureOwner != owner) {
+        return;
+    }
+    ctx->cursorCaptureOwner = NULL;
+    ctx->cursorCapture = NULL;
 }
 
 static void
@@ -1732,6 +1792,7 @@ e9ui_renderFrame(void)
   e9ui_text_select_endFrame(&e9ui->ctx);
 
   e9ui_textbox_selectOverlayRender(&e9ui->ctx);
+  e9ui_resetRendererOverlayState(&e9ui->ctx);
 
   e9ui_renderTransientMessage(&e9ui->ctx, w, h);
   e9ui_renderFpsOverlay(&e9ui->ctx, w, h);
@@ -1774,6 +1835,7 @@ e9ui_renderFrameNoLayout(void)
   e9ui_text_select_endFrame(&e9ui->ctx);
 
   e9ui_textbox_selectOverlayRender(&e9ui->ctx);
+  e9ui_resetRendererOverlayState(&e9ui->ctx);
 
   e9ui_renderTransientMessage(&e9ui->ctx, w, h);
   e9ui_renderFpsOverlay(&e9ui->ctx, w, h);
@@ -1813,6 +1875,7 @@ e9ui_renderFrameNoLayoutNoPresent(void)
   e9ui_text_select_endFrame(&e9ui->ctx);
 
   e9ui_textbox_selectOverlayRender(&e9ui->ctx);
+  e9ui_resetRendererOverlayState(&e9ui->ctx);
 
   e9ui_renderTransientMessage(&e9ui->ctx, w, h);
   e9ui_renderFpsOverlay(&e9ui->ctx, w, h);
@@ -1847,6 +1910,7 @@ e9ui_renderFrameNoLayoutNoPresentNoClear(void)
   e9ui_text_select_endFrame(&e9ui->ctx);
 
   e9ui_textbox_selectOverlayRender(&e9ui->ctx);
+  e9ui_resetRendererOverlayState(&e9ui->ctx);
 
   e9ui_renderTransientMessage(&e9ui->ctx, w, h);
   e9ui_renderFpsOverlay(&e9ui->ctx, w, h);
@@ -1968,6 +2032,10 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     int wantH = (e9ui->layout.winH > 0 ? e9ui->layout.winH : 700);
     int wantX = SDL_WINDOWPOS_CENTERED;
     int wantY = SDL_WINDOWPOS_CENTERED;
+#ifdef _WIN32
+    SDL_Rect windowsDefaultUsableBounds = {0, 0, 0, 0};
+    int windowsApplyDefaultUsableBounds = 0;
+#endif
     int useDefaultWindowGeometry =
         (!cliOverrideWindowSize &&
          e9ui->layout.winX == E9UI_LAYOUT_WIN_X &&
@@ -1978,10 +2046,15 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
         SDL_Rect usable = {0, 0, 0, 0};
         if (SDL_GetDisplayUsableBounds(0, &usable) == 0 &&
             usable.w > 0 && usable.h > 0) {
-            wantX = usable.x;
-            wantY = usable.y;
+#ifdef _WIN32
+            windowsDefaultUsableBounds = usable;
+            windowsApplyDefaultUsableBounds = 1;
+#else
             wantW = usable.w;
             wantH = usable.h;
+            wantX = usable.x;
+            wantY = usable.y;
+#endif
         }
     }
     if (e9ui->glCompositeEnabled && debugger_platform_glCompositeNeedsOpenGLHint()) {
@@ -2002,6 +2075,28 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     }
     e9ui_applyWindowIcon(win);
     e9ui_updateRefreshRate(win);
+#ifdef _WIN32
+#if SDL_VERSION_ATLEAST(2,0,5)
+    if (windowsApplyDefaultUsableBounds) {
+        int borderTop = 0;
+        int borderLeft = 0;
+        int borderBottom = 0;
+        int borderRight = 0;
+        if (SDL_GetWindowBordersSize(win, &borderTop, &borderLeft, &borderBottom, &borderRight) == 0) {
+            int fitClientW = windowsDefaultUsableBounds.w - borderLeft - borderRight;
+            int fitClientH = windowsDefaultUsableBounds.h - borderTop - borderBottom;
+            if (fitClientW > 0 && fitClientH > 0) {
+                SDL_SetWindowSize(win, fitClientW, fitClientH);
+                SDL_SetWindowPosition(win,
+                                      windowsDefaultUsableBounds.x + borderLeft,
+                                      windowsDefaultUsableBounds.y + borderTop);
+            }
+        } else {
+            debug_error("SDL_GetWindowBordersSize failed: %s", SDL_GetError());
+        }
+    }
+#endif
+#endif
     uint32_t rendererFlags = SDL_RENDERER_ACCELERATED;
     if (uiTestMode == UI_TEST_MODE_NONE) {
         rendererFlags |= SDL_RENDERER_PRESENTVSYNC;
@@ -2388,10 +2483,17 @@ e9ui_shutdown(void)
     TTF_CloseFont(e9ui_fullscreenHintFont);
     e9ui_fullscreenHintFont = NULL;
   }
+  e9ui_fullscreenHintSize = 0;
+  e9ui_fullscreenHintStart = 0;
+  e9ui_transientMessage = NULL;
   if (e9ui_fpsFont) {
     TTF_CloseFont(e9ui_fpsFont);
     e9ui_fpsFont = NULL;
   }
+  e9ui_fpsFontSize = 0;
+  e9ui_fpsLastTick = 0;
+  e9ui_fpsFrames = 0;
+  e9ui_fpsValue = 0.0f;
   e9ui_split_resetCursors();
   e9ui_split_stack_resetCursors();
   e9ui_box_resetCursors();

@@ -163,7 +163,7 @@ e9ui_split_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bound
     s->prevCollapsedTop = topCollapsed;
     s->prevCollapsedBottom = bottomCollapsed;
   }
-  int usedGrip = (topCollapsed || bottomCollapsed) ? 0 : grip;
+  int usedGrip = topCollapsed ? 0 : grip;
   if (usedGrip > total) {
     usedGrip = total;
   }
@@ -299,17 +299,23 @@ static int
 e9ui_split_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
 {
   e9ui_split_state_t *s = (e9ui_split_state_t*)self->state;
-  if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT) {
+    if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT) {
     int mx = ev->button.x, my = ev->button.y;
     if (mx >= s->rectGrab.x && mx < s->rectGrab.x + s->rectGrab.w &&
 	my >= s->rectGrab.y && my < s->rectGrab.y + s->rectGrab.h) {
       s->dragging = 1;
       s->hover = 1;
+      ensure_cursors_init();
+      SDL_Cursor *cur = (s->orient == e9ui_orient_vertical) ? s_cursor_ns : s_cursor_ew;
+      if (cur) {
+        e9ui_cursorCapture(ctx, self, cur);
+      }
       return 1;
     }
   } else if (ev->type == SDL_MOUSEBUTTONUP && ev->button.button == SDL_BUTTON_LEFT) {
     if (s->dragging) {
       s->dragging = 0;
+      e9ui_cursorRelease(ctx, self);
       return 1;
     }
   } else if (ev->type == SDL_MOUSEMOTION) {
@@ -321,12 +327,13 @@ e9ui_split_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_e
     s->hover = over;
     int allowResizeCursor = e9ui_split_windowHasFocus(ctx);
     if ((over || s->dragging) && allowResizeCursor) {
-      if (ctx) {
-	ctx->cursorOverride = 1;
-      }
       SDL_Cursor *cur = (s->orient == e9ui_orient_vertical) ? s_cursor_ns : s_cursor_ew;
       if (cur) {
-	SDL_SetCursor(cur);
+        if (s->dragging) {
+          e9ui_cursorCapture(ctx, self, cur);
+        } else {
+          e9ui_cursorRequest(ctx, self, cur);
+        }
       }
     } else if (!ctx || !ctx->cursorOverride) {
       if (s_cursor_arrow) {
@@ -397,7 +404,10 @@ e9ui_split_makeComponent(e9ui_component_t *a,
     st->orient = orient;
     st->ratio = ratio;
     st->grip = grip;
-    st->hitMargin = grip * 2;
+    st->hitMargin = grip / 2;
+    if (st->hitMargin < 2) {
+        st->hitMargin = 2;
+    }
     st->prevCollapsedTop = 0;
     st->prevCollapsedBottom = 0;
     st->savedRatio = ratio;

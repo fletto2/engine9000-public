@@ -10,6 +10,7 @@
 #include "system_badge.h"
 #include "alloc.h"
 #include "file.h"
+#include "strutil.h"
 
 static const char *
 target_megadrive_defaultCorePath(void);
@@ -23,7 +24,7 @@ target_megadrive_setConfigDefaults(e9k_system_config_t *config)
 #if E9K_ENABLE_MEGADRIVE
     snprintf(config->megadrive.libretro.systemDir, sizeof(config->megadrive.libretro.systemDir), "./system");
     snprintf(config->megadrive.libretro.saveDir, sizeof(config->megadrive.libretro.saveDir), "./saves");
-    snprintf(config->megadrive.libretro.sourceDir, sizeof(config->megadrive.libretro.sourceDir), ".");
+    config->megadrive.libretro.sourceDir[0] = '\0';
     snprintf(config->megadrive.libretro.toolchainPrefix, sizeof(config->megadrive.libretro.toolchainPrefix), "m68k-elf");
     config->megadrive.libretro.audioBufferMs = 250;
     config->megadrive.libretro.exePath[0] = '\0';
@@ -80,6 +81,7 @@ target_megadrive_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t
         e9ui_fileSelect_setOnChange(fsSaves, settings_pathChanged, debugger.settingsEdit.megadrive.libretro.saveDir);
     }
     if (fsSource) {
+        e9ui_fileSelect_setAllowEmpty(fsSource, 1);
         e9ui_fileSelect_setText(fsSource, debugger.settingsEdit.megadrive.libretro.sourceDir);
         e9ui_fileSelect_setOnChange(fsSource, settings_pathChanged, debugger.settingsEdit.megadrive.libretro.sourceDir);
     }
@@ -176,20 +178,26 @@ target_megadrive_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t
 static void
 target_megadrive_applyActiveSettingsToCurrentSystem(void)
 {
-    strncpy(debugger.config.megadrive.libretro.exePath, rom_config_activeElfPath, sizeof(debugger.config.megadrive.libretro.exePath) - 1);
-    strncpy(debugger.config.megadrive.libretro.sourceDir, rom_config_activeSourceDir, sizeof(debugger.config.megadrive.libretro.sourceDir) - 1);
-    strncpy(debugger.config.megadrive.libretro.toolchainPrefix, rom_config_activeToolchainPrefix, sizeof(debugger.config.megadrive.libretro.toolchainPrefix) - 1);
-    debugger.config.megadrive.libretro.exePath[sizeof(debugger.config.megadrive.libretro.exePath) - 1] = '\0';
-    debugger.config.megadrive.libretro.sourceDir[sizeof(debugger.config.megadrive.libretro.sourceDir) - 1] = '\0';
-    debugger.config.megadrive.libretro.toolchainPrefix[sizeof(debugger.config.megadrive.libretro.toolchainPrefix) - 1] = '\0';
+    strutil_strlcpy(debugger.config.megadrive.libretro.exePath,
+                      sizeof(debugger.config.megadrive.libretro.exePath),
+                      rom_config_activeElfPath);
+    strutil_strlcpy(debugger.config.megadrive.libretro.sourceDir,
+                      sizeof(debugger.config.megadrive.libretro.sourceDir),
+                      rom_config_activeSourceDir);
+    strutil_strlcpy(debugger.config.megadrive.libretro.toolchainPrefix,
+                      sizeof(debugger.config.megadrive.libretro.toolchainPrefix),
+                      rom_config_activeToolchainPrefix);
 }
 
 static void
 target_megadrive_setActiveDefaultsFromCurrentSystem(void)
 {
-    strncpy(rom_config_activeElfPath, debugger.config.megadrive.libretro.exePath, sizeof(rom_config_activeElfPath) - 1);
-    strncpy(rom_config_activeSourceDir, debugger.config.megadrive.libretro.sourceDir, sizeof(rom_config_activeSourceDir) - 1);
-    strncpy(rom_config_activeToolchainPrefix, debugger.config.megadrive.libretro.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
+    strutil_strlcpy(rom_config_activeElfPath, sizeof(rom_config_activeElfPath),
+                      debugger.config.megadrive.libretro.exePath);
+    strutil_strlcpy(rom_config_activeSourceDir, sizeof(rom_config_activeSourceDir),
+                      debugger.config.megadrive.libretro.sourceDir);
+    strutil_strlcpy(rom_config_activeToolchainPrefix, sizeof(rom_config_activeToolchainPrefix),
+                      debugger.config.megadrive.libretro.toolchainPrefix);
 }
 
 static int

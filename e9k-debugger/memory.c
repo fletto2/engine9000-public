@@ -18,10 +18,13 @@
 
 #include "memory.h"
 #include "e9ui_context.h"
+#include "e9ui_scale.h"
 #include "e9ui_stack.h"
 #include "e9ui_hstack.h"
 #include "e9ui_textbox.h"
 #include "e9ui_text_cache.h"
+#include "e9ui_step_buttons.h"
+#include "e9ui_scrollbar.h"
 #include "debugger.h"
 #include "libretro_host.h"
 
@@ -46,6 +49,10 @@ typedef struct memory_view_state {
     int            searchMatchLen;
     int            searchMatchValid;
     char           error[128];
+    e9ui_step_buttons_state_t stepButtons;
+    e9ui_scrollbar_state_t hScrollbar;
+    int            scrollX;
+    int            contentPixelWidth;
 } memory_view_state_t;
 
 static memory_view_state_t *g_memory_view_state = NULL;
@@ -682,6 +689,122 @@ memory_onSearchKey(e9ui_context_t *ctx, SDL_Keycode key, SDL_Keymod mods, void *
 }
 
 static int
+memory_stepButtonsGutterWidth(e9ui_context_t *ctx, e9ui_component_t *self)
+{
+    if (!ctx || !self) {
+        return 0;
+    }
+    int thickness = e9ui_scale_px(ctx, 8);
+    if (thickness < 4) {
+        thickness = 4;
+    }
+    if (self->bounds.w > 0 && thickness >= self->bounds.w) {
+        thickness = self->bounds.w > 1 ? self->bounds.w - 1 : 1;
+    }
+    if (thickness <= 0) {
+        return 0;
+    }
+    int buttonW = thickness * 2;
+    if (buttonW > self->bounds.w) {
+        buttonW = self->bounds.w;
+    }
+    int margin = e9ui_scale_px(ctx, 4);
+    if (margin < 0) {
+        margin = 0;
+    }
+    int gutter = buttonW + margin;
+    if (gutter > self->bounds.w) {
+        gutter = self->bounds.w;
+    }
+    return gutter > 0 ? gutter : 0;
+}
+
+static int
+memory_hscrollContentWidthEstimate(memory_view_state_t *st, TTF_Font *font)
+{
+    const int contentPad = 8;
+    if (!font) {
+        return 0;
+    }
+    int w = 0;
+    int sampleLen = 0;
+    char sample[256];
+    sampleLen = snprintf(sample, sizeof(sample),
+                         "00FFFFFF: FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF  ................");
+    if (sampleLen < 0) {
+        sample[0] = '\0';
+    }
+    (void)TTF_SizeText(font, sample, &w, NULL);
+    if (st && st->error[0]) {
+        int ew = 0;
+        (void)TTF_SizeText(font, st->error, &ew, NULL);
+        if (ew > w) {
+            w = ew;
+        }
+    }
+    return w + contentPad * 2;
+}
+
+static e9ui_rect_t
+memory_hscrollBounds(e9ui_context_t *ctx, e9ui_component_t *self)
+{
+    e9ui_rect_t bounds = {0, 0, 0, 0};
+    if (!ctx || !self) {
+        return bounds;
+    }
+    int rightGutter = memory_stepButtonsGutterWidth(ctx, self);
+    if (rightGutter < 0) {
+        rightGutter = 0;
+    }
+    if (rightGutter > self->bounds.w) {
+        rightGutter = self->bounds.w;
+    }
+    bounds.x = self->bounds.x;
+    bounds.y = self->bounds.y;
+    bounds.w = self->bounds.w - rightGutter;
+    bounds.h = self->bounds.h;
+    if (bounds.w < 0) {
+        bounds.w = 0;
+    }
+    return bounds;
+}
+
+typedef struct memory_step_buttons_action_ctx {
+    memory_view_state_t *st;
+} memory_step_buttons_action_ctx_t;
+
+static int
+memory_stepButtonsOnAction(void *user, e9ui_step_buttons_action_t action)
+{
+    memory_step_buttons_action_ctx_t *actionCtx = (memory_step_buttons_action_ctx_t*)user;
+    if (!actionCtx || !actionCtx->st) {
+        return 0;
+    }
+    int rows = 0;
+    switch (action) {
+    case e9ui_step_buttons_action_page_up:
+        rows = -32;
+        break;
+    case e9ui_step_buttons_action_line_up:
+        rows = -1;
+        break;
+    case e9ui_step_buttons_action_line_down:
+        rows = 1;
+        break;
+    case e9ui_step_buttons_action_page_down:
+        rows = 32;
+        break;
+    default:
+        break;
+    }
+    if (rows == 0) {
+        return 0;
+    }
+    memory_scrollRows(actionCtx->st, rows);
+    return 1;
+}
+
+static int
 memory_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
 {
     if (!self || !ctx || !ev) {
@@ -692,6 +815,51 @@ memory_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event
         return 0;
     }
 
+    if (ctx &&
+        (ev->type == SDL_MOUSEMOTION || ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP)) {
+        e9ui_rect_t sbBounds = memory_hscrollBounds(ctx, self);
+        int viewW = sbBounds.w;
+        if (viewW < 1) {
+            viewW = 1;
+        }
+        TTF_Font *font = e9ui->theme.text.source ? e9ui->theme.text.source : ctx->font;
+        int contentW = st->contentPixelWidth > 0 ? st->contentPixelWidth : memory_hscrollContentWidthEstimate(st, font);
+        if (contentW < 0) {
+            contentW = 0;
+        }
+        int scrollX = st->scrollX;
+        int scrollY = 0;
+        if (e9ui_scrollbar_handleEvent(self,
+                                       ctx,
+                                       ev,
+                                       sbBounds,
+                                       viewW,
+                                       1,
+                                       contentW,
+                                       1,
+                                       &scrollX,
+                                       &scrollY,
+                                       &st->hScrollbar)) {
+            st->scrollX = scrollX;
+            return 1;
+        }
+    }
+
+    if (ctx) {
+        memory_step_buttons_action_ctx_t actionCtx = { st };
+        int stepEnabled = machine_getRunning(debugger.machine) ? 0 : 1;
+        if (e9ui_step_buttons_handleEvent(ctx,
+                                          ev,
+                                          self->bounds,
+                                          0,
+                                          stepEnabled,
+                                          &st->stepButtons,
+                                          &actionCtx,
+                                          memory_stepButtonsOnAction)) {
+            return 1;
+        }
+    }
+
     if (ev->type == SDL_MOUSEWHEEL) {
         int mx = ctx->mouseX;
         int my = ctx->mouseY;
@@ -699,10 +867,26 @@ memory_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event
             my < self->bounds.y || my >= self->bounds.y + self->bounds.h) {
             return 0;
         }
-        if (ev->wheel.y != 0) {
-            memory_scrollRows(st, -ev->wheel.y * 3);
+        int wheelX = ev->wheel.x;
+        int wheelY = ev->wheel.y;
+        if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+            wheelX = -wheelX;
+            wheelY = -wheelY;
         }
-        return 1;
+        if (wheelX != 0) {
+            e9ui_rect_t sbBounds = memory_hscrollBounds(ctx, self);
+            int viewW = sbBounds.w > 0 ? sbBounds.w : 1;
+            int scrollY = 0;
+            st->scrollX -= wheelX * e9ui_scale_px(ctx, 24);
+            e9ui_scrollbar_clamp(viewW, 1, st->contentPixelWidth, 1, &st->scrollX, &scrollY);
+        }
+        if (wheelY != 0) {
+            memory_scrollRows(st, -wheelY * 3);
+        }
+        if (wheelX != 0 || wheelY != 0) {
+            return 1;
+        }
+        return 0;
     }
     if (ev->type == SDL_KEYDOWN && ctx && e9ui_getFocus(ctx) == self) {
         SDL_Keycode kc = ev->key.keysym.sym;
@@ -814,12 +998,64 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
     if (!st) {
         return;
     }
+    memory_step_buttons_action_ctx_t actionCtx = { st };
+    {
+        int stepEnabled = machine_getRunning(debugger.machine) ? 0 : 1;
+        e9ui_step_buttons_tick(ctx,
+                               self->bounds,
+                               0,
+                               stepEnabled,
+                               &st->stepButtons,
+                               &actionCtx,
+                               memory_stepButtonsOnAction);
+    }
     SDL_Rect r = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
     SDL_SetRenderDrawColor(ctx->renderer, 20, 22, 20, 255);
     SDL_RenderFillRect(ctx->renderer, &r);
     TTF_Font *font = e9ui->theme.text.source ? e9ui->theme.text.source : ctx->font;
     if (!font || !st->data) {
         return;
+    }
+    int stepEnabled = machine_getRunning(debugger.machine) ? 0 : 1;
+    int rightGutter = memory_stepButtonsGutterWidth(ctx, self);
+    if (rightGutter < 0) {
+        rightGutter = 0;
+    }
+    if (rightGutter > r.w) {
+        rightGutter = r.w;
+    }
+    SDL_bool hadClip = SDL_RenderIsClipEnabled(ctx->renderer);
+    SDL_Rect prevClip = {0};
+    if (hadClip) {
+        SDL_RenderGetClipRect(ctx->renderer, &prevClip);
+    }
+    SDL_Rect contentClip = r;
+    contentClip.w -= rightGutter;
+    if (contentClip.w < 0) {
+        contentClip.w = 0;
+    }
+    if (contentClip.w > 0 && contentClip.h > 0) {
+        if (hadClip) {
+            SDL_Rect clipped;
+            if (SDL_IntersectRect(&prevClip, &contentClip, &clipped)) {
+                SDL_RenderSetClipRect(ctx->renderer, &clipped);
+            } else {
+                SDL_RenderSetClipRect(ctx->renderer, &contentClip);
+            }
+        } else {
+            SDL_RenderSetClipRect(ctx->renderer, &contentClip);
+        }
+    } else {
+        SDL_RenderSetClipRect(ctx->renderer, NULL);
+    }
+    st->contentPixelWidth = memory_hscrollContentWidthEstimate(st, font);
+    if (st->contentPixelWidth < 0) {
+        st->contentPixelWidth = 0;
+    }
+    {
+        int scrollY = 0;
+        int viewW = contentClip.w > 0 ? contentClip.w : 1;
+        e9ui_scrollbar_clamp(viewW, 1, st->contentPixelWidth, 1, &st->scrollX, &scrollY);
     }
     int lh = TTF_FontHeight(font);
     if (lh <= 0) {
@@ -844,8 +1080,12 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
         int tw = 0, th = 0;
         SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, font, st->error, err, &tw, &th);
         if (t) {
-            SDL_Rect tr = { r.x + pad, y, tw, th };
+            int drawX = r.x + pad - st->scrollX;
+            SDL_Rect tr = { drawX, y, tw, th };
             SDL_RenderCopy(ctx->renderer, t, NULL, &tr);
+            if (tw + pad * 2 > st->contentPixelWidth) {
+                st->contentPixelWidth = tw + pad * 2;
+            }
         }
         y += lh;
     }
@@ -865,7 +1105,7 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
             line[n++] = (c >= 32 && c <= 126) ? (char)c : '.';
         }
         line[n] = '\0';
-        int baseX = r.x + pad;
+        int baseX = r.x + pad - st->scrollX;
         for (unsigned int i = 0; i < 16 && off + i < st->size; ++i) {
             unsigned int idx = off + i;
             if (!allMask[idx]) {
@@ -889,14 +1129,40 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
         int tw = 0, th = 0;
         SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, font, line, col, &tw, &th);
         if (t) {
-            SDL_Rect tr = { r.x + pad, y, tw, th };
+            SDL_Rect tr = { r.x + pad - st->scrollX, y, tw, th };
             SDL_RenderCopy(ctx->renderer, t, NULL, &tr);
+            if (tw + pad * 2 > st->contentPixelWidth) {
+                st->contentPixelWidth = tw + pad * 2;
+            }
         }
         y += lh;
         if (y > r.y + r.h - pad) {
             break;
         }
     }
+    if (hadClip) {
+        SDL_RenderSetClipRect(ctx->renderer, &prevClip);
+    } else {
+        SDL_RenderSetClipRect(ctx->renderer, NULL);
+    }
+    {
+        e9ui_rect_t sbBounds = memory_hscrollBounds(ctx, self);
+        int viewW = sbBounds.w > 0 ? sbBounds.w : 1;
+        e9ui_scrollbar_render(self,
+                              ctx,
+                              sbBounds,
+                              viewW,
+                              1,
+                              st->contentPixelWidth,
+                              1,
+                              st->scrollX,
+                              0);
+    }
+    e9ui_step_buttons_render(ctx,
+                             self->bounds,
+                             0,
+                             stepEnabled,
+                             &st->stepButtons);
 }
 
 static void
@@ -968,6 +1234,8 @@ memory_makeComponent(void)
     }
     e9ui_setDisableVariable(st->addressBox, machine_getRunningState(debugger.machine), 1);
     e9ui_setDisableVariable(st->searchBox, machine_getRunningState(debugger.machine), 1);
+    e9ui_textbox_setFocusBorderVisible(st->addressBox, 0);
+    e9ui_textbox_setFocusBorderVisible(st->searchBox, 0);
     e9ui_textbox_setKeyHandler(st->searchBox, memory_onSearchKey, st);
 
     e9ui_textbox_setPlaceholder(st->addressBox, "Base address (hex)");

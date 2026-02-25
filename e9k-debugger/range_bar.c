@@ -19,6 +19,7 @@ typedef struct range_bar_state {
     float endPercent;
     int dragging;
     int draggingHandle;
+    int hoverThumb;
     int marginTop;
     int marginBottom;
     int marginSide;
@@ -32,6 +33,20 @@ typedef struct range_bar_state {
     range_bar_tooltip_cb_t tooltipCb;
     void *tooltipUser;
 } range_bar_state_t;
+
+static SDL_Cursor *range_bar_cursorArrow = NULL;
+static SDL_Cursor *range_bar_cursorNs = NULL;
+
+static void
+range_bar_ensureCursors(void)
+{
+    if (!range_bar_cursorArrow) {
+        range_bar_cursorArrow = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);
+    }
+    if (!range_bar_cursorNs) {
+        range_bar_cursorNs = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_SIZENS);
+    }
+}
 
 enum
 {
@@ -158,11 +173,36 @@ range_bar_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_ev
         }
         st->dragging = 1;
         st->draggingHandle = range_bar_pickHandle(&self->bounds, st->startPercent, st->endPercent, my);
+        st->hoverThumb = 1;
+        range_bar_ensureCursors();
+        if (range_bar_cursorNs) {
+            e9ui_cursorCapture(ctx, self, range_bar_cursorNs);
+        }
         range_bar_emitDrag(st, 1);
         range_bar_updateFromY(st, &self->bounds, st->draggingHandle, my);
         return 1;
     }
     if (ev->type == SDL_MOUSEMOTION) {
+        int mx = ev->motion.x;
+        int my = ev->motion.y;
+        int inside = (mx >= self->bounds.x - grab && mx < self->bounds.x + self->bounds.w + grab &&
+                      my >= self->bounds.y - grab && my < self->bounds.y + self->bounds.h + grab);
+        range_bar_ensureCursors();
+        if (st->dragging) {
+            if (range_bar_cursorNs) {
+                e9ui_cursorCapture(ctx, self, range_bar_cursorNs);
+            }
+        } else if (inside) {
+            st->hoverThumb = 1;
+            if (range_bar_cursorNs) {
+                e9ui_cursorRequest(ctx, self, range_bar_cursorNs);
+            }
+        } else if (st->hoverThumb) {
+            st->hoverThumb = 0;
+            if (!ctx->cursorOverride && range_bar_cursorArrow) {
+                SDL_SetCursor(range_bar_cursorArrow);
+            }
+        }
         if (!st->dragging) {
             return 0;
         }
@@ -175,6 +215,7 @@ range_bar_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_ev
         }
         st->dragging = 0;
         st->draggingHandle = RANGE_BAR_HANDLE_NONE;
+        e9ui_cursorRelease(ctx, self);
         range_bar_emitDrag(st, 0);
         return 1;
     }

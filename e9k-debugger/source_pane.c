@@ -16,6 +16,8 @@
 #include <errno.h>
 
 #include "e9ui.h"
+#include "e9ui_scrollbar.h"
+#include "e9ui_step_buttons.h"
 #include "config.h"
 #include "debugger.h"
 #include "source.h"
@@ -28,6 +30,7 @@
 #include "libretro_host.h"
 #include "debug.h"
 #include "file.h"
+#include "strutil.h"
 #include "syntax_highlight.h"
 #include "syntax_highlight_asm.h"
 #include "print_eval.h"
@@ -61,6 +64,9 @@ typedef struct source_pane_state {
     int               gutterDownX;
     int               gutterDownY;
     source_pane_mode_t gutterMode;
+    e9ui_scrollbar_state_t cScrollbar;
+    int               cScrollX;
+    int               cContentPixelWidth;
     int               bucketSource;
     int               bucketAddr;
     char*             fileSelectMeta;
@@ -114,6 +120,7 @@ typedef struct source_pane_state {
     uint32_t          hoverPc;
     uint32_t          hoverTick;
     int               hoverActive;
+    e9ui_step_buttons_state_t asmStepButtons;
 } source_pane_state_t;
 
 typedef struct source_pane_line_metrics {
@@ -203,6 +210,180 @@ source_pane_searchTextboxKey(e9ui_context_t *ctx, SDL_Keycode key, SDL_Keymod mo
 static void
 source_pane_searchOpen(source_pane_state_t *st, e9ui_context_t *ctx);
 
+static void
+source_pane_adjustScroll(source_pane_state_t *st, source_pane_mode_t mode, int delta);
+
+static source_pane_line_metrics_t
+source_pane_computeLineMetrics(e9ui_component_t *self, TTF_Font *font, int padPx);
+
+static TTF_Font *
+source_pane_resolveFont(const e9ui_context_t *ctx);
+
+static int
+source_pane_getCScrollbarModel(e9ui_component_t *self,
+                               e9ui_context_t *ctx,
+                               source_pane_state_t *st,
+                               int *outTotalLines,
+                               int *outVisibleLines,
+                               int *outTopIndex)
+{
+    if (!self || !ctx || !st || !outTotalLines || !outVisibleLines || !outTopIndex) {
+        return 0;
+    }
+    if (st->viewMode != source_pane_mode_c) {
+        return 0;
+    }
+    TTF_Font *useFont = source_pane_resolveFont(ctx);
+    if (!useFont) {
+        return 0;
+    }
+    const int padPx = 10;
+
+    source_pane_updateSourceLocation(st, 0);
+
+    int manualView = st->manualSrcActive && st->manualSrcPath;
+    const char *path = manualView ? st->manualSrcPath : st->curSrcPath;
+    int curLine = manualView ? 0 : st->curSrcLine;
+    if (!path || !*path || (!manualView && curLine <= 0)) {
+        return 0;
+    }
+
+    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+    if (metrics.innerHeight <= 0) {
+        return 0;
+    }
+    int maxLines = metrics.maxLines;
+    if (maxLines <= 0) {
+        maxLines = 1;
+    }
+    int drawMaxLines = maxLines + 1;
+    int start = 1;
+    if (!manualView) {
+        start = curLine - (maxLines / 2);
+        if (start < 1) {
+            start = 1;
+        }
+    }
+    if (st->scrollLocked) {
+        start = st->scrollLine;
+        if (start < 1) {
+            start = 1;
+        }
+    }
+    int end = start + drawMaxLines - 1;
+
+    const char **lines = NULL;
+    int count = 0;
+    int first = 0;
+    int total = 0;
+    if (!source_getRange(path, start, end, &lines, &count, &first, &total)) {
+        return 0;
+    }
+    if (count < drawMaxLines && total > 0) {
+        int missing = drawMaxLines - count;
+        int altStart = first - missing;
+        if (altStart < 1) {
+            altStart = 1;
+        }
+        int altEnd = altStart + drawMaxLines - 1;
+        if (altEnd > total) {
+            altEnd = total;
+        }
+        (void)source_getRange(path, altStart, altEnd, &lines, &count, &first, &total);
+    }
+    (void)lines;
+
+    *outTotalLines = total > 0 ? total : count;
+    *outVisibleLines = maxLines;
+    *outTopIndex = first > 0 ? (first - 1) : 0;
+    return 1;
+}
+
+static int
+source_pane_overlayTopRowHeight(e9ui_component_t *self, e9ui_context_t *ctx, source_pane_state_t *st)
+{
+    int rowW = self ? self->bounds.w : 0;
+    int rowH = e9ui_scale_px(ctx, 30);
+    if (rowH < 1) {
+        rowH = 1;
+    }
+    if (st && st->toggleBtnMeta) {
+        e9ui_component_t *overlay = e9ui_child_find(self, st->toggleBtnMeta);
+        if (overlay && overlay->preferredHeight) {
+            int ph = overlay->preferredHeight(overlay, ctx, rowW);
+            if (ph > rowH) {
+                rowH = ph;
+            }
+        }
+    }
+    if (st && st->lockBtnMeta) {
+        e9ui_component_t *lockButton = e9ui_child_find(self, st->lockBtnMeta);
+        if (lockButton) {
+            int lockMeasureH = 0;
+            e9ui_button_measure(lockButton, ctx, NULL, &lockMeasureH);
+            if (lockMeasureH > rowH) {
+                rowH = lockMeasureH;
+            }
+        }
+    }
+    return rowH;
+}
+
+static int
+source_pane_stepButtonPageAmount(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    TTF_Font *useFont = source_pane_resolveFont(ctx);
+    int maxLines = 1;
+    if (useFont) {
+        source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, 10);
+        if (metrics.maxLines > 0) {
+            maxLines = metrics.maxLines;
+        }
+    }
+    if (maxLines <= 0) {
+        maxLines = 1;
+    }
+    return maxLines;
+}
+
+typedef struct source_pane_step_buttons_action_ctx {
+    e9ui_component_t *self;
+    e9ui_context_t *ctx;
+    source_pane_state_t *st;
+    source_pane_mode_t mode;
+} source_pane_step_buttons_action_ctx_t;
+
+static int
+source_pane_stepButtonsOnAction(void *user, e9ui_step_buttons_action_t action)
+{
+    source_pane_step_buttons_action_ctx_t *actionCtx = (source_pane_step_buttons_action_ctx_t*)user;
+    if (!actionCtx || !actionCtx->self || !actionCtx->ctx || !actionCtx->st) {
+        return 0;
+    }
+    int delta = 0;
+    switch (action) {
+    case e9ui_step_buttons_action_page_up:
+        delta = -source_pane_stepButtonPageAmount(actionCtx->self, actionCtx->ctx);
+        break;
+    case e9ui_step_buttons_action_line_up:
+        delta = -1;
+        break;
+    case e9ui_step_buttons_action_line_down:
+        delta = 1;
+        break;
+    case e9ui_step_buttons_action_page_down:
+        delta = source_pane_stepButtonPageAmount(actionCtx->self, actionCtx->ctx);
+        break;
+    default:
+        break;
+    }
+    if (delta == 0) {
+        return 0;
+    }
+    source_pane_adjustScroll(actionCtx->st, actionCtx->mode, delta);
+    return 1;
+}
+
 static const char *
 source_pane_basename(const char *path)
 {
@@ -240,8 +421,7 @@ source_pane_copyPath(char *out, size_t out_cap, const char *path)
     if (!path || !path[0]) {
         return;
     }
-    strncpy(out, path, out_cap - 1);
-    out[out_cap - 1] = '\0';
+    strutil_strlcpy(out, out_cap, path);
 }
 
 static int
@@ -278,15 +458,7 @@ source_pane_resolveSourcePath(const char *path, char *out, size_t out_cap)
         const char *base = source_pane_basename(path);
         if (base && base[0]) {
             char candidate[PATH_MAX];
-            size_t src_len = strlen(src);
-            int need_sep = 1;
-            if (src_len > 0) {
-                char c = src[src_len - 1];
-                if (c == '/' || c == '\\') {
-                    need_sep = 0;
-                }
-            }
-            snprintf(candidate, sizeof(candidate), "%s%s%s", src, need_sep ? "/" : "", base);
+            strutil_pathJoinTrunc(candidate, sizeof(candidate), src, base);
             if (source_pane_pathExistsFile(candidate)) {
                 source_pane_copyPath(out, out_cap, candidate);
                 return;
@@ -299,15 +471,7 @@ source_pane_resolveSourcePath(const char *path, char *out, size_t out_cap)
         source_pane_copyPath(out, out_cap, path);
         return;
     }
-    size_t src_len = strlen(src);
-    int need_sep = 1;
-    if (src_len > 0) {
-        char c = src[src_len - 1];
-        if (c == '/' || c == '\\') {
-            need_sep = 0;
-        }
-    }
-    snprintf(out, out_cap, "%s%s%s", src, need_sep ? "/" : "", path);
+    strutil_pathJoinTrunc(out, out_cap, src, path);
 }
 
 static int
@@ -2925,7 +3089,7 @@ source_pane_updateHoverTooltip(e9ui_component_t *self, e9ui_context_t *ctx, sour
     int th = 0;
     TTF_SizeText(useFont, zeros, &gutterW, &th);
     int gutterPad = e9ui_scale_px(ctx, 16);
-    int textX = self->bounds.x + padPx + gutterW + gutterPad;
+    int textX = self->bounds.x + padPx + gutterW + gutterPad - st->cScrollX;
     int relY = my - (self->bounds.y + padPx);
     if (relY < 0) {
         source_pane_clearHover(self, st);
@@ -3976,6 +4140,25 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
     TTF_Font *useFont = e9ui->theme.text.source ? e9ui->theme.text.source : ctx->font;
     SDL_Rect area = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
     source_pane_state_t *st = (source_pane_state_t*)self->state;
+    if (st) {
+        source_pane_mode_t stepMode = st->viewMode;
+        int stepEnabled = ((stepMode == source_pane_mode_a || stepMode == source_pane_mode_h) &&
+                           !machine_getRunning(debugger.machine)) ? 1 : 0;
+        source_pane_step_buttons_action_ctx_t actionCtx = {
+            self,
+            ctx,
+            st,
+            stepMode
+        };
+        int topInsetPx = source_pane_overlayTopRowHeight(self, ctx, st);
+        e9ui_step_buttons_tick(ctx,
+                               self->bounds,
+                               topInsetPx,
+                               stepEnabled,
+                               &st->asmStepButtons,
+                               &actionCtx,
+                               source_pane_stepButtonsOnAction);
+    }
     int padPx = 10;
     SDL_bool hadClip = SDL_FALSE;
     SDL_Rect prevClip = {0};
@@ -4123,6 +4306,14 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
     if (hitW < 0) {
         hitW = 0;
     }
+    if (st) {
+        int scrollY = 0;
+        int viewW = hitW > 0 ? hitW : 1;
+        e9ui_scrollbar_clamp(viewW, 1, st->cContentPixelWidth, 1, &st->cScrollX, &scrollY);
+        st->cContentPixelWidth = 0;
+    }
+    SDL_Rect textClip = { textX, area.y, hitW, area.h };
+    int textDrawX = textX - (st ? st->cScrollX : 0);
     const machine_breakpoint_t *bps = NULL;
     int bp_count = 0;
     if (machine_getBreakpoints(&debugger.machine, &bps, &bp_count)) {
@@ -4146,6 +4337,9 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
             SDL_RenderFillRect(ctx->renderer, &hl);
         }
         if (st && st->searchActive && st->searchMatchValid && lineNo == st->searchMatchLine) {
+            SDL_bool hadTextClip = SDL_FALSE;
+            SDL_Rect prevTextClip = {0};
+            source_pane_pushRenderClip(ctx, &textClip, &hadTextClip, &prevTextClip);
             int line_len = (int)strlen(ln);
             int start_col = st->searchMatchColumn;
             int match_len = st->searchMatchLength;
@@ -4162,12 +4356,13 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
                 match_len = line_len - start_col;
             }
             if (match_len > 0) {
-                int hx = textX + source_pane_measureSegment(useFont, ln, 0, start_col);
+                int hx = textDrawX + source_pane_measureSegment(useFont, ln, 0, start_col);
                 int hw = source_pane_measureSegment(useFont, ln, start_col, match_len);
                 SDL_SetRenderDrawColor(ctx->renderer, 186, 152, 62, 196);
                 SDL_Rect mhl = { hx, y - 1, hw, lineHeight + 2 };
                 SDL_RenderFillRect(ctx->renderer, &mhl);
             }
+            source_pane_popRenderClip(ctx, hadTextClip, &prevTextClip);
         }
         // Line number (right-aligned in gutter)
         char numbuf[16];
@@ -4190,9 +4385,19 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
                 SDL_RenderCopy(ctx->renderer, nt, NULL, &nr);
             }
         }
+        if (st) {
+            int linePixelW = source_pane_measureSegment(useFont, ln, 0, (int)strlen(ln));
+            if (linePixelW > st->cContentPixelWidth) {
+                st->cContentPixelWidth = linePixelW;
+            }
+        }
         void *sourceBucket = st ? (void*)&st->bucketSource : (void*)self;
+        SDL_bool hadTextClip = SDL_FALSE;
+        SDL_Rect prevTextClip = {0};
+        source_pane_pushRenderClip(ctx, &textClip, &hadTextClip, &prevTextClip);
         source_pane_renderHighlightedLine(ctx, self, useFont, path, lineNo, ln, txt,
-                                          textX, y, lineHeight, hitW, sourceBucket);
+                                          textDrawX, y, lineHeight, hitW, sourceBucket);
+        source_pane_popRenderClip(ctx, hadTextClip, &prevTextClip);
         y += lineHeight;
         if (y > clipBottom) {
             break;
@@ -4200,6 +4405,21 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
     }
     if (st && st->hoverActive) {
         source_pane_updateHoverTooltip(self, ctx, st, NULL);
+    }
+    if (st && total > 0) {
+        int topIndex = first > 0 ? (first - 1) : 0;
+        int scrollY = 0;
+        int viewW = hitW > 0 ? hitW : 1;
+        e9ui_scrollbar_clamp(viewW, 1, st->cContentPixelWidth, 1, &st->cScrollX, &scrollY);
+        e9ui_scrollbar_render(self,
+                              ctx,
+                              self->bounds,
+                              viewW,
+                              maxLines,
+                              st->cContentPixelWidth,
+                              total,
+                              st->cScrollX,
+                              topIndex);
     }
 
  done:
@@ -4373,6 +4593,15 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
               searchBox->render(searchBox, ctx);
           }
       }
+      if (st && (mode == source_pane_mode_a || mode == source_pane_mode_h) &&
+          !machine_getRunning(debugger.machine)) {
+          int topInsetPx = source_pane_overlayTopRowHeight(self, ctx, st);
+          e9ui_step_buttons_render(ctx,
+                                   self->bounds,
+                                   topInsetPx,
+                                   1,
+                                   &st->asmStepButtons);
+      }
     }
     source_pane_popRenderClip(ctx, hadClip, &prevClip);
 }
@@ -4427,6 +4656,82 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
                     return 0;
                 }
             }
+        }
+    }
+    if (st && mode == source_pane_mode_c && ctx &&
+        (ev->type == SDL_MOUSEMOTION || ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP)) {
+        int totalLines = 0;
+        int visibleLines = 0;
+        int topIndex = 0;
+        int scrollX = st->cScrollX;
+        if (source_pane_getCScrollbarModel(self, ctx, st, &totalLines, &visibleLines, &topIndex)) {
+            TTF_Font *useFont = source_pane_resolveFont(ctx);
+            int viewW = 1;
+            if (useFont) {
+                const int padPx = 10;
+                source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+                (void)metrics;
+                int digits = 3;
+                int tmp_total = totalLines > 0 ? totalLines : 1;
+                for (int v = tmp_total; v >= 10; v /= 10) {
+                    digits++;
+                }
+                char zeros[16];
+                if (digits >= (int)sizeof(zeros)) {
+                    digits = (int)sizeof(zeros) - 1;
+                }
+                for (int i = 0; i < digits; ++i) {
+                    zeros[i] = '8';
+                }
+                zeros[digits] = '\0';
+                int gutterW = 0;
+                int th = 0;
+                TTF_SizeText(useFont, zeros, &gutterW, &th);
+                int gutterPad = e9ui_scale_px(ctx, 16);
+                int textX = self->bounds.x + padPx + gutterW + gutterPad;
+                viewW = self->bounds.x + self->bounds.w - textX - padPx;
+                if (viewW < 1) {
+                    viewW = 1;
+                }
+            }
+            if (e9ui_scrollbar_handleEvent(self,
+                                           ctx,
+                                           ev,
+                                           self->bounds,
+                                           viewW,
+                                           visibleLines,
+                                           st->cContentPixelWidth,
+                                           totalLines,
+                                           &scrollX,
+                                           &topIndex,
+                                           &st->cScrollbar)) {
+                st->cScrollX = scrollX;
+                st->scrollLine = topIndex + 1;
+                st->scrollLocked = 1;
+                st->gutterPending = 0;
+                source_pane_syncLockButtonVisual(st);
+                return 1;
+            }
+        }
+    }
+    if (st && ctx && (mode == source_pane_mode_a || mode == source_pane_mode_h)) {
+        source_pane_step_buttons_action_ctx_t actionCtx = {
+            self,
+            ctx,
+            st,
+            mode
+        };
+        int topInsetPx = source_pane_overlayTopRowHeight(self, ctx, st);
+        int stepEnabled = !machine_getRunning(debugger.machine) ? 1 : 0;
+        if (e9ui_step_buttons_handleEvent(ctx,
+                                          ev,
+                                          self->bounds,
+                                          topInsetPx,
+                                          stepEnabled,
+                                          &st->asmStepButtons,
+                                          &actionCtx,
+                                          source_pane_stepButtonsOnAction)) {
+            return 1;
         }
     }
     if (ev->type == SDL_MOUSEMOTION) {
@@ -4526,16 +4831,59 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
         int mx = e9ui->mouseX;
         int my = e9ui->mouseY;
         if (source_pane_pointInBounds(self, mx, my)) {
+            int wheelX = ev->wheel.x;
             int wheelY = ev->wheel.y;
             if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+                wheelX = -wheelX;
                 wheelY = -wheelY;
+            }
+            if (mode == source_pane_mode_c && wheelX != 0 && ctx) {
+                TTF_Font *useFont = source_pane_resolveFont(ctx);
+                if (useFont) {
+                    const int padPx = 10;
+                    int totalLines = 0;
+                    int visibleLines = 0;
+                    int topIndex = 0;
+                    if (source_pane_getCScrollbarModel(self, ctx, st, &totalLines, &visibleLines, &topIndex)) {
+                        int digits = 3;
+                        int tmp_total = totalLines > 0 ? totalLines : 1;
+                        for (int v = tmp_total; v >= 10; v /= 10) {
+                            digits++;
+                        }
+                        char zeros[16];
+                        if (digits >= (int)sizeof(zeros)) {
+                            digits = (int)sizeof(zeros) - 1;
+                        }
+                        for (int i = 0; i < digits; ++i) {
+                            zeros[i] = '8';
+                        }
+                        zeros[digits] = '\0';
+                        int gutterW = 0;
+                        int th = 0;
+                        TTF_SizeText(useFont, zeros, &gutterW, &th);
+                        int gutterPad = e9ui_scale_px(ctx, 16);
+                        int textX = self->bounds.x + padPx + gutterW + gutterPad;
+                        int viewW = self->bounds.x + self->bounds.w - textX - padPx;
+                        if (viewW < 1) {
+                            viewW = 1;
+                        }
+                        st->cScrollX -= wheelX * e9ui_scale_px(ctx, 24);
+                        {
+                            int scrollY = 0;
+                            e9ui_scrollbar_clamp(viewW, 1, st->cContentPixelWidth, 1, &st->cScrollX, &scrollY);
+                        }
+                    }
+                }
             }
             if (wheelY != 0) {
                 const int linesPerTick = 1;
                 int delta = wheelY * linesPerTick;
                 source_pane_adjustScroll(st, mode, delta);
             }
-            return 1;
+            if (wheelX != 0 || wheelY != 0) {
+                return 1;
+            }
+            return 0;
         }
     }
     if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT) {
@@ -5079,6 +5427,7 @@ source_pane_make(void)
 
   e9ui_component_t *modeSelect = e9ui_textbox_make(16, NULL, NULL, NULL);
   if (modeSelect) {
+      e9ui_textbox_setFocusBorderVisible(modeSelect, 0);
       e9ui_textbox_setReadOnly(modeSelect, 1);
       e9ui_textbox_setOptions(modeSelect, modeOptions, (int)(sizeof(modeOptions) / sizeof(modeOptions[0])));
       e9ui_textbox_setOnOptionSelected(modeSelect, source_pane_modeSelectChanged, c);
@@ -5097,6 +5446,7 @@ source_pane_make(void)
 
   e9ui_component_t *fileSelect = e9ui_textbox_make(512, NULL, NULL, NULL);
   if (fileSelect) {
+      e9ui_textbox_setFocusBorderVisible(fileSelect, 0);
       e9ui_textbox_setPlaceholder(fileSelect, "source file");
       e9ui_textbox_setOnOptionSelected(fileSelect, source_pane_sourceSelectChanged, st);
       st->fileSelectMeta = alloc_strdup("source_select");
@@ -5104,6 +5454,7 @@ source_pane_make(void)
   }
   e9ui_component_t *functionSelect = e9ui_textbox_make(1024, NULL, NULL, NULL);
   if (functionSelect) {
+      e9ui_textbox_setFocusBorderVisible(functionSelect, 0);
       e9ui_textbox_setPlaceholder(functionSelect, "function");
       e9ui_textbox_setOnOptionSelected(functionSelect, source_pane_functionSelectChanged, st);
       st->functionSelectMeta = alloc_strdup("function_select");
@@ -5111,6 +5462,7 @@ source_pane_make(void)
   }
   e9ui_component_t *searchBox = e9ui_textbox_make(512, NULL, source_pane_searchTextChanged, st);
   if (searchBox) {
+      e9ui_textbox_setFocusBorderVisible(searchBox, 0);
       e9ui_textbox_setPlaceholder(searchBox, "search");
       e9ui_textbox_setKeyHandler(searchBox, source_pane_searchTextboxKey, st);
       st->searchBoxMeta = alloc_strdup("search_box");
@@ -5119,6 +5471,7 @@ source_pane_make(void)
   }
   e9ui_component_t *asmSymbolSelect = e9ui_textbox_make(1024, NULL, NULL, NULL);
   if (asmSymbolSelect) {
+      e9ui_textbox_setFocusBorderVisible(asmSymbolSelect, 0);
       e9ui_textbox_setPlaceholder(asmSymbolSelect, "symbol");
       e9ui_textbox_setOnOptionSelected(asmSymbolSelect, source_pane_asmSymbolSelectChanged, st);
       st->asmSymbolSelectMeta = alloc_strdup("asm_symbol_select");
@@ -5126,6 +5479,7 @@ source_pane_make(void)
   }
   e9ui_component_t *asmAddress = e9ui_textbox_make(32, source_pane_asmAddressSubmitted, NULL, st);
   if (asmAddress) {
+      e9ui_textbox_setFocusBorderVisible(asmAddress, 0);
       e9ui_textbox_setPlaceholder(asmAddress, "address");
       st->asmAddressMeta = alloc_strdup("asm_address");
       e9ui_child_add(c, asmAddress, st->asmAddressMeta);

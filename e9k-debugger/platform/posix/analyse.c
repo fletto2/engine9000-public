@@ -23,6 +23,7 @@
 #include "debugger.h"
 #include "base_map.h"
 #include "file.h"
+#include "strutil.h"
 
 #define ANALYSE_MAP_INITIAL_CAP 1024
 
@@ -748,7 +749,7 @@ analyse_readSourceLine(const char *srcBase, const char *filePath, int lineNo)
         const char *slash = strrchr(filePath, '/');
         const char *base = slash ? slash + 1 : filePath;
         if (base && *base) {
-            snprintf(path, sizeof(path), "%s/%s", srcBase, base);
+            strutil_pathJoinTrunc(path, sizeof(path), srcBase, base);
             f = fopen(path, "r");
         }
     }
@@ -847,8 +848,7 @@ analyse_populateSampleLocations(analyse_profile_sample_entry *entries, size_t co
         for (size_t i = 0; i < count; ++i) {
             analyse_location_entry *cache = analyse_locationLookup(entries[i].pc);
             if (cache && cache->text[0]) {
-                strncpy(entries[i].location, cache->text, ANALYSE_LOCATION_TEXT_CAP - 1);
-                entries[i].location[ANALYSE_LOCATION_TEXT_CAP - 1] = '\0';
+                strutil_strlcpy(entries[i].location, ANALYSE_LOCATION_TEXT_CAP, cache->text);
                 continue;
             }
             int alreadyQueued = 0;
@@ -870,8 +870,7 @@ analyse_populateSampleLocations(analyse_profile_sample_entry *entries, size_t co
     for (size_t i = 0; i < count; ++i) {
         analyse_location_entry *cache = analyse_locationLookup(entries[i].pc);
         if (cache && cache->text[0]) {
-            strncpy(entries[i].location, cache->text, ANALYSE_LOCATION_TEXT_CAP - 1);
-            entries[i].location[ANALYSE_LOCATION_TEXT_CAP - 1] = '\0';
+            strutil_strlcpy(entries[i].location, ANALYSE_LOCATION_TEXT_CAP, cache->text);
         } else {
             snprintf(entries[i].location, ANALYSE_LOCATION_TEXT_CAP, "PC: 0x%06X", entries[i].pc);
         }

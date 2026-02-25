@@ -20,6 +20,7 @@
 typedef struct e9ui_seek_bar_state {
     float percent;
     int dragging;
+    int hoverThumb;
     int margin_left;
     int margin_right;
     int margin_bottom;
@@ -36,6 +37,20 @@ typedef struct e9ui_seek_bar_state {
     e9ui_seek_bar_tooltip_cb_t tooltip_cb;
     void *tooltip_user;
 } e9ui_seek_bar_state_t;
+
+static SDL_Cursor *e9ui_seek_bar_cursorArrow = NULL;
+static SDL_Cursor *e9ui_seek_bar_cursorEw = NULL;
+
+static void
+e9ui_seek_bar_ensureCursors(void)
+{
+    if (!e9ui_seek_bar_cursorArrow) {
+        e9ui_seek_bar_cursorArrow = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);
+    }
+    if (!e9ui_seek_bar_cursorEw) {
+        e9ui_seek_bar_cursorEw = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_SIZEWE);
+    }
+}
 
 static void
 e9ui_seek_bar_updateFromX(e9ui_seek_bar_state_t *st, int x, const e9ui_rect_t *bounds)
@@ -113,6 +128,33 @@ e9ui_seek_bar_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9u
         }
     }
 
+    if (ev->type == SDL_MOUSEMOTION) {
+        int mx = ev->motion.x;
+        int my = ev->motion.y;
+        int grab = e9ui_scale_px(ctx, 6);
+        if (grab < 0) {
+            grab = 0;
+        }
+        int over = (mx >= self->bounds.x - grab && mx < self->bounds.x + self->bounds.w + grab &&
+                    my >= self->bounds.y - grab && my < self->bounds.y + self->bounds.h + grab);
+        e9ui_seek_bar_ensureCursors();
+        if (st->dragging) {
+            if (e9ui_seek_bar_cursorEw) {
+                e9ui_cursorCapture(ctx, self, e9ui_seek_bar_cursorEw);
+            }
+        } else if (over) {
+            if (e9ui_seek_bar_cursorEw) {
+                e9ui_cursorRequest(ctx, self, e9ui_seek_bar_cursorEw);
+            }
+            st->hoverThumb = 1;
+        } else if (st->hoverThumb) {
+            st->hoverThumb = 0;
+            if (!ctx->cursorOverride && e9ui_seek_bar_cursorArrow) {
+                SDL_SetCursor(e9ui_seek_bar_cursorArrow);
+            }
+        }
+    }
+
     if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT) {
         int mx = ev->button.x;
         int my = ev->button.y;
@@ -123,6 +165,11 @@ e9ui_seek_bar_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9u
         if (mx >= self->bounds.x - grab && mx < self->bounds.x + self->bounds.w + grab &&
             my >= self->bounds.y - grab && my < self->bounds.y + self->bounds.h + grab) {
             st->dragging = 1;
+            st->hoverThumb = 1;
+            e9ui_seek_bar_ensureCursors();
+            if (e9ui_seek_bar_cursorEw) {
+                e9ui_cursorCapture(ctx, self, e9ui_seek_bar_cursorEw);
+            }
             if (st->drag_cb) {
                 st->drag_cb(1, st->percent, st->drag_user);
             }
@@ -133,6 +180,7 @@ e9ui_seek_bar_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9u
     if (ev->type == SDL_MOUSEBUTTONUP && ev->button.button == SDL_BUTTON_LEFT) {
         if (st->dragging) {
             st->dragging = 0;
+            e9ui_cursorRelease(ctx, self);
             if (st->drag_cb) {
                 st->drag_cb(0, st->percent, st->drag_user);
             }

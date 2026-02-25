@@ -12,6 +12,7 @@
 #include "system_badge.h"
 #include "alloc.h"
 #include "file.h"
+#include "strutil.h"
 
 static const char *
 target_amiga_defaultCorePath(void);
@@ -185,7 +186,7 @@ target_amiga_setConfigDefaults(e9k_system_config_t *config)
     }
     snprintf(config->amiga.libretro.systemDir, sizeof(config->amiga.libretro.systemDir), "./system");
     snprintf(config->amiga.libretro.saveDir, sizeof(config->amiga.libretro.saveDir), "./saves");
-    snprintf(config->amiga.libretro.sourceDir, sizeof(config->amiga.libretro.sourceDir), ".");
+    config->amiga.libretro.sourceDir[0] = '\0';
     snprintf(config->amiga.libretro.toolchainPrefix, sizeof(config->amiga.libretro.toolchainPrefix), "m68k-amigaos-");
     config->amiga.libretro.audioBufferMs = 250;
     config->amiga.libretro.exePath[0] = '\0';
@@ -216,25 +217,29 @@ static const char target_amiga_toolchainPrefixGcc[] = "m68k-amigaos-";
 static void
 target_amiga_toolchainPresetSync(target_amiga_toolchain_preset_state_t *st, e9ui_context_t *ctx, const char *prefix);
 
-
-
 static void
 target_amiga_applyActiveSettingsToCurrentSystem(void)
 {
-    strncpy(debugger.config.amiga.libretro.exePath, rom_config_activeElfPath, sizeof(debugger.config.amiga.libretro.exePath) - 1);
-    strncpy(debugger.config.amiga.libretro.sourceDir, rom_config_activeSourceDir, sizeof(debugger.config.amiga.libretro.sourceDir) - 1);
-    strncpy(debugger.config.amiga.libretro.toolchainPrefix, rom_config_activeToolchainPrefix, sizeof(debugger.config.amiga.libretro.toolchainPrefix) - 1);
-    debugger.config.amiga.libretro.exePath[sizeof(debugger.config.amiga.libretro.exePath) - 1] = '\0';
-    debugger.config.amiga.libretro.sourceDir[sizeof(debugger.config.amiga.libretro.sourceDir) - 1] = '\0';
-    debugger.config.amiga.libretro.toolchainPrefix[sizeof(debugger.config.amiga.libretro.toolchainPrefix) - 1] = '\0';
+    strutil_strlcpy(debugger.config.amiga.libretro.exePath,
+                      sizeof(debugger.config.amiga.libretro.exePath),
+                      rom_config_activeElfPath);
+    strutil_strlcpy(debugger.config.amiga.libretro.sourceDir,
+                      sizeof(debugger.config.amiga.libretro.sourceDir),
+                      rom_config_activeSourceDir);
+    strutil_strlcpy(debugger.config.amiga.libretro.toolchainPrefix,
+                      sizeof(debugger.config.amiga.libretro.toolchainPrefix),
+                      rom_config_activeToolchainPrefix);
 }
 
 static void
 target_amiga_setActiveDefaultsFromCurrentSystem(void)
 {
-    strncpy(rom_config_activeElfPath, debugger.config.amiga.libretro.exePath, sizeof(rom_config_activeElfPath) - 1);
-    strncpy(rom_config_activeSourceDir, debugger.config.amiga.libretro.sourceDir, sizeof(rom_config_activeSourceDir) - 1);
-    strncpy(rom_config_activeToolchainPrefix, debugger.config.amiga.libretro.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
+    strutil_strlcpy(rom_config_activeElfPath, sizeof(rom_config_activeElfPath),
+                      debugger.config.amiga.libretro.exePath);
+    strutil_strlcpy(rom_config_activeSourceDir, sizeof(rom_config_activeSourceDir),
+                      debugger.config.amiga.libretro.sourceDir);
+    strutil_strlcpy(rom_config_activeToolchainPrefix, sizeof(rom_config_activeToolchainPrefix),
+                      debugger.config.amiga.libretro.toolchainPrefix);
 }
 
 static int
@@ -995,6 +1000,7 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
         e9ui_fileSelect_setOnChange(fsSaves, settings_pathChanged, debugger.settingsEdit.amiga.libretro.saveDir);
     }
     if (fsSource) {
+        e9ui_fileSelect_setAllowEmpty(fsSource, 1);
         e9ui_fileSelect_setText(fsSource, debugger.settingsEdit.amiga.libretro.sourceDir);
         e9ui_fileSelect_setOnChange(fsSource, settings_pathChanged, debugger.settingsEdit.amiga.libretro.sourceDir);
     }

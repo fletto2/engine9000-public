@@ -21,6 +21,7 @@
 #include "debug.h"
 #include "debugger.h"
 #include "file.h"
+#include "strutil.h"
 
 typedef struct hunk_fileline_cache_entry {
     char *path;
@@ -84,14 +85,10 @@ hunk_fileline_cache_resolveSourcePath(const char *input, char *out, size_t outCa
     if (!input || !input[0]) {
         return;
     }
-    if (hunk_fileline_cache_isAbsolutePath(input)) {
-        snprintf(out, outCap, "%s", input);
-        return;
-    }
-    if (debugger.libretro.sourceDir[0]) {
-        snprintf(out, outCap, "%s/%s", debugger.libretro.sourceDir, input);
+    if (!hunk_fileline_cache_isAbsolutePath(input) && debugger.libretro.sourceDir[0]) {
+        strutil_pathJoinTrunc(out, outCap, debugger.libretro.sourceDir, input);
     } else {
-        snprintf(out, outCap, "%s", input);
+        strutil_strlcpy(out, outCap, input);
     }
 }
 

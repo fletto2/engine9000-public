@@ -26,6 +26,7 @@
 #include "debugger.h"
 #include "tinyfiledialogs.h"
 #include "ui_test.h"
+#include "strutil.h"
 
 static const char debugger_testConfigName[] = ".e9k-debugger.cfg";
 static const char debugger_testTempConfigPrefix[] = "e9k-debugger-test-";
@@ -256,7 +257,7 @@ debugger_platform_getExeDir(char *out, size_t cap)
             } else {
                 char cwd[PATH_MAX];
                 if (getcwd(cwd, sizeof(cwd))) {
-                    snprintf(path, sizeof(path), "%s/%s", cwd, debugger.argv0);
+                    strutil_pathJoinTrunc(path, sizeof(path), cwd, debugger.argv0);
                     fullPath = path;
                 }
             }

@@ -10,7 +10,10 @@
 
 typedef struct e9ui_box_state {
     e9ui_component_t *child;
-    int                 pad;
+    int                 padLeft;
+    int                 padTop;
+    int                 padRight;
+    int                 padBottom;
     e9ui_dim_mode_t   wMode;
     int                 wPx;
     e9ui_dim_mode_t   hMode;
@@ -35,6 +38,12 @@ typedef struct e9ui_box_state {
     int                 fullscreenIconH;
     int                 fullscreenHover;
 } e9ui_box_state_t;
+
+static int
+e9ui_box_clampPadding(int padPx)
+{
+    return (padPx >= 0) ? padPx : 0;
+}
 
 static SDL_Cursor *s_cursor_hand = NULL;
 static SDL_Cursor *s_cursor_arrow = NULL;
@@ -304,24 +313,27 @@ static int
 e9ui_box_preferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
 {
     e9ui_box_state_t *st = (e9ui_box_state_t*)self->state;
-    int pad = e9ui_scale_px(ctx, st->pad);
+    int padLeft = e9ui_scale_px(ctx, st->padLeft);
+    int padTop = e9ui_scale_px(ctx, st->padTop);
+    int padRight = e9ui_scale_px(ctx, st->padRight);
+    int padBottom = e9ui_scale_px(ctx, st->padBottom);
     if (st->hMode == e9ui_dim_fixed) {
         int hPx = e9ui_scale_px(ctx, st->hPx);
-        return hPx + pad*2;
+        return hPx + padTop + padBottom;
     }
     int titleH = e9ui_box_titlebarHeight(st, ctx);
     if (st->collapsed && titleH > 0) {
-        return pad*2 + titleH;
+        return padTop + padBottom + titleH;
     }
     int childH = 0;
     if (st->child && st->child->preferredHeight) {
-        int innerW = (availW - pad*2);
+        int innerW = availW - padLeft - padRight;
         if (innerW < 0) {
             innerW = 0;
         }
         childH = st->child->preferredHeight(st->child, ctx, innerW);
     }
-    return pad*2 + titleH + childH;
+    return padTop + padBottom + titleH + childH;
 }
 
 static void
@@ -335,18 +347,21 @@ e9ui_box_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
     if (!st->child || !st->child->layout) {
         return;
     }
-    int pad = e9ui_scale_px(ctx, st->pad);
+    int padLeft = e9ui_scale_px(ctx, st->padLeft);
+    int padTop = e9ui_scale_px(ctx, st->padTop);
+    int padRight = e9ui_scale_px(ctx, st->padRight);
+    int padBottom = e9ui_scale_px(ctx, st->padBottom);
     int titleH = e9ui_box_titlebarHeight(st, ctx);
     if (e9ui_isFullscreenComponent(self)) {
         titleH = 0;
     }
-    int innerX = bounds.x + pad;
-    int innerY = bounds.y + pad + titleH;
-    int innerW = bounds.w - pad*2;
+    int innerX = bounds.x + padLeft;
+    int innerY = bounds.y + padTop + titleH;
+    int innerW = bounds.w - padLeft - padRight;
     if (innerW < 0) {
         innerW = 0;
     }
-    int innerH = bounds.h - pad*2 - titleH;
+    int innerH = bounds.h - padTop - padBottom - titleH;
     if (innerH < 0) {
         innerH = 0;
     }
@@ -475,8 +490,9 @@ e9ui_box_titlebarClick(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_m
     if (!st->collapseEnabled) {
         return;
     }
-    int pad = e9ui_scale_px(ctx, st->pad);
-    int collapsedH = pad*2 + titleH;
+    int padTop = e9ui_scale_px(ctx, st->padTop);
+    int padBottom = e9ui_scale_px(ctx, st->padBottom);
+    int collapsedH = padTop + padBottom + titleH;
     if (collapsedH < 0) {
         collapsedH = 0;
     }
@@ -594,7 +610,10 @@ e9ui_box_make(e9ui_component_t *child)
     e9ui_box_state_t *st = (e9ui_box_state_t*)alloc_calloc(1, sizeof(*st));
     st->child = child;
     e9ui_child_add(c, child, 0);
-    st->pad = 0;
+    st->padLeft = 0;
+    st->padTop = 0;
+    st->padRight = 0;
+    st->padBottom = 0;
     st->wMode = e9ui_dim_grow; st->wPx = 0;
     st->hMode = e9ui_dim_grow; st->hPx = 0; st->vAlign = e9ui_valign_start;
     st->borderMask = 0; st->borderColor = (SDL_Color){80,80,80,255}; st->borderThick = 1;
@@ -637,8 +656,9 @@ e9ui_box_persistLoad(e9ui_component_t *self, e9ui_context_t *ctx, const char *ke
         if (collapsed) {
             self->collapsed = 1;
             int titleH = e9ui_box_titlebarHeight(st, ctx);
-            int pad = e9ui_scale_px(ctx, st->pad);
-            int collapsedH = pad*2 + titleH;
+            int padTop = e9ui_scale_px(ctx, st->padTop);
+            int padBottom = e9ui_scale_px(ctx, st->padBottom);
+            int collapsedH = padTop + padBottom + titleH;
             if (collapsedH < 0) {
                 collapsedH = 0;
             }
@@ -661,8 +681,52 @@ e9ui_box_persistLoad(e9ui_component_t *self, e9ui_context_t *ctx, const char *ke
 void
 e9ui_box_setPadding(e9ui_component_t *box, int pad_px)
 {
+    if (!box || !box->state) {
+        return;
+    }
     e9ui_box_state_t *st = (e9ui_box_state_t*)box->state;
-    st->pad = (pad_px >= 0) ? pad_px : 0;
+    int pad = e9ui_box_clampPadding(pad_px);
+    st->padLeft = pad;
+    st->padTop = pad;
+    st->padRight = pad;
+    st->padBottom = pad;
+}
+
+void
+e9ui_box_setPaddingX(e9ui_component_t *box, int pad_px)
+{
+    if (!box || !box->state) {
+        return;
+    }
+    e9ui_box_state_t *st = (e9ui_box_state_t*)box->state;
+    int pad = e9ui_box_clampPadding(pad_px);
+    st->padLeft = pad;
+    st->padRight = pad;
+}
+
+void
+e9ui_box_setPaddingY(e9ui_component_t *box, int pad_px)
+{
+    if (!box || !box->state) {
+        return;
+    }
+    e9ui_box_state_t *st = (e9ui_box_state_t*)box->state;
+    int pad = e9ui_box_clampPadding(pad_px);
+    st->padTop = pad;
+    st->padBottom = pad;
+}
+
+void
+e9ui_box_setPaddingSides(e9ui_component_t *box, int left_px, int top_px, int right_px, int bottom_px)
+{
+    if (!box || !box->state) {
+        return;
+    }
+    e9ui_box_state_t *st = (e9ui_box_state_t*)box->state;
+    st->padLeft = e9ui_box_clampPadding(left_px);
+    st->padTop = e9ui_box_clampPadding(top_px);
+    st->padRight = e9ui_box_clampPadding(right_px);
+    st->padBottom = e9ui_box_clampPadding(bottom_px);
 }
 
 void

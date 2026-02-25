@@ -19,6 +19,7 @@
 #include "debug.h"
 #include "debugger.h"
 #include "e9ui.h"
+#include "e9ui_scrollbar.h"
 #include "libretro_host.h"
 #include "amiga_custom_regs.h"
 #include "ui.h"
@@ -78,6 +79,13 @@ typedef struct custom_log_row_hit {
     uint8_t sourceIsCopper;
 } custom_log_row_hit_t;
 
+typedef struct custom_log_scroll_model {
+    int visibleRows;
+    int filteredCount;
+    int topFilteredRow;
+    int topRawRow;
+} custom_log_scroll_model_t;
+
 struct custom_log_state {
     int open;
     int closeRequested;
@@ -106,6 +114,7 @@ struct custom_log_state {
     custom_log_row_hit_t *rowHits;
     size_t rowHitCount;
     size_t rowHitCap;
+    e9ui_scrollbar_state_t scrollbar;
 };
 
 static custom_log_state_t custom_log_state = {0};
@@ -121,6 +130,9 @@ custom_log_makeOverlayBodyHost(custom_log_state_t *ui);
 
 static void
 custom_log_overlayWindowCloseRequested(e9ui_window_t *window, void *user);
+
+static int
+custom_log_entryMatchesFilters(const custom_log_state_t *ui, const e9k_debug_ami_custom_log_entry_t *entry);
 
 static int
 custom_log_parseInt(const char *value, int *out)
@@ -267,6 +279,161 @@ custom_log_computeVisibleRows(const custom_log_state_t *ui)
     return rows;
 }
 
+static int
+custom_log_hasActiveFilters(const custom_log_state_t *ui)
+{
+    if (!ui) {
+        return 0;
+    }
+    for (int i = 0; i < CUSTOM_LOG_FILTER_COUNT; ++i) {
+        if (ui->filters[i][0] != '\0') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+custom_log_filteredCount(const custom_log_state_t *ui)
+{
+    if (!ui || ui->entryCount == 0) {
+        return 0;
+    }
+    if (!custom_log_hasActiveFilters(ui)) {
+        if (ui->entryCount > (size_t)INT_MAX) {
+            return INT_MAX;
+        }
+        return (int)ui->entryCount;
+    }
+    int count = 0;
+    for (size_t i = 0; i < ui->entryCount; ++i) {
+        if (custom_log_entryMatchesFilters(ui, &ui->entries[i])) {
+            if (count < INT_MAX) {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+static int
+custom_log_rawRowForFilteredIndex(const custom_log_state_t *ui, int filteredIndex)
+{
+    if (!ui || ui->entryCount == 0) {
+        return 0;
+    }
+    if (filteredIndex < 0) {
+        filteredIndex = 0;
+    }
+    if (!custom_log_hasActiveFilters(ui)) {
+        int maxIndex = (ui->entryCount > 0) ? (int)(ui->entryCount - 1) : 0;
+        if (filteredIndex > maxIndex) {
+            filteredIndex = maxIndex;
+        }
+        return filteredIndex;
+    }
+    int matchIndex = 0;
+    int lastMatch = -1;
+    for (size_t i = 0; i < ui->entryCount; ++i) {
+        if (!custom_log_entryMatchesFilters(ui, &ui->entries[i])) {
+            continue;
+        }
+        lastMatch = (int)i;
+        if (matchIndex == filteredIndex) {
+            return (int)i;
+        }
+        matchIndex++;
+    }
+    return lastMatch >= 0 ? lastMatch : 0;
+}
+
+static int
+custom_log_filteredIndexForRawRow(const custom_log_state_t *ui, int rawRow)
+{
+    if (!ui || ui->entryCount == 0) {
+        return 0;
+    }
+    if (rawRow < 0) {
+        rawRow = 0;
+    }
+    if ((size_t)rawRow > ui->entryCount) {
+        rawRow = (int)ui->entryCount;
+    }
+    if (!custom_log_hasActiveFilters(ui)) {
+        int maxIndex = (ui->entryCount > 0) ? (int)(ui->entryCount - 1) : 0;
+        if (rawRow > maxIndex) {
+            rawRow = maxIndex;
+        }
+        return rawRow;
+    }
+    int filteredIndex = 0;
+    for (size_t i = 0; i < ui->entryCount; ++i) {
+        if (!custom_log_entryMatchesFilters(ui, &ui->entries[i])) {
+            continue;
+        }
+        if ((int)i >= rawRow) {
+            return filteredIndex;
+        }
+        filteredIndex++;
+    }
+    return filteredIndex;
+}
+
+static void
+custom_log_buildScrollModel(const custom_log_state_t *ui, int visibleRows, custom_log_scroll_model_t *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!ui) {
+        out->visibleRows = 1;
+        return;
+    }
+    if (visibleRows <= 0) {
+        visibleRows = 1;
+    }
+    out->visibleRows = visibleRows;
+    out->filteredCount = custom_log_filteredCount(ui);
+    if (out->filteredCount <= 0) {
+        out->topFilteredRow = 0;
+        out->topRawRow = 0;
+        return;
+    }
+    int topFiltered = custom_log_filteredIndexForRawRow(ui, ui->scrollRow);
+    int maxTop = e9ui_scrollbar_maxScroll(out->filteredCount, visibleRows);
+    if (topFiltered < 0) {
+        topFiltered = 0;
+    }
+    if (topFiltered > maxTop) {
+        topFiltered = maxTop;
+    }
+    out->topFilteredRow = topFiltered;
+    out->topRawRow = custom_log_rawRowForFilteredIndex(ui, topFiltered);
+}
+
+static void
+custom_log_setTopFilteredRow(custom_log_state_t *ui, int visibleRows, int topFilteredRow)
+{
+    if (!ui) {
+        return;
+    }
+    custom_log_scroll_model_t model;
+    custom_log_buildScrollModel(ui, visibleRows, &model);
+    if (model.filteredCount <= 0) {
+        ui->scrollRow = 0;
+        return;
+    }
+    int maxTop = e9ui_scrollbar_maxScroll(model.filteredCount, model.visibleRows);
+    if (topFilteredRow < 0) {
+        topFilteredRow = 0;
+    }
+    if (topFilteredRow > maxTop) {
+        topFilteredRow = maxTop;
+    }
+    ui->scrollRow = custom_log_rawRowForFilteredIndex(ui, topFilteredRow);
+}
+
 static void
 custom_log_clampScroll(custom_log_state_t *ui, int visibleRows)
 {
@@ -276,14 +443,9 @@ custom_log_clampScroll(custom_log_state_t *ui, int visibleRows)
     if (ui->scrollRow < 0) {
         ui->scrollRow = 0;
     }
-    (void)visibleRows;
-    size_t maxStart = 0;
-    if (ui->entryCount > 0) {
-        maxStart = ui->entryCount - 1;
-    }
-    if ((size_t)ui->scrollRow > maxStart) {
-        ui->scrollRow = (int)maxStart;
-    }
+    custom_log_scroll_model_t model;
+    custom_log_buildScrollModel(ui, visibleRows, &model);
+    ui->scrollRow = model.topRawRow;
 }
 
 static void
@@ -292,15 +454,17 @@ custom_log_adjustScroll(custom_log_state_t *ui, int deltaRows)
     if (!ui || deltaRows == 0) {
         return;
     }
-    long next = (long)ui->scrollRow + (long)deltaRows;
+    int visibleRows = custom_log_computeVisibleRows(ui);
+    custom_log_scroll_model_t model;
+    custom_log_buildScrollModel(ui, visibleRows, &model);
+    long next = (long)model.topFilteredRow + (long)deltaRows;
     if (next < 0) {
         next = 0;
     }
     if (next > INT_MAX) {
         next = INT_MAX;
     }
-    ui->scrollRow = (int)next;
-    custom_log_clampScroll(ui, custom_log_computeVisibleRows(ui));
+    custom_log_setTopFilteredRow(ui, visibleRows, (int)next);
 }
 
 static int
@@ -1057,6 +1221,8 @@ custom_log_renderFrame(custom_log_state_t *ui, int presentFrame)
     int lineHeight = layout.lineHeight;
     int visibleRows = custom_log_computeVisibleRows(ui);
     custom_log_clampScroll(ui, visibleRows);
+    custom_log_scroll_model_t scrollModel;
+    custom_log_buildScrollModel(ui, visibleRows, &scrollModel);
     ui->rowHitCount = 0;
     if (visibleRows > 0) {
         (void)custom_log_ensureRowHitCapacity(ui, (size_t)visibleRows);
@@ -1183,6 +1349,24 @@ custom_log_renderFrame(custom_log_state_t *ui, int presentFrame)
     }
     SDL_RenderSetClipRect(ui->renderer, NULL);
 
+    {
+        e9ui_rect_t scrollBounds = {
+            rowsClip.x,
+            rowsClip.y,
+            rowsClip.w,
+            rowsClip.h
+        };
+        e9ui_scrollbar_render(ui,
+                              &ui->ctx,
+                              scrollBounds,
+                              1,
+                              scrollModel.visibleRows,
+                              1,
+                              scrollModel.filteredCount,
+                              0,
+                              scrollModel.topFilteredRow);
+    }
+
     custom_log_row_hit_t hoverRow;
     if (custom_log_findValueHit(ui, ui->ctx.mouseX, ui->ctx.mouseY, &hoverRow)) {
         const char *tooltip = amiga_custom_regs_valueTooltipForOffset(hoverRow.regOffset, hoverRow.regValue);
@@ -1271,6 +1455,39 @@ custom_log_overlayBodyHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, c
             localEv.button.button == SDL_BUTTON_LEFT &&
             !ctx->focusClickHandled) {
             e9ui_setFocus(ctx, NULL);
+        }
+    }
+    if (localEv.type == SDL_MOUSEMOTION ||
+        (localEv.type == SDL_MOUSEBUTTONDOWN && localEv.button.button == SDL_BUTTON_LEFT) ||
+        (localEv.type == SDL_MOUSEBUTTONUP && localEv.button.button == SDL_BUTTON_LEFT)) {
+        custom_log_layout_t layout;
+        if (custom_log_computeLayout(ui, &layout)) {
+            int visibleRows = custom_log_computeVisibleRows(ui);
+            custom_log_clampScroll(ui, visibleRows);
+            custom_log_scroll_model_t scrollModel;
+            custom_log_buildScrollModel(ui, visibleRows, &scrollModel);
+            e9ui_rect_t scrollBounds = {
+                CUSTOM_LOG_PAD,
+                layout.rowsY,
+                layout.winW - CUSTOM_LOG_PAD * 2,
+                layout.rowsH
+            };
+            int scrollX = 0;
+            int scrollY = scrollModel.topFilteredRow;
+            if (e9ui_scrollbar_handleEvent(ui,
+                                           &ui->ctx,
+                                           &localEv,
+                                           scrollBounds,
+                                           1,
+                                           scrollModel.visibleRows,
+                                           1,
+                                           scrollModel.filteredCount,
+                                           &scrollX,
+                                           &scrollY,
+                                           &ui->scrollbar)) {
+                custom_log_setTopFilteredRow(ui, visibleRows, scrollY);
+                return 1;
+            }
         }
     }
     if (localEv.type == SDL_MOUSEWHEEL) {

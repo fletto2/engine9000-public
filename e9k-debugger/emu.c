@@ -23,8 +23,8 @@
 #include "shader_ui.h"
 #include "emu_geo.h"
 #define EMU_RANGE_BAR_MAX 4
-#define EMU_OVERLAY_BUTTON_MICRO_THRESHOLD_W 959
-#define EMU_OVERLAY_BUTTON_NANO_THRESHOLD_W 860
+#define EMU_OVERLAY_BUTTON_MICRO_THRESHOLD_W 480
+#define EMU_OVERLAY_BUTTON_NANO_THRESHOLD_W 350
 
 typedef struct emu_range_bar_binding {
     size_t index;
@@ -746,9 +746,11 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
         e9ui_component_t *stack = e9ui_child_find(self, state->buttonStackMeta);
         if (stack) {
             int overlayButtonMode = emu_overlay_button_mode_mini;
-            if (self->bounds.w <= EMU_OVERLAY_BUTTON_NANO_THRESHOLD_W) {
+            int microThresholdW = e9ui_scale_px(ctx, EMU_OVERLAY_BUTTON_MICRO_THRESHOLD_W);
+            int nanoThresholdW = e9ui_scale_px(ctx, EMU_OVERLAY_BUTTON_NANO_THRESHOLD_W);
+            if (self->bounds.w <= nanoThresholdW) {
                 overlayButtonMode = emu_overlay_button_mode_nano;
-            } else if (self->bounds.w <= EMU_OVERLAY_BUTTON_MICRO_THRESHOLD_W) {
+            } else if (self->bounds.w <= microThresholdW) {
                 overlayButtonMode = emu_overlay_button_mode_micro;
             }
             emu_buttonStackSetCompactMode(stack, overlayButtonMode);

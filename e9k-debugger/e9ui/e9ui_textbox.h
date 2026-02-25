@@ -58,6 +58,9 @@ void
 e9ui_textbox_setFrameVisible(e9ui_component_t *comp, int visible);
 
 void
+e9ui_textbox_setFocusBorderVisible(e9ui_component_t *comp, int visible);
+
+void
 e9ui_textbox_setEditable(e9ui_component_t *comp, int editable);
 
 int

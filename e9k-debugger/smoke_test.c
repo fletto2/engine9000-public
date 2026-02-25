@@ -21,25 +21,12 @@
 #include "debug.h"
 #include "libretro_host.h"
 #include "ui_test.h"
+#include "strutil.h"
 
 static char smoke_test_folder[PATH_MAX];
 static int smoke_test_enabled = 0;
 static smoke_test_mode_t smoke_test_mode = SMOKE_TEST_MODE_NONE;
 static int smoke_test_openOnFail = 0;
-
-static void
-smoke_test_copyPath(char *dest, size_t cap, const char *src)
-{
-    if (!dest || cap == 0) {
-        return;
-    }
-    if (!src || !*src) {
-        dest[0] = '\0';
-        return;
-    }
-    strncpy(dest, src, cap - 1);
-    dest[cap - 1] = '\0';
-}
 
 void
 smoke_test_setFolder(const char *path)
@@ -49,8 +36,7 @@ smoke_test_setFolder(const char *path)
         smoke_test_enabled = 0;
         return;
     }
-    strncpy(smoke_test_folder, path, sizeof(smoke_test_folder) - 1);
-    smoke_test_folder[sizeof(smoke_test_folder) - 1] = '\0';
+    strutil_strlcpy(smoke_test_folder, sizeof(smoke_test_folder), path);
 }
 
 void
@@ -222,9 +208,9 @@ smoke_test_bootstrap(struct e9k_debugger *dbg)
     char path[PATH_MAX];
     if (smoke_test_getRecordPath(path, sizeof(path))) {
         if (dbg->smokeTestMode == SMOKE_TEST_MODE_RECORD) {
-            smoke_test_copyPath(dbg->recordPath, sizeof(dbg->recordPath), path);
+            strutil_strlcpy(dbg->recordPath, sizeof(dbg->recordPath), path);
         } else if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
-            smoke_test_copyPath(dbg->playbackPath, sizeof(dbg->playbackPath), path);
+            strutil_strlcpy(dbg->playbackPath, sizeof(dbg->playbackPath), path);
         }
     }
     return 1;

@@ -84,6 +84,34 @@ e9ui_split_stack_updateGrabArea(SDL_Rect *rectGrab, SDL_Rect rectGrip, e9ui_rect
 }
 
 static int
+e9ui_split_stack_pickGripIndex(e9ui_split_stack_state *st, int gapCount, int mx, int my)
+{
+    int bestIndex = -1;
+    int bestDist = 0x7fffffff;
+    for (int i = 0; i < gapCount; ++i) {
+        SDL_Rect grab = st->grabRects[i];
+        if (grab.w <= 0 || grab.h <= 0) {
+            continue;
+        }
+        if (mx < grab.x || mx >= grab.x + grab.w ||
+            my < grab.y || my >= grab.y + grab.h) {
+            continue;
+        }
+        SDL_Rect grip = st->gripRects[i];
+        int centerY = grip.y + grip.h / 2;
+        int dist = my - centerY;
+        if (dist < 0) {
+            dist = -dist;
+        }
+        if (bestIndex < 0 || dist < bestDist) {
+            bestIndex = i;
+            bestDist = dist;
+        }
+    }
+    return bestIndex;
+}
+
+static int
 e9ui_split_stack_preferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
 {
     (void)self; (void)ctx; (void)availW;
@@ -158,8 +186,15 @@ e9ui_split_stack_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t
     int totalGrip = 0;
     for (int i = 0; i < gapCount; ++i) {
         int collapsedA = st->panels[i] && st->panels[i]->collapsed;
-        int collapsedB = st->panels[i + 1] && st->panels[i + 1]->collapsed;
-        int usedGrip = (collapsedA || collapsedB) ? 0 : grip;
+        int hasNonCollapsedBelow = 0;
+        for (int j = i + 1; j < panelCount; ++j) {
+            e9ui_component_t *panelBelow = st->panels[j];
+            if (panelBelow && !panelBelow->collapsed) {
+                hasNonCollapsedBelow = 1;
+                break;
+            }
+        }
+        int usedGrip = (!collapsedA && hasNonCollapsedBelow) ? grip : 0;
         st->gripSizes[i] = usedGrip;
         totalGrip += usedGrip;
     }
@@ -330,42 +365,37 @@ e9ui_split_stack_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const 
     if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT) {
         int mx = ev->button.x;
         int my = ev->button.y;
-        for (int i = 0; i < gapCount; ++i) {
-            SDL_Rect grab = st->grabRects[i];
-            if (mx >= grab.x && mx < grab.x + grab.w &&
-                my >= grab.y && my < grab.y + grab.h) {
-                st->dragging = 1;
-                st->draggingIndex = i;
-                st->hoverIndex = i;
-                return 1;
+        int downIndex = e9ui_split_stack_pickGripIndex(st, gapCount, mx, my);
+        if (downIndex >= 0) {
+            st->dragging = 1;
+            st->draggingIndex = downIndex;
+            st->hoverIndex = downIndex;
+            e9ui_split_stack_ensureCursors();
+            if (e9ui_split_stack_cursorNs) {
+                e9ui_cursorCapture(ctx, self, e9ui_split_stack_cursorNs);
             }
+            return 1;
         }
     } else if (ev->type == SDL_MOUSEBUTTONUP && ev->button.button == SDL_BUTTON_LEFT) {
         if (st->dragging) {
             st->dragging = 0;
             st->draggingIndex = -1;
+            e9ui_cursorRelease(ctx, self);
             return 1;
         }
     } else if (ev->type == SDL_MOUSEMOTION) {
         e9ui_split_stack_ensureCursors();
         int mx = ev->motion.x;
         int my = ev->motion.y;
-        int overIndex = -1;
-        for (int i = 0; i < gapCount; ++i) {
-            SDL_Rect grab = st->grabRects[i];
-            if (mx >= grab.x && mx < grab.x + grab.w &&
-                my >= grab.y && my < grab.y + grab.h) {
-                overIndex = i;
-                break;
-            }
-        }
+        int overIndex = e9ui_split_stack_pickGripIndex(st, gapCount, mx, my);
         st->hoverIndex = overIndex;
         if (overIndex >= 0 || st->dragging) {
-            if (ctx) {
-                ctx->cursorOverride = 1;
-            }
             if (e9ui_split_stack_cursorNs) {
-                SDL_SetCursor(e9ui_split_stack_cursorNs);
+                if (st->dragging) {
+                    e9ui_cursorCapture(ctx, self, e9ui_split_stack_cursorNs);
+                } else {
+                    e9ui_cursorRequest(ctx, self, e9ui_split_stack_cursorNs);
+                }
             }
         } else if (!ctx || !ctx->cursorOverride) {
             if (e9ui_split_stack_cursorArrow) {
@@ -375,30 +405,38 @@ e9ui_split_stack_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const 
         if (st->dragging && st->draggingIndex >= 0 &&
             st->draggingIndex < gapCount) {
             int idx = st->draggingIndex;
+            int targetIdx = idx + 1;
+            while (targetIdx < st->panelCount) {
+                e9ui_component_t *panel = st->panels[targetIdx];
+                if (panel && !panel->collapsed) {
+                    break;
+                }
+                targetIdx++;
+            }
+            if (targetIdx >= st->panelCount) {
+                return 1;
+            }
             e9ui_split_stack_panel *metaA = st->panelMeta[idx];
-            e9ui_split_stack_panel *metaB = st->panelMeta[idx + 1];
+            e9ui_split_stack_panel *metaB = st->panelMeta[targetIdx];
             if (!metaA || !metaB) {
                 return 1;
             }
             SDL_Rect rectA = metaA->rect;
             SDL_Rect rectB = metaB->rect;
             int usedGrip = st->gripSizes[idx];
-            int block = rectA.h + rectB.h + usedGrip;
-            if (block <= 0) {
+            int pairFlex = rectA.h + rectB.h;
+            if (pairFlex <= 0) {
                 return 1;
             }
-            int rel = my - rectA.y;
-            if (rel < 0) {
-                rel = 0;
+            int boundary = my - rectA.y - usedGrip / 2;
+            if (boundary < 0) {
+                boundary = 0;
             }
-            if (rel > block - usedGrip) {
-                rel = block - usedGrip;
+            if (boundary > pairFlex) {
+                boundary = pairFlex;
             }
-            int sizeA = rel;
-            int sizeB = block - usedGrip - sizeA;
-            if (sizeB < 0) {
-                sizeB = 0;
-            }
+            int sizeA = boundary;
+            int sizeB = pairFlex - sizeA;
             float pairSum = metaA->ratio + metaB->ratio;
             if (pairSum <= 0.0f) {
                 pairSum = 1.0f;
@@ -462,7 +500,10 @@ e9ui_split_stack_make(void)
     e9ui_component_t *comp = (e9ui_component_t*)alloc_calloc(1, sizeof(*comp));
     e9ui_split_stack_state *st = (e9ui_split_stack_state*)alloc_calloc(1, sizeof(*st));
     st->grip = 6;
-    st->hitMargin = st->grip * 2;
+    st->hitMargin = st->grip / 2;
+    if (st->hitMargin < 2) {
+        st->hitMargin = 2;
+    }
     st->dragging = 0;
     st->hoverIndex = -1;
     st->draggingIndex = -1;

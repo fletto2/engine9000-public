@@ -210,6 +210,18 @@ void
 e9ui_drawFocusRingRect(e9ui_context_t *ctx, SDL_Rect rect, int padPx);
 
 void
+e9ui_cursorRequest(e9ui_context_t *ctx, void *owner, SDL_Cursor *cursor);
+
+void
+e9ui_cursorCapture(e9ui_context_t *ctx, void *owner, SDL_Cursor *cursor);
+
+void
+e9ui_cursorRelease(e9ui_context_t *ctx, void *owner);
+
+int
+e9ui_cursorIsCapturedBy(const e9ui_context_t *ctx, const void *owner);
+
+void
 e9ui_setFullscreenComponent(e9ui_component_t *comp);
 
 void

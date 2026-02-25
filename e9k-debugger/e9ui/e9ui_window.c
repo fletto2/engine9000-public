@@ -557,8 +557,11 @@ e9ui_window_overlayUpdateCursor(e9ui_component_t *self,
         cursor = e9ui_window_overlayCursorArrow;
     }
     if (cursor) {
-        ctx->cursorOverride = 1;
-        SDL_SetCursor(cursor);
+        if (st->resizing || st->dragging) {
+            e9ui_cursorCapture(ctx, self, cursor);
+        } else {
+            e9ui_cursorRequest(ctx, self, cursor);
+        }
     }
 }
 
@@ -594,6 +597,7 @@ e9ui_window_overlayHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, cons
             st->resizeStartMouseY = my;
             st->dragStartRect = st->rect;
             st->dragging = 0;
+            e9ui_window_overlayUpdateCursor(self, st, ctx, mx, my);
             return 1;
         }
         if (e9ui_window_overlayPointInRect(&titleRect, mx, my)) {
@@ -601,6 +605,7 @@ e9ui_window_overlayHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, cons
             st->dragStartRect = st->rect;
             st->dragOffsetX = mx - st->rect.x;
             st->dragOffsetY = my - st->rect.y;
+            e9ui_window_overlayUpdateCursor(self, st, ctx, mx, my);
             return 1;
         }
     }
@@ -608,11 +613,13 @@ e9ui_window_overlayHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, cons
         if (st->resizing) {
             st->resizing = 0;
             st->resizeMask = 0;
+            e9ui_cursorRelease(ctx, self);
             e9ui_window_overlayUpdateCursor(self, st, ctx, ev->button.x, ev->button.y);
             return 1;
         }
         if (st->dragging) {
             st->dragging = 0;
+            e9ui_cursorRelease(ctx, self);
             e9ui_window_overlayUpdateCursor(self, st, ctx, ev->button.x, ev->button.y);
             return 1;
         }

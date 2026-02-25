@@ -7,6 +7,7 @@
  */
 
 #include "e9ui.h"
+#include "e9ui_scrollbar.h"
 
 typedef struct e9ui_scroll_state {
     e9ui_component_t *child;
@@ -17,6 +18,7 @@ typedef struct e9ui_scroll_state {
     int contentWidthPx;
     int contentHeightPx;
     int lineHeight;
+    e9ui_scrollbar_state_t scrollbar;
 } e9ui_scroll_state_t;
 
 static int
@@ -36,26 +38,7 @@ scroll_clamp(e9ui_scroll_state_t *st, int viewW, int viewH)
     if (!st) {
         return;
     }
-    int maxScrollX = st->contentW - viewW;
-    if (maxScrollX < 0) {
-        maxScrollX = 0;
-    }
-    int maxScroll = st->contentH - viewH;
-    if (maxScroll < 0) {
-        maxScroll = 0;
-    }
-    if (st->scrollX < 0) {
-        st->scrollX = 0;
-    }
-    if (st->scrollX > maxScrollX) {
-        st->scrollX = maxScrollX;
-    }
-    if (st->scrollY < 0) {
-        st->scrollY = 0;
-    }
-    if (st->scrollY > maxScroll) {
-        st->scrollY = maxScroll;
-    }
+    e9ui_scrollbar_clamp(viewW, viewH, st->contentW, st->contentH, &st->scrollX, &st->scrollY);
 }
 
 static int
@@ -122,6 +105,15 @@ scroll_render(e9ui_component_t *self, e9ui_context_t *ctx)
         SDL_RenderSetClipRect(ctx->renderer, &clip);
     }
     st->child->render(st->child, ctx);
+    e9ui_scrollbar_render(self,
+                          ctx,
+                          self->bounds,
+                          self->bounds.w,
+                          self->bounds.h,
+                          st->contentW,
+                          st->contentH,
+                          st->scrollX,
+                          st->scrollY);
     if (clipEnabled) {
         SDL_RenderSetClipRect(ctx->renderer, &prev);
     } else {
@@ -139,6 +131,21 @@ scroll_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event
     if (!st) {
         return 0;
     }
+
+    if (e9ui_scrollbar_handleEvent(self,
+                                   ctx,
+                                   ev,
+                                   self->bounds,
+                                   self->bounds.w,
+                                   self->bounds.h,
+                                   st->contentW,
+                                   st->contentH,
+                                   &st->scrollX,
+                                   &st->scrollY,
+                                   &st->scrollbar)) {
+        return 1;
+    }
+
     if (ev->type == SDL_MOUSEWHEEL) {
         int mx = ctx->mouseX;
         int my = ctx->mouseY;
@@ -158,15 +165,17 @@ scroll_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event
             }
             if (wheelX != 0) {
                 const int step = st->lineHeight > 0 ? st->lineHeight : 16;
-                st->scrollX -= wheelX * step;
-                consumed = 1;
+                if (e9ui_scrollbar_maxScroll(st->contentW, self->bounds.w) > 0) {
+                    st->scrollX -= wheelX * step;
+                    consumed = 1;
+                }
             }
             if (wheelY != 0) {
-                const int linesPerTick = 1;
-                int delta = wheelY * linesPerTick;
                 int step = st->lineHeight > 0 ? st->lineHeight : 16;
-                st->scrollY += delta * step;
-                consumed = 1;
+                if (e9ui_scrollbar_maxScroll(st->contentH, self->bounds.h) > 0) {
+                    st->scrollY += wheelY * step;
+                    consumed = 1;
+                }
             }
             if (consumed) {
                 scroll_clamp(st, self->bounds.w, self->bounds.h);

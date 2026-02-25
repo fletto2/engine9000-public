@@ -7,11 +7,73 @@
  */
 
 #include "e9ui.h"
+#include "e9ui_scrollbar.h"
 #include "debugger.h"
 
 typedef struct e9ui_console_state {
     int bucketConsole;
+    e9ui_scrollbar_state_t scrollbar;
 } console_state_t;
+
+static int
+console_lineHeightPx(e9ui_context_t *ctx, TTF_Font *font)
+{
+    TTF_Font *useFont = font ? font : (e9ui->theme.text.console ? e9ui->theme.text.console : (ctx ? ctx->font : NULL));
+    int lineHeight = useFont ? TTF_FontHeight(useFont) : 0;
+    if (lineHeight <= 0) {
+        lineHeight = 16;
+    }
+    return lineHeight;
+}
+
+static int
+console_visibleLines(e9ui_component_t *self, e9ui_context_t *ctx, TTF_Font *font)
+{
+    if (!self) {
+        return 1;
+    }
+    int lineHeight = console_lineHeightPx(ctx, font);
+    int pad = 10;
+    int availH = self->bounds.h - pad - 10;
+    if (availH < lineHeight) {
+        availH = lineHeight;
+    }
+    int visibleLines = availH / lineHeight;
+    if (visibleLines < 1) {
+        visibleLines = 1;
+    }
+    return visibleLines;
+}
+
+static int
+console_getTopIndex(int count, int visibleLines)
+{
+    int maxTop = e9ui_scrollbar_maxScroll(count, visibleLines);
+    int topIndex = maxTop - debugger.consoleScrollLines;
+    if (topIndex < 0) {
+        topIndex = 0;
+    }
+    if (topIndex > maxTop) {
+        topIndex = maxTop;
+    }
+    return topIndex;
+}
+
+static void
+console_setTopIndex(int count, int visibleLines, int topIndex)
+{
+    int maxTop = e9ui_scrollbar_maxScroll(count, visibleLines);
+    if (topIndex < 0) {
+        topIndex = 0;
+    }
+    if (topIndex > maxTop) {
+        topIndex = maxTop;
+    }
+    debugger.consoleScrollLines = maxTop - topIndex;
+    if (debugger.consoleScrollLines < 0) {
+        debugger.consoleScrollLines = 0;
+    }
+}
 
 static int
 console_preferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
@@ -52,8 +114,11 @@ console_render(e9ui_component_t *self, e9ui_context_t *ctx)
         visLines = 1;
     }
     int count = debugger.console.n;
-    int start = count - visLines - debugger.consoleScrollLines; if (start < 0) start = 0; int end = start + visLines; if (end > count) end = count;
-    if (debugger.consoleScrollLines <= 0 && end < count) { start = count - visLines; if (start < 0) start = 0; end = count; }
+    int start = console_getTopIndex(count, visLines);
+    int end = start + visLines;
+    if (end > count) {
+        end = count;
+    }
     for (int i=start; i<end; ++i) {
         int phys = linebuf_phys_index(&debugger.console, i);
         const char *ln = debugger.console.lines[phys];
@@ -63,13 +128,45 @@ console_render(e9ui_component_t *self, e9ui_context_t *ctx)
                                 hitW, &st->bucketConsole, 0, 1);
         y += lh; if (y > self->bounds.y + self->bounds.h - 10) break;
     }
-    
+
+    e9ui_scrollbar_render(self,
+                          ctx,
+                          self->bounds,
+                          1,
+                          visLines,
+                          1,
+                          count,
+                          0,
+                          start);
 }
 
 static int
 console_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
 {
     (void)self; (void)ctx;
+    console_state_t *st = self ? (console_state_t*)self->state : NULL;
+
+    if (self && ctx && st &&
+        (ev->type == SDL_MOUSEMOTION || ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP)) {
+        int count = debugger.console.n;
+        int visibleLines = console_visibleLines(self, ctx, NULL);
+        int topIndex = console_getTopIndex(count, visibleLines);
+        int scrollX = 0;
+        if (e9ui_scrollbar_handleEvent(self,
+                                       ctx,
+                                       ev,
+                                       self->bounds,
+                                       1,
+                                       visibleLines,
+                                       1,
+                                       count,
+                                       &scrollX,
+                                       &topIndex,
+                                       &st->scrollbar)) {
+            console_setTopIndex(count, visibleLines, topIndex);
+            return 1;
+        }
+    }
 
     if (ev->type == SDL_KEYDOWN) {
         SDL_Keycode kc = ev->key.keysym.sym;

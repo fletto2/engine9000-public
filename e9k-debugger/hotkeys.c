@@ -102,14 +102,14 @@ static const hotkeys_config_spec_t hotkeys_configSpecs[] = {
     { "fullscreen", "Fullscreen", SDLK_RETURN, KMOD_ALT },
     { "mouse_release", "Mouse Release", SDLK_LALT, (SDL_Keymod)(KMOD_CTRL | KMOD_ALT) },
     { "prompt_focus", "Prompt Focus", SDLK_TAB, 0 },
-    { "continue", "Continue", SDLK_c, 0 },
-    { "pause", "Pause", SDLK_p, 0 },
-    { "step", "Step", SDLK_s, 0 },
-    { "next", "Next", SDLK_n, 0 },
-    { "step_inst", "Step Inst", SDLK_i, 0 },
-    { "frame_back", "Frame Step Back", SDLK_b, 0 },
-    { "frame_step", "Frame Step", SDLK_f, 0 },
-    { "frame_continue", "Frame Continue", SDLK_g, 0 },
+    { "continue", "Continue", SDLK_c, KMOD_ALT },
+    { "pause", "Pause", SDLK_p, KMOD_ALT },
+    { "step", "Step", SDLK_s, KMOD_ALT },
+    { "next", "Next", SDLK_n, KMOD_ALT },
+    { "step_inst", "Step Inst", SDLK_i, KMOD_ALT },
+    { "frame_back", "Frame Step Back", SDLK_b, KMOD_ALT },
+    { "frame_step", "Frame Step", SDLK_f, KMOD_ALT },
+    { "frame_continue", "Frame Continue", SDLK_g, KMOD_ALT },
     { "checkpoint_prev", "Checkpoint Prev", SDLK_UNKNOWN, 0 },
     { "checkpoint_reset", "Checkpoint Reset", SDLK_UNKNOWN, 0 },
     { "checkpoint_next", "Checkpoint Next", SDLK_UNKNOWN, 0 }
@@ -454,6 +454,63 @@ hotkeys_applyDisplayTokenCase(char *s)
     }
 }
 
+static void
+hotkeys_applyPlatformDisplayNames(char *s, size_t cap)
+{
+    if (!s || cap == 0) {
+        return;
+    }
+#if defined(__APPLE__)
+    char out[128];
+    out[0] = '\0';
+    char *tokenStart = s;
+    while (*tokenStart) {
+        char *tokenEnd = tokenStart;
+        while (*tokenEnd && *tokenEnd != '+') {
+            ++tokenEnd;
+        }
+        char token[64];
+        size_t tokenLen = (size_t)(tokenEnd - tokenStart);
+        if (tokenLen >= sizeof(token)) {
+            tokenLen = sizeof(token) - 1;
+        }
+        memcpy(token, tokenStart, tokenLen);
+        token[tokenLen] = '\0';
+        const char *use = token;
+        if (strcmp(token, "Alt") == 0 ||
+            strcmp(token, "ALT") == 0 ||
+            strcmp(token, "Left Alt") == 0 ||
+            strcmp(token, "LEFT ALT") == 0 ||
+            strcmp(token, "Right Alt") == 0 ||
+            strcmp(token, "RIGHT ALT") == 0 ||
+            strcmp(token, "LALT") == 0 ||
+            strcmp(token, "RALT") == 0) {
+            use = "OPTION";
+        }
+        size_t outLen = strlen(out);
+        size_t useLen = strlen(use);
+        size_t need = outLen + useLen + (outLen ? 1u : 0u) + 1u;
+        if (need > sizeof(out)) {
+            return;
+        }
+        if (outLen) {
+            out[outLen++] = '+';
+            out[outLen] = '\0';
+        }
+        memcpy(out + outLen, use, useLen + 1);
+        if (*tokenEnd == '+') {
+            tokenStart = tokenEnd + 1;
+        } else {
+            break;
+        }
+    }
+    snprintf(s, cap, "%s", out);
+#else
+    (void)s;
+    (void)cap;
+#endif
+}
+
 static int
 hotkeys_parseBindingString(const char *value, SDL_Keycode *outKey, SDL_Keymod *outMods)
 {
@@ -606,6 +663,7 @@ hotkeys_formatModsDisplay(SDL_Keymod mods, char *out, size_t cap)
         (void)hotkeys_appendBindingToken(out, cap, "cmd");
     }
     hotkeys_applyDisplayTokenCase(out);
+    hotkeys_applyPlatformDisplayNames(out, cap);
 }
 
 static void
@@ -750,6 +808,7 @@ hotkeys_buildBindingDisplayString(SDL_Keycode key, SDL_Keymod mods, char *out, s
                 keyName[sizeof(keyName) - 1] = '\0';
                 hotkeys_lowerString(keyName);
                 hotkeys_applyDisplayTokenCase(keyName);
+                hotkeys_applyPlatformDisplayNames(keyName, sizeof(keyName));
                 snprintf(out, cap, "%s", keyName);
             } else if (modifierKeyMod == KMOD_SHIFT) {
                 snprintf(out, cap, "shift");
@@ -763,10 +822,12 @@ hotkeys_buildBindingDisplayString(SDL_Keycode key, SDL_Keymod mods, char *out, s
                 snprintf(out, cap, "modifier");
             }
             hotkeys_applyDisplayTokenCase(out);
+            hotkeys_applyPlatformDisplayNames(out, cap);
             return;
         }
         if (hotkeys_buildBindingString(key, nonRedundantMods, out, cap) && out[0] != '\0') {
             hotkeys_applyDisplayTokenCase(out);
+            hotkeys_applyPlatformDisplayNames(out, cap);
             return;
         }
     }
@@ -776,6 +837,7 @@ hotkeys_buildBindingDisplayString(SDL_Keycode key, SDL_Keymod mods, char *out, s
         return;
     }
     hotkeys_applyDisplayTokenCase(out);
+    hotkeys_applyPlatformDisplayNames(out, cap);
 }
 
 static void

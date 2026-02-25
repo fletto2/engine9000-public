@@ -29,6 +29,15 @@ void
 e9ui_box_setPadding(e9ui_component_t *box, int pad_px);
 
 void
+e9ui_box_setPaddingX(e9ui_component_t *box, int pad_px);
+
+void
+e9ui_box_setPaddingY(e9ui_component_t *box, int pad_px);
+
+void
+e9ui_box_setPaddingSides(e9ui_component_t *box, int left_px, int top_px, int right_px, int bottom_px);
+
+void
 e9ui_box_setWidth(e9ui_component_t *box, e9ui_dim_mode_t mode, int pixels);
 
 void
@@ -55,5 +64,4 @@ e9ui_box_setChild(e9ui_component_t *box, e9ui_component_t *child, e9ui_context_t
 
 void
 e9ui_box_resetCursors(void);
-
 

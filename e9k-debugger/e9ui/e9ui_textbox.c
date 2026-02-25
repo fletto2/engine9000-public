@@ -9,6 +9,7 @@
 #include "e9ui.h"
 #include "debugger.h"
 #include "print_eval.h"
+#include "strutil.h"
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -43,6 +44,7 @@ typedef struct textbox_state {
     void               *key_user;
     void               *user;
     int                frame_visible;
+    int                focus_border_visible;
     e9ui_textbox_option_t *select_options;
     int                select_optionCount;
     int                select_optionCap;
@@ -1085,14 +1087,12 @@ textbox_expandTilde(const char *in, char *out, size_t cap)
         return 0;
     }
     if (in[0] != '~' || (in[1] != '\0' && in[1] != '/' && in[1] != '\\')) {
-        strncpy(out, in, cap - 1);
-        out[cap - 1] = '\0';
+        strutil_strlcpy(out, cap, in);
         return 1;
     }
     char home[PATH_MAX];
     if (!debugger_platform_getHomeDir(home, sizeof(home))) {
-        strncpy(out, in, cap - 1);
-        out[cap - 1] = '\0';
+        strutil_strlcpy(out, cap, in);
         return 1;
     }
     size_t hlen = strlen(home);
@@ -1640,7 +1640,7 @@ textbox_renderComp(e9ui_component_t *self, e9ui_context_t *ctx)
         SDL_Color borderCol = (SDL_Color){80,80,90,255};
         SDL_SetRenderDrawColor(ctx->renderer, borderCol.r, borderCol.g, borderCol.b, borderCol.a);
         SDL_RenderDrawRect(ctx->renderer, &area);
-        if (!self->disabled && e9ui_getFocus(ctx) == self) {
+        if (st->focus_border_visible && !self->disabled && e9ui_getFocus(ctx) == self) {
             e9ui_drawFocusRingRect(ctx, area, 1);
         }
     }
@@ -1994,6 +1994,9 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         SDL_Keymod mods = ev->key.keysym.mod;
         int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
         int shift = (mods & KMOD_SHIFT);
+        if (!accel && kc == SDLK_TAB && st->key_cb && st->key_cb(ctx, kc, mods, st->key_user)) {
+            return 1;
+        }
         if (!accel && kc == SDLK_TAB) {
             if (st->editable) {
                 textbox_notifySubmit(st, ctx);
@@ -2438,6 +2441,7 @@ e9ui_textbox_make(int maxLen, e9ui_textbox_submit_cb_t onSubmit, e9ui_textbox_ch
     st->change = onChange;
     st->user = user;
     st->frame_visible = 1;
+    st->focus_border_visible = 1;
     st->select_options = NULL;
     st->select_optionCount = 0;
     st->select_optionCap = 0;
@@ -2588,6 +2592,16 @@ e9ui_textbox_setFrameVisible(e9ui_component_t *comp, int visible)
     }
     textbox_state_t *st = (textbox_state_t*)comp->state;
     st->frame_visible = visible ? 1 : 0;
+}
+
+void
+e9ui_textbox_setFocusBorderVisible(e9ui_component_t *comp, int visible)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    textbox_state_t *st = (textbox_state_t*)comp->state;
+    st->focus_border_visible = visible ? 1 : 0;
 }
 
 void

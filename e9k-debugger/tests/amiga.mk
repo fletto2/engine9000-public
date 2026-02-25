@@ -45,24 +45,31 @@ make-test-amigasavestate: all tests/amiga/smoke/smoke.adf
 # remakers
 
 remake-test-amigalocals: all tests/amiga/locals/locals.adf
+	@printf "AMIGA LOCALS ($@) ..."
 	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/locals/ --uae=./tests/amiga/locals/locals.uae --hunk=./tests/amiga/locals/locals --remake-test tests/results/amiga/locals
 
 remake-test-amigavasm: all tests/amiga/vasm/vasm.adf
+	@printf "AMIGA VASM ($@) ..."
 	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/vasm/ --uae=./tests/amiga/vasm/vasm.uae --hunk=./tests/amiga/vasm/vasm --remake-test tests/results/amiga/vasm
 
 remake-test-amigacustom: all tests/amiga/custom/custom.adf
+	@printf "AMIGA CUSTOM ($@) ..."
 	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/custom/ --uae=./tests/amiga/custom/custom.uae --remake-test tests/results/amiga/custom
 
 remake-test-amigalog: all tests/amiga/custom/custom.adf
+	@printf "AMIGA LOG ($@) ..."
 	./e9k-debugger --amiga --volume=0 --source-dir=./tests/amiga/custom/ --uae=./tests/amiga/custom/custom.uae --remake-test tests/results/amiga/log
 
 remake-test-amigaconfig: all 
+	@printf "AMIGA CONFIG ($@) ..."
 	./e9k-debugger --amiga --volume=0 --remake-test tests/results/amiga/config
 
 remake-test-amigacoreoptions: all tests/amiga/example/example.adf
+	@printf "AMIGA CORE OPTIONS ($@) ..."
 	./e9k-debugger --amiga --source-dir=./tests/amiga/example/ --uae=./tests/amiga/example/example.uae --hunk=./tests/amiga/example/example --remake-test tests/results/amiga/amigacoreoptions
 
 remake-test-amigasavestate: all tests/amiga/smoke/smoke.adf
+	@printf "AMIGA SAVESTATE ($@) ..."
 	./e9k-debugger --amiga --volume=0 --uae=./tests/amiga/smoke/smoke.uae --remake-test tests/results/amiga/savestate
 
 

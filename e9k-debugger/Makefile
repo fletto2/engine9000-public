@@ -21,7 +21,7 @@ INCLUDES += $(PKG_CFLAGS)
 
 ifneq ($(filter -j%,$(MAKEFLAGS)),)
   ifneq ($(filter output-sync,$(.FEATURES)),)
-    ifneq ($(filter %test%,$(MAKECMDGOALS)),)
+    ifneq ($(findstring test,$(MAKECMDGOALS)),)
       MAKEFLAGS += --output-sync=target
     endif
   endif
@@ -71,7 +71,7 @@ W64_TARGET = e9k-debugger.exe
 W64_ADDITIONAL_TARGET = dist/e9kd/e9k-debugger.exe
 W64_BUILD_DIR = build-w64
 RELEASE_DIR = releases
-RELEASE_MINOR_FILE = $(RELEASE_DIR)/release_minor.txt
+RELEASE_MINOR_FILE = assets/release_minor.txt
 RELEASE_PACKAGE_NAME = e9k-debugger
 RELEASE_W64_DLLS = libfreetype-6.dll libpng16-16.dll libreadline8.dll libssp-0.dll libtermcap-0.dll libwinpthread-1.dll SDL2_image.dll SDL2_ttf.dll SDL2.dll zlib1.dll
 RELEASE_SYSTEM_FILES = v-hunk-addr2line.exe v-hunk-objdump.exe ami9000.dll geo9000.dll
@@ -99,9 +99,9 @@ BUNDLE_DIR = $(BUNDLE_NAME)/Contents
 BUNDLE_MACOS = $(BUNDLE_DIR)/MacOS
 BUNDLE_RESOURCES = $(BUNDLE_DIR)/Resources
 
-LIB9000_SRCS=alloc.c list.c resource.c file.c
+LIB9000_SRCS=alloc.c list.c resource.c file.c strutil.c
 
-E9UI_SRCS=e9ui_textbox.c e9ui_text_cache.c e9ui_text_select.c e9ui_text.c e9ui_scroll.c e9ui.c e9ui_split.c e9ui_split_stack.c e9ui_stack.c\
+E9UI_SRCS=e9ui_textbox.c e9ui_text_cache.c e9ui_text_select.c e9ui_text.c e9ui_scroll.c e9ui_scrollbar.c e9ui_step_buttons.c e9ui.c e9ui_split.c e9ui_split_stack.c e9ui_stack.c\
 	  e9ui_image.c e9ui_box.c e9ui_hstack.c e9ui_button.c e9ui_checkbox.c e9ui_flow.c e9ui_header_flow.c e9ui_spacer.c e9ui_vspacer.c e9ui_separator.c\
           e9ui_badge.c e9ui_overlay.c e9ui_center.c e9ui_fileselect.c e9ui_labeled_textbox.c e9ui_labeled_checkbox.c e9ui_labeled_select.c e9ui_seek_bar.c e9ui_slider.c e9ui_event.c \
 	  e9ui_theme.c e9ui_link.c e9ui_modal.c e9ui_child.c e9ui_window.c 
@@ -192,8 +192,11 @@ release-w64-package:
 		echo "Missing directory: e9k-debugger/assets"; \
 		exit 1; \
 	fi; \
+	if [ ! -f "$(RELEASE_MINOR_FILE)" ]; then \
+		echo "0" > "$(RELEASE_MINOR_FILE)"; \
+	fi; \
 	cp -R assets "$$package_dir/assets"; \
-	find "$$package_dir/assets" -type f ! \( -iname '*.png' -o -iname '*.ttf' -o -iname '*.ico' \) -delete; \
+	find "$$package_dir/assets" -type f ! \( -iname '*.png' -o -iname '*.ttf' -o -iname '*.ico' -o -name 'release_minor.txt' \) -delete; \
 	for file in $(RELEASE_SYSTEM_FILES); do \
 		if [ ! -f "system/$$file" ]; then \
 			echo "Missing file: e9k-debugger/system/$$file"; \

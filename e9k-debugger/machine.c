@@ -20,6 +20,7 @@
 #include "libretro_host.h"
 #include "addr2line.h"
 #include "base_map.h"
+#include "strutil.h"
 
 static void
 machine_clearRegs(machine_t *m)
@@ -356,7 +357,7 @@ machine_fillFrame(machine_frame_t *frame, int level, uint32_t addr, const char *
             FILE *f = NULL;
             if (src_base && *src_base && base && *base) {
                 char src_path[PATH_MAX];
-                snprintf(src_path, sizeof(src_path), "%s/%s", src_base, base);
+                strutil_pathJoinTrunc(src_path, sizeof(src_path), src_base, base);
                 f = fopen(src_path, "r");
             }
             if (!f && full_path && *full_path) {

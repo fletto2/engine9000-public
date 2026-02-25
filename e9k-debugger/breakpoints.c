@@ -13,6 +13,7 @@
 #include "debugger.h"
 #include "addr2line.h"
 #include "e9ui_scroll.h"
+#include "strutil.h"
 
 typedef struct breakpoints_record {
     machine_breakpoint_t data;
@@ -589,7 +590,7 @@ breakpoints_entryMake(breakpoints_record_t *rec, breakpoints_list_state_t *list)
     }
 
     if (st->hasFilePath) {
-        snprintf(st->primary, sizeof(st->primary), "%s%s%s", st->prefix, st->filePath, st->suffix);
+        strutil_join3Trunc(st->primary, sizeof(st->primary), st->prefix, st->filePath, st->suffix);
     } else if (state[0]) {
         snprintf(st->primary, sizeof(st->primary), "#%d %s (%s)", bp->number, location, state);
     } else {

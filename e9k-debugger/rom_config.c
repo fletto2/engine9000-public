@@ -25,6 +25,7 @@
 #include "trainer.h"
 #include "ui_test.h"
 #include "smoke_test.h"
+#include "strutil.h"
 
 typedef struct rom_config_bp_entry {
     uint32_t addr;
@@ -444,8 +445,7 @@ rom_config_findExistingPath(char *out, size_t cap, const char *saveDir, const ch
         return 0;
     }
     if (rom_config_pathExistsFile(jsonPath)) {
-        strncpy(out, jsonPath, cap - 1);
-        out[cap - 1] = '\0';
+        strutil_strlcpy(out, cap, jsonPath);
         return 1;
     }
     char legacyPath[PATH_MAX];
@@ -453,8 +453,7 @@ rom_config_findExistingPath(char *out, size_t cap, const char *saveDir, const ch
         return 0;
     }
     if (rom_config_pathExistsFile(legacyPath)) {
-        strncpy(out, legacyPath, cap - 1);
-        out[cap - 1] = '\0';
+        strutil_strlcpy(out, cap, legacyPath);
         return 1;
     }
     return 0;
@@ -533,8 +532,7 @@ rom_config_copyIntoSaveDir(char *outPath, size_t outCap, const char *dstSaveDir,
     if (!rom_config_pathExistsFile(dstPath)) {
         return 0;
     }
-    strncpy(outPath, dstPath, outCap - 1);
-    outPath[outCap - 1] = '\0';
+    strutil_strlcpy(outPath, outCap, dstPath);
     return 1;
 }
 
@@ -1137,8 +1135,7 @@ rom_config_loadSettingsForSelectedRom(void)
             }
             if (sourcePath[0]) {
                 if (!rom_config_copyIntoSaveDir(selectedPath, sizeof(selectedPath), testSaveDir, romPath, sourcePath)) {
-                    strncpy(selectedPath, sourcePath, sizeof(selectedPath) - 1);
-                    selectedPath[sizeof(selectedPath) - 1] = '\0';
+                    strutil_strlcpy(selectedPath, sizeof(selectedPath), sourcePath);
                 }
             }
         }
@@ -1161,16 +1158,13 @@ rom_config_loadSettingsForSelectedRom(void)
 
     rom_config_setActiveDefaultsFromCurrentSystem();
     if (data.hasElf) {
-        strncpy(rom_config_activeElfPath, data.elfPath, sizeof(rom_config_activeElfPath) - 1);
-        rom_config_activeElfPath[sizeof(rom_config_activeElfPath) - 1] = '\0';
+        strutil_strlcpy(rom_config_activeElfPath, sizeof(rom_config_activeElfPath), data.elfPath);
     }
     if (data.hasSource) {
-        strncpy(rom_config_activeSourceDir, data.sourceDir, sizeof(rom_config_activeSourceDir) - 1);
-        rom_config_activeSourceDir[sizeof(rom_config_activeSourceDir) - 1] = '\0';
+        strutil_strlcpy(rom_config_activeSourceDir, sizeof(rom_config_activeSourceDir), data.sourceDir);
     }
     if (data.hasToolchain) {
-        strncpy(rom_config_activeToolchainPrefix, data.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
-        rom_config_activeToolchainPrefix[sizeof(rom_config_activeToolchainPrefix) - 1] = '\0';
+        strutil_strlcpy(rom_config_activeToolchainPrefix, sizeof(rom_config_activeToolchainPrefix), data.toolchainPrefix);
     }
     rom_config_applyParsedInputBindingsToActive(&data);
     rom_config_applyParsedTargetOptionsToActive(&data, target);
@@ -1259,16 +1253,13 @@ rom_config_loadSettingsForRom(const char *saveDir, const char *romPath,
         *outHasToolchain = data.hasToolchain ? 1 : 0;
     }
     if (data.hasElf && outElfPath && elfCap > 0) {
-        strncpy(outElfPath, data.elfPath, elfCap - 1);
-        outElfPath[elfCap - 1] = '\0';
+        strutil_strlcpy(outElfPath, elfCap, data.elfPath);
     }
     if (data.hasSource && outSourceDir && sourceCap > 0) {
-        strncpy(outSourceDir, data.sourceDir, sourceCap - 1);
-        outSourceDir[sourceCap - 1] = '\0';
+        strutil_strlcpy(outSourceDir, sourceCap, data.sourceDir);
     }
     if (data.hasToolchain && outToolchainPrefix && toolchainCap > 0) {
-        strncpy(outToolchainPrefix, data.toolchainPrefix, toolchainCap - 1);
-        outToolchainPrefix[toolchainCap - 1] = '\0';
+        strutil_strlcpy(outToolchainPrefix, toolchainCap, data.toolchainPrefix);
     }
 
     rom_config_applyParsedInputBindingsToActive(&data);
@@ -1403,12 +1394,9 @@ rom_config_saveOnExit(void)
         rom_config_setActiveDefaultsFromCurrentSystem();
     }
     if (rom_config_activeInit) {
-        strncpy(data.elfPath, rom_config_activeElfPath, sizeof(data.elfPath) - 1);
-        strncpy(data.sourceDir, rom_config_activeSourceDir, sizeof(data.sourceDir) - 1);
-        strncpy(data.toolchainPrefix, rom_config_activeToolchainPrefix, sizeof(data.toolchainPrefix) - 1);
-        data.elfPath[sizeof(data.elfPath) - 1] = '\0';
-        data.sourceDir[sizeof(data.sourceDir) - 1] = '\0';
-        data.toolchainPrefix[sizeof(data.toolchainPrefix) - 1] = '\0';
+        strutil_strlcpy(data.elfPath, sizeof(data.elfPath), rom_config_activeElfPath);
+        strutil_strlcpy(data.sourceDir, sizeof(data.sourceDir), rom_config_activeSourceDir);
+        strutil_strlcpy(data.toolchainPrefix, sizeof(data.toolchainPrefix), rom_config_activeToolchainPrefix);
         data.hasElf = rom_config_activeElfPath[0] ? 1 : 0;
         data.hasSource = rom_config_activeSourceDir[0] ? 1 : 0;
         data.hasToolchain = rom_config_activeToolchainPrefix[0] ? 1 : 0;
@@ -1536,18 +1524,15 @@ rom_config_saveSettingsForRom(const char *saveDir, const char *romPath,
     data.toolchainPrefix[0] = '\0';
 
     if (elfPath && *elfPath) {
-        strncpy(data.elfPath, elfPath, sizeof(data.elfPath) - 1);
-        data.elfPath[sizeof(data.elfPath) - 1] = '\0';
+        strutil_strlcpy(data.elfPath, sizeof(data.elfPath), elfPath);
         data.hasElf = 1;
     }
     if (sourceDir && *sourceDir) {
-        strncpy(data.sourceDir, sourceDir, sizeof(data.sourceDir) - 1);
-        data.sourceDir[sizeof(data.sourceDir) - 1] = '\0';
+        strutil_strlcpy(data.sourceDir, sizeof(data.sourceDir), sourceDir);
         data.hasSource = 1;
     }
     if (toolchainPrefix && *toolchainPrefix) {
-        strncpy(data.toolchainPrefix, toolchainPrefix, sizeof(data.toolchainPrefix) - 1);
-        data.toolchainPrefix[sizeof(data.toolchainPrefix) - 1] = '\0';
+        strutil_strlcpy(data.toolchainPrefix, sizeof(data.toolchainPrefix), toolchainPrefix);
         data.hasToolchain = 1;
     }
     rom_config_freeInputBindingEntries(&data.inputBindings, &data.inputBindingCount);
@@ -1569,12 +1554,9 @@ rom_config_saveSettingsForRom(const char *saveDir, const char *romPath,
     rom_config_collectActiveTargetOptions(&data, targetIface ? targetIface : target);
     const char *activeRom = rom_config_activeRomPath();
     if (activeRom && strcmp(activeRom, romPath) == 0) {
-        strncpy(rom_config_activeElfPath, data.elfPath, sizeof(rom_config_activeElfPath) - 1);
-        strncpy(rom_config_activeSourceDir, data.sourceDir, sizeof(rom_config_activeSourceDir) - 1);
-        strncpy(rom_config_activeToolchainPrefix, data.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
-        rom_config_activeElfPath[sizeof(rom_config_activeElfPath) - 1] = '\0';
-        rom_config_activeSourceDir[sizeof(rom_config_activeSourceDir) - 1] = '\0';
-        rom_config_activeToolchainPrefix[sizeof(rom_config_activeToolchainPrefix) - 1] = '\0';
+        strutil_strlcpy(rom_config_activeElfPath, sizeof(rom_config_activeElfPath), data.elfPath);
+        strutil_strlcpy(rom_config_activeSourceDir, sizeof(rom_config_activeSourceDir), data.sourceDir);
+        strutil_strlcpy(rom_config_activeToolchainPrefix, sizeof(rom_config_activeToolchainPrefix), data.toolchainPrefix);
         rom_config_activeInit = 1;
     }
     rom_config_writeJsonFile(jsonPath, romPath, &data);

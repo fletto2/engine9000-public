@@ -436,6 +436,7 @@ debugger_toggleSpeed(void)
 {
     debugger.speedMultiplier = (debugger.speedMultiplier == 10) ? 1 : 10;
     ui_refreshSpeedButton();
+    e9ui_showTransientMessage(debugger.speedMultiplier == 10 ? "WARP ON" : "WARP OFF");
 }
 
 void

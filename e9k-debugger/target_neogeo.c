@@ -11,6 +11,7 @@
 #include "system_badge.h"
 #include "alloc.h"
 #include "file.h"
+#include "strutil.h"
 
 static const char *
 target_neogeo_defaultCorePath(void);
@@ -23,7 +24,7 @@ target_neogeo_setConfigDefaults(e9k_system_config_t *config)
     }
     snprintf(config->neogeo.libretro.systemDir, sizeof(config->neogeo.libretro.systemDir), "./system");
     snprintf(config->neogeo.libretro.saveDir, sizeof(config->neogeo.libretro.saveDir), "./saves");
-    snprintf(config->neogeo.libretro.sourceDir, sizeof(config->neogeo.libretro.sourceDir), ".");
+    config->neogeo.libretro.sourceDir[0] = '\0';
     snprintf(config->neogeo.libretro.toolchainPrefix, sizeof(config->neogeo.libretro.toolchainPrefix), "m68k-neogeo-elf");
     config->neogeo.libretro.audioBufferMs = 250;
     config->neogeo.skipBiosLogo = 0;
@@ -161,6 +162,7 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
         e9ui_fileSelect_setOnChange(fsSaves, settings_pathChanged, debugger.settingsEdit.neogeo.libretro.saveDir);
     }
     if (fsSource) {
+        e9ui_fileSelect_setAllowEmpty(fsSource, 1);
         e9ui_fileSelect_setText(fsSource, debugger.settingsEdit.neogeo.libretro.sourceDir);
         e9ui_fileSelect_setOnChange(fsSource, settings_pathChanged, debugger.settingsEdit.neogeo.libretro.sourceDir);
     }
@@ -315,21 +317,27 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
 static void
 target_neogeo_applyActiveSettingsToCurrentSystem(void)
 {
-    strncpy(debugger.config.neogeo.libretro.exePath, rom_config_activeElfPath, sizeof(debugger.config.neogeo.libretro.exePath) - 1);
-    strncpy(debugger.config.neogeo.libretro.sourceDir, rom_config_activeSourceDir, sizeof(debugger.config.neogeo.libretro.sourceDir) - 1);
-    strncpy(debugger.config.neogeo.libretro.toolchainPrefix, rom_config_activeToolchainPrefix, sizeof(debugger.config.neogeo.libretro.toolchainPrefix) - 1);
-    debugger.config.neogeo.libretro.exePath[sizeof(debugger.config.neogeo.libretro.exePath) - 1] = '\0';
-    debugger.config.neogeo.libretro.sourceDir[sizeof(debugger.config.neogeo.libretro.sourceDir) - 1] = '\0';
-    debugger.config.neogeo.libretro.toolchainPrefix[sizeof(debugger.config.neogeo.libretro.toolchainPrefix) - 1] = '\0';
+    strutil_strlcpy(debugger.config.neogeo.libretro.exePath,
+                      sizeof(debugger.config.neogeo.libretro.exePath),
+                      rom_config_activeElfPath);
+    strutil_strlcpy(debugger.config.neogeo.libretro.sourceDir,
+                      sizeof(debugger.config.neogeo.libretro.sourceDir),
+                      rom_config_activeSourceDir);
+    strutil_strlcpy(debugger.config.neogeo.libretro.toolchainPrefix,
+                      sizeof(debugger.config.neogeo.libretro.toolchainPrefix),
+                      rom_config_activeToolchainPrefix);
 }
 
 
 static void
 target_neogeo_setActiveDefaultsFromCurrentSystem(void)
 {
-  strncpy(rom_config_activeElfPath, debugger.config.neogeo.libretro.exePath, sizeof(rom_config_activeElfPath) - 1);
-  strncpy(rom_config_activeSourceDir, debugger.config.neogeo.libretro.sourceDir, sizeof(rom_config_activeSourceDir) - 1);
-  strncpy(rom_config_activeToolchainPrefix, debugger.config.neogeo.libretro.toolchainPrefix, sizeof(rom_config_activeToolchainPrefix) - 1);
+    strutil_strlcpy(rom_config_activeElfPath, sizeof(rom_config_activeElfPath),
+                      debugger.config.neogeo.libretro.exePath);
+    strutil_strlcpy(rom_config_activeSourceDir, sizeof(rom_config_activeSourceDir),
+                      debugger.config.neogeo.libretro.sourceDir);
+    strutil_strlcpy(rom_config_activeToolchainPrefix, sizeof(rom_config_activeToolchainPrefix),
+                      debugger.config.neogeo.libretro.toolchainPrefix);
 }
 
 

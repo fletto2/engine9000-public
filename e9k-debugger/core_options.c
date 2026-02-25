@@ -1669,7 +1669,7 @@ core_options_makeBody(core_options_modal_state_t *st, e9ui_context_t *ctx)
 
     e9ui_component_t *content = e9ui_box_make(cols);
     if (content) {
-        e9ui_box_setPadding(content, 32);
+        e9ui_box_setPaddingSides(content, 32, 32, 0, 32);
     } else {
         content = cols;
     }

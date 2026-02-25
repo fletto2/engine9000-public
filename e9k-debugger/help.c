@@ -7,6 +7,7 @@
  */
 
 #include <limits.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <SDL_ttf.h>
@@ -14,10 +15,12 @@
 #include "help.h"
 #include "debugger.h"
 #include "e9ui.h"
+#include "e9ui_link.h"
 #include "e9ui_scroll.h"
 #include "e9ui_text.h"
 #include "hotkeys.h"
 #include "debugger_input_bindings.h"
+#include "lib9000/file.h"
 
 typedef struct help_collapsible_state {
     const char *label;
@@ -64,6 +67,35 @@ help_baseName(const char *path)
 }
 
 static void
+help_getReleaseVersionText(char *text, size_t textCap)
+{
+    if (!text || textCap == 0) {
+        return;
+    }
+
+    int currentMinor = 0;
+    char path[PATH_MAX];
+    if (file_getAssetPath("assets/release_minor.txt", path, sizeof(path))) {
+        FILE *fp = fopen(path, "r");
+        if (fp) {
+            char buf[64];
+            if (fgets(buf, sizeof(buf), fp)) {
+                char *end = NULL;
+                long value = strtol(buf, &end, 10);
+                if (end != buf && value >= 0 && value <= INT_MAX) {
+                    currentMinor = (int)value;
+                }
+            }
+            fclose(fp);
+            snprintf(text, textCap, "Version v0.%d", currentMinor + 1);
+            return;
+        }
+    }
+
+    snprintf(text, textCap, "Version v0.%d", currentMinor + 1);
+}
+
+static void
 help_closeModal(void)
 {
     if (!e9ui->helpModal) {
@@ -91,6 +123,30 @@ help_uiClose(e9ui_context_t *ctx, void *user)
     (void)ctx;
     (void)user;
     help_closeModal();
+}
+
+static void
+help_openProjectPage(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    (void)user;
+    SDL_OpenURL("https://github.com/alpine9000/engine9000-public");
+}
+
+static void
+help_openYoutubeChannel(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    (void)user;
+    SDL_OpenURL("https://www.youtube.com/channel/UCrmZyw0kDbA2QjWqjIRD_zw");
+}
+
+static void
+help_openFreeSoftware(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    (void)user;
+    SDL_OpenURL("https://raw.githubusercontent.com/alpine9000/engine9000-public/refs/heads/main/COPYING");
 }
 
 static void
@@ -772,6 +828,7 @@ help_showModal(e9ui_context_t *ctx)
         e9ui_childDestroy(stackRight, ctx);
         stackRight = NULL;
     }
+    int contentW = colW * 2 + columnGap;
     e9ui_component_t *scroll = e9ui_scroll_make(columns ? columns : stackLeft);
     e9ui_scroll_setContentHeightPx(scroll, contentH);
     memset(&help_sections, 0, sizeof(help_sections));
@@ -799,25 +856,79 @@ help_showModal(e9ui_context_t *ctx)
     help_setSectionCollapsed(&help_sections.neoGeo, 1);
     help_refreshCollapsedContentHeight();
     e9ui_component_t *center = e9ui_center_make(scroll);
-    int centerW = e9ui_unscale_px(ctx, colW * 2 + columnGap);
+    int centerW = e9ui_unscale_px(ctx, contentW);
     e9ui_center_setSize(center, centerW, 0);
     e9ui_component_t *btnClose = e9ui_button_make("Close", help_uiClose, NULL);
-    e9ui_component_t *footer = e9ui_flow_make();
-    if (footer) {
-        e9ui_flow_setPadding(footer, 0);
-        e9ui_flow_setSpacing(footer, 8);
-        e9ui_flow_setWrap(footer, 0);
-        if (btnClose) {
-            e9ui_button_setTheme(btnClose, e9ui_theme_button_preset_green());
-            e9ui_flow_add(footer, btnClose);
+    e9ui_component_t *overlayClose = NULL;
+    if (btnClose) {
+        e9ui_button_setTheme(btnClose, e9ui_theme_button_preset_green());
+        overlayClose = e9ui_overlay_make(center, btnClose);
+        if (overlayClose) {
+            e9ui_overlay_setAnchor(overlayClose, e9ui_anchor_bottom_right);
+            e9ui_overlay_setMargin(overlayClose, 12);
         }
     }
-    e9ui_component_t *overlay = e9ui_overlay_make(center, footer);
-    if (overlay) {
-        e9ui_overlay_setAnchor(overlay, e9ui_anchor_bottom_right);
-        e9ui_overlay_setMargin(overlay, 12);
+
+    char versionText[64];
+    help_getReleaseVersionText(versionText, sizeof(versionText));
+    e9ui_component_t *versionLabel = e9ui_text_make(versionText);
+    if (versionLabel) {
+        e9ui_text_setColor(versionLabel, (SDL_Color){180, 180, 180, 255});
     }
-    e9ui_modal_setBodyChild(e9ui->helpModal, overlay ? overlay : center, ctx);
+    e9ui_component_t *footerMeta = e9ui_hstack_make();
+    if (footerMeta) {
+        SDL_Color sepColor = bodyColor;
+        e9ui_component_t *sep1 = e9ui_text_make(" | ");
+        e9ui_component_t *sep2 = e9ui_text_make(" | ");
+        e9ui_component_t *sep3 = e9ui_text_make(" | ");
+        e9ui_component_t *freeLink = e9ui_link_make("Free Software", help_openFreeSoftware, NULL);
+        e9ui_component_t *srcLink = e9ui_link_make("Source Code", help_openProjectPage, NULL);
+        e9ui_component_t *ytLink = e9ui_link_make("Youtube Channel", help_openYoutubeChannel, NULL);
+        if (sep1) {
+            e9ui_text_setColor(sep1, sepColor);
+        }
+        if (sep2) {
+            e9ui_text_setColor(sep2, sepColor);
+        }
+        if (sep3) {
+            e9ui_text_setColor(sep3, sepColor);
+        }
+        if (versionLabel) {
+            e9ui_hstack_addFixed(footerMeta, versionLabel, help_measureTextWidth(ctx, versionText));
+            versionLabel = NULL;
+        }
+        if (sep1) {
+            e9ui_hstack_addFixed(footerMeta, sep1, help_measureTextWidth(ctx, " | "));
+        }
+        if (freeLink) {
+            e9ui_hstack_addFixed(footerMeta, freeLink, help_measureTextWidth(ctx, "Free Software"));
+        }
+        if (sep2) {
+            e9ui_hstack_addFixed(footerMeta, sep2, help_measureTextWidth(ctx, " | "));
+        }
+        if (srcLink) {
+            e9ui_hstack_addFixed(footerMeta, srcLink, help_measureTextWidth(ctx, "Source Code"));
+        }
+        if (sep3) {
+            e9ui_hstack_addFixed(footerMeta, sep3, help_measureTextWidth(ctx, " | "));
+        }
+        if (ytLink) {
+            e9ui_hstack_addFixed(footerMeta, ytLink, help_measureTextWidth(ctx, "Youtube Channel"));
+        }
+    }
+
+    e9ui_component_t *body = overlayClose ? overlayClose : center;
+    e9ui_component_t *overlayVersion = NULL;
+    e9ui_component_t *overlayLeftChild = footerMeta ? footerMeta : versionLabel;
+    if (overlayLeftChild) {
+        overlayVersion = e9ui_overlay_make(body, overlayLeftChild);
+        if (overlayVersion) {
+            e9ui_overlay_setAnchor(overlayVersion, e9ui_anchor_bottom_left);
+            e9ui_overlay_setMargin(overlayVersion, 12);
+        }
+    }
+
+    e9ui_modal_setBodyChild(e9ui->helpModal, overlayVersion ? overlayVersion : body, ctx);
     if (btnClose) {
         e9ui_setFocus(ctx, btnClose);
     }

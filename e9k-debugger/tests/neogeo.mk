@@ -19,15 +19,19 @@ make-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
 # remakers
 
 remake-test-neogeosavestate: all 
+	@printf "NEO GEO SAVE STATE ($@) ..."
 	./e9k-debugger --neogeo --volume=0 --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/savestate
 
 remake-test-neogeosprite: all 
+	@printf "NEO GEO SPRITE DEBUG ($@) ..."
 	./e9k-debugger --neogeo --volume=0 --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/sprite
 
 remake-test-neogeotracker: all 
+	@printf "NEO GEO MEMORY TRACKER ($@) ..."
 	./e9k-debugger --neogeo --volume=0 --rom=./tests/neogeo/basic/basic.neo --remake-test tests/results/neogeo/tracker
 
 remake-test-neogeostepping: tests/neogeo/stepping/build/rom.elf
+	@printf "NEO GEO STEPPING ($@) ..."
 	./e9k-debugger --neogeo --volume=0 --source-dir=./tests/neogeo/stepping --elf=./tests/neogeo/stepping/build/rom.elf --rom=./tests/neogeo/stepping/build/stepping.neo --remake-test tests/results/neogeo/stepping
 
 

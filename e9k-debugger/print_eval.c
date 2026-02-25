@@ -28,6 +28,7 @@
 #include "libretro.h"
 #include "libretro_host.h"
 #include "machine.h"
+#include "strutil.h"
 
 typedef struct print_value {
     print_type_t *type;
@@ -2581,7 +2582,7 @@ print_eval_completeMembers(print_index_t *index, const char *baseExpr, const cha
             continue;
         }
         char fullName[512];
-        snprintf(fullName, sizeof(fullName), "%s%s%s", baseExpr, sep, name);
+        strutil_join3Trunc(fullName, sizeof(fullName), baseExpr, sep, name);
         if (count >= cap) {
             int next = cap ? cap * 2 : 32;
             char **nextItems = (char **)alloc_realloc(items, sizeof(*nextItems) * (size_t)next);
