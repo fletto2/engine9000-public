@@ -181,6 +181,8 @@ release-w64-package:
 	trap 'rm -rf "$$temp_dir"' EXIT INT TERM; \
 	package_dir="$$temp_dir/$(RELEASE_PACKAGE_NAME)"; \
 	mkdir -p "$$package_dir/system"; \
+	mkdir -p "$$package_dir/saves"; \
+	: > "$$package_dir/saves/.saves"; \
 	for file in e9k-debugger.exe $(RELEASE_W64_DLLS); do \
 		if [ ! -f "dist/e9kd/$$file" ]; then \
 			echo "Missing file: dist/e9kd/$$file"; \

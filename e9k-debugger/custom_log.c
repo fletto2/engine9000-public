@@ -1475,7 +1475,7 @@ custom_log_overlayBodyHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, c
             int scrollX = 0;
             int scrollY = scrollModel.topFilteredRow;
             if (e9ui_scrollbar_handleEvent(ui,
-                                           &ui->ctx,
+                                           ctx,
                                            &localEv,
                                            scrollBounds,
                                            1,
