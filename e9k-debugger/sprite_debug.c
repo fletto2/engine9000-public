@@ -63,7 +63,6 @@ typedef struct sprite_debug_state {
     uint32_t last_hash;
     int cached_valid;
     int open;
-    int closeRequested;
     int hist_x0_anchor;
     uint32_t window_id;
     int always_on_top_state;
@@ -274,7 +273,7 @@ sprite_debug_overlayWindowCloseRequested(e9ui_window_t *window, void *user)
 {
     (void)window;
     (void)user;
-    s_dbg.closeRequested = 1;
+    sprite_debug_toggle();
 }
 
 static const uint8_t g_lut_hshrink[0x10][0x10] = {
@@ -525,7 +524,6 @@ sprite_debug_toggle(void)
         s_dbg.renderer = e9ui->ctx.renderer;
         s_dbg.hist_x0_anchor = -1;
         s_dbg.open = 1;
-        s_dbg.closeRequested = 0;
     } else {
         if (s_dbg.texture) {
             SDL_DestroyTexture(s_dbg.texture);
@@ -550,7 +548,6 @@ sprite_debug_toggle(void)
         s_dbg.overlayBodyHost = NULL;
         s_dbg.hist_x0_anchor = -1;
         s_dbg.open = 0;
-        s_dbg.closeRequested = 0;
         s_dbg.hasLastState = 0;
         s_dbg.window = NULL;
         s_dbg.renderer = NULL;
@@ -851,10 +848,6 @@ sprite_debug_renderFrameInternal(const e9k_debug_sprite_state_t *st, int present
 void
 sprite_debug_render(const e9k_debug_sprite_state_t *st)
 {
-    if (s_dbg.closeRequested && s_dbg.open) {
-        sprite_debug_toggle();
-        return;
-    }
     if (st) {
         s_dbg.lastState = *st;
         s_dbg.hasLastState = 1;

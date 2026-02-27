@@ -17,6 +17,9 @@ void
 ui_updateSourceTitle(void);
 
 void
+ui_updateWindowTitle(void);
+
+void
 ui_refreshOnPause(void);
 
 void
@@ -30,6 +33,9 @@ ui_copyFramebufferToClipboard(void);
 
 void
 ui_refreshSpeedButton(void);
+
+void
+ui_refreshRecordButton(void);
 
 void
 ui_refreshHotkeyTooltips(void);

@@ -504,8 +504,8 @@ help_showModal(e9ui_context_t *ctx)
     e9ui_text_setFontSize(titleShortcuts, headingSize);
     e9ui_text_setColor(titleShortcuts, headingColor);
 
-    char shortcutKeyBufs[28][64];
-    const char *shortcutKeys[28] = {0};
+    char shortcutKeyBufs[30][64];
+    const char *shortcutKeys[30] = {0};
     const char *shortcutVals[] = { "Help",
                                    "Screenshot to clipboard",
                                    "Amiga <-> Neo Geo",
@@ -518,6 +518,8 @@ help_showModal(e9ui_context_t *ctx)
                                    "Reset core",
                                    "Toggle hotkeys",				   
                                    "Settings",
+                                   "Hex converter",
+                                   "In-place hex convert",
                                    "Toggle fullscreen",
                                    "Release mouse capture",
                                    "Close modal",
@@ -546,7 +548,9 @@ help_showModal(e9ui_context_t *ctx)
         "restart",
         "reset_core",
         "hotkeys_toggle",
-        "settings",	
+        "settings",
+        "hex_convert",
+        "hex_convert_inline",
         "fullscreen",
         "mouse_release",
         NULL,
@@ -565,6 +569,8 @@ help_showModal(e9ui_context_t *ctx)
         "checkpoint_next"
     };
     const char *shortcutFixedKeys[] = {
+        NULL,
+        NULL,
         NULL,
         NULL,
         NULL,

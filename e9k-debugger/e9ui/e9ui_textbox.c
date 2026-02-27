@@ -67,6 +67,8 @@ typedef struct textbox_state {
     char               *convertAfter;
     int                convertApplying;
     int                suppressNextTextInput;
+    int                suppressSelectToggleClick;
+    int                enterMovesToNextTextbox;
 } textbox_state_t;
 
 typedef struct textbox_snapshot {
@@ -76,6 +78,9 @@ typedef struct textbox_snapshot {
     int sel_start;
     int sel_end;
 } textbox_snapshot_t;
+
+static e9ui_textbox_shortcut_match_cb_t textbox_shortcutMatchCb = NULL;
+static void *textbox_shortcutMatchUser = NULL;
 
 static void
 textbox_recordUndo(textbox_state_t *st);
@@ -1662,7 +1667,7 @@ textbox_renderComp(e9ui_component_t *self, e9ui_context_t *ctx)
         textCol = st->textColor;
     }
     if (st->len > 0) {
-        if (st->select_optionCount > 0) {
+        if (st->select_optionCount > 0 && !st->editable) {
             st->scrollX = 0;
         } else {
             textbox_updateScroll(st, font, viewW);
@@ -1972,6 +1977,13 @@ textbox_onClick(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mouse_ev
     if (st->select_optionCount <= 0) {
         return;
     }
+    if (st->suppressSelectToggleClick) {
+        st->suppressSelectToggleClick = 0;
+        return;
+    }
+    if (st->editable && st->click_streak > 1) {
+        return;
+    }
     e9ui_setFocus(ctx, self);
     textbox_selectOverlay_toggle(ctx, self);
 }
@@ -2099,12 +2111,15 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
         textbox_updateScroll(st, font, viewW);
         return 1;
     }
-    if ((accel || alt) && kc == SDLK_h) {
+    int inlineHexShortcut = 0;
+    if (textbox_shortcutMatchCb) {
+        inlineHexShortcut = textbox_shortcutMatchCb(&ev->key, "hex_convert_inline", textbox_shortcutMatchUser);
+    } else if (accel && kc == SDLK_h) {
+        inlineHexShortcut = 1;
+    }
+    if (inlineHexShortcut) {
         if (textbox_convertSelectionBase(st, ctx, self, font, viewW, SDLK_h)) {
             textbox_markClear(st);
-            return 1;
-        }
-        if (alt) {
             return 1;
         }
     }
@@ -2290,7 +2305,7 @@ textbox_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_
             return 1;
         }
         textbox_notifySubmit(st, ctx);
-        {
+        if (st->enterMovesToNextTextbox) {
             e9ui_component_t *nextTextbox = textbox_findNextTextbox(ctx, self);
             if (nextTextbox) {
                 e9ui_setFocus(ctx, nextTextbox);
@@ -2559,6 +2574,13 @@ e9ui_textbox_setKeyHandler(e9ui_component_t *comp, e9ui_textbox_key_cb_t cb, voi
     st->key_user = user;
 }
 
+void
+e9ui_textbox_setShortcutMatcher(e9ui_textbox_shortcut_match_cb_t cb, void *user)
+{
+    textbox_shortcutMatchCb = cb;
+    textbox_shortcutMatchUser = user;
+}
+
 void *
 e9ui_textbox_getUser(const e9ui_component_t *comp)
 {
@@ -2668,6 +2690,16 @@ e9ui_textbox_getCompletionMode(const e9ui_component_t *comp)
     }
     const textbox_state_t *st = (const textbox_state_t*)comp->state;
     return st->completionMode;
+}
+
+void
+e9ui_textbox_setEnterMovesToNextTextbox(e9ui_component_t *comp, int enabled)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    textbox_state_t *st = (textbox_state_t*)comp->state;
+    st->enterMovesToNextTextbox = enabled ? 1 : 0;
 }
 
 void
@@ -2949,6 +2981,16 @@ textbox_selectOverlay_computeLayout(e9ui_context_t *ctx, SDL_Rect *outRect, int 
     return 1;
 }
 
+static int
+textbox_selectOverlay_pointInOwner(const e9ui_component_t *owner, int x, int y)
+{
+    if (!owner) {
+        return 0;
+    }
+    SDL_Rect r = { owner->bounds.x, owner->bounds.y, owner->bounds.w, owner->bounds.h };
+    return textbox_selectOverlay_pointInRect(&r, x, y);
+}
+
 static void
 textbox_selectOverlay_close(void)
 {
@@ -3185,6 +3227,11 @@ e9ui_textbox_selectOverlayHandleEvent(e9ui_context_t *ctx, const e9ui_event_t *e
         }
         int insideMenu = textbox_selectOverlay_pointInRect(&rect, ev->button.x, ev->button.y);
         if (!insideMenu) {
+            if (textbox_selectOverlay_pointInOwner(owner, ev->button.x, ev->button.y)) {
+                st->suppressSelectToggleClick = 1;
+                textbox_selectOverlay_close();
+                return 0;
+            }
             textbox_selectOverlay_close();
             return 1;
         }
@@ -3238,6 +3285,14 @@ e9ui_textbox_selectOverlayHandleEvent(e9ui_context_t *ctx, const e9ui_event_t *e
 
     if (ev->type == SDL_KEYDOWN) {
         SDL_Keycode kc = ev->key.keysym.sym;
+        if (kc == SDLK_TAB) {
+            textbox_selectOverlay_close();
+            e9ui_setFocus(ctx, owner);
+            if (owner->handleEvent) {
+                (void)owner->handleEvent(owner, ctx, ev);
+            }
+            return 1;
+        }
         if (kc == SDLK_ESCAPE) {
             textbox_selectOverlay_close();
             return 1;
@@ -3314,6 +3369,10 @@ e9ui_textbox_selectOverlayRender(e9ui_context_t *ctx)
         return;
     }
     e9ui_component_t *owner = textbox_select_overlay.owner;
+    if (e9ui_getFocus(ctx) != owner) {
+        textbox_selectOverlay_close();
+        return;
+    }
     textbox_state_t *st = (textbox_state_t*)owner->state;
     if (!st || !st->select_options || st->select_optionCount <= 0) {
         textbox_selectOverlay_close();
@@ -3406,8 +3465,18 @@ e9ui_textbox_selectOverlayRender(e9ui_context_t *ctx)
             if (ty < item.y) {
                 ty = item.y;
             }
-            SDL_Rect dst = { tx, ty, tw, th };
-            SDL_RenderCopy(ctx->renderer, tex, NULL, &dst);
+            int maxTextW = item.w - padPx * 2;
+            if (maxTextW < 0) {
+                maxTextW = 0;
+            }
+            if (st->editable && tw > maxTextW && maxTextW > 0) {
+                SDL_Rect src = { tw - maxTextW, 0, maxTextW, th };
+                SDL_Rect dst = { tx, ty, maxTextW, th };
+                SDL_RenderCopy(ctx->renderer, tex, &src, &dst);
+            } else {
+                SDL_Rect dst = { tx, ty, tw, th };
+                SDL_RenderCopy(ctx->renderer, tex, NULL, &dst);
+            }
         }
     }
 

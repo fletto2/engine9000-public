@@ -84,7 +84,23 @@ tinyfiledialogs_osxSplitDefaultPath(
 		return;
 	}
 
-	if ([absPath hasSuffix:@"/"]) {
+	BOOL directoryHint = NO;
+	if (defaultPathAndOrFile) {
+		size_t sourceLen = strlen(defaultPathAndOrFile);
+		if (sourceLen > 0) {
+			char tail = defaultPathAndOrFile[sourceLen - 1];
+			if (tail == '/' || tail == '\\') {
+				directoryHint = YES;
+			}
+		}
+	}
+
+	BOOL isDirectory = NO;
+	if ([[NSFileManager defaultManager] fileExistsAtPath:absPath isDirectory:&isDirectory] && isDirectory) {
+		directoryHint = YES;
+	}
+
+	if (directoryHint) {
 		if (outDirectoryUrl) {
 			*outDirectoryUrl = [NSURL fileURLWithPath:absPath isDirectory:YES];
 		}

@@ -822,6 +822,7 @@ debugger_main(int argc, char **argv)
   }
   settings_applyToolbarMode();
   settings_updateButton(debugger.settingsOk);
+  ui_refreshRecordButton();
 
   if (debugger.libretro.enabled) {
     if (!libretro_host_init(e9ui->ctx.renderer)) {

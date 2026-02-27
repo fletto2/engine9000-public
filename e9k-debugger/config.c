@@ -12,10 +12,12 @@
 #include "custom_ui.h"
 #include "debugger.h"
 #include "e9ui.h"
+#include "hex_convert.h"
 #include "hotkeys.h"
 #include "sprite_debug.h"
 #include "mega_sprite_debug.h"
 #include "shader_ui.h"
+#include "settings.h"
 #include "transition.h"
 #include "ui_test.h"
 
@@ -147,9 +149,7 @@ config_persistConfig(FILE *f)
     }
     fprintf(f, "comp.config.megadrive.audio_enabled=%d\n", debugger.config.megadrive.libretro.audioEnabled);
     fprintf(f, "comp.config.crt_enabled=%d\n", debugger.config.crtEnabled ? 1 : 0);
-    if (!debugger.config.recordEnabled) {
-        fprintf(f, "comp.config.record_enabled=0\n");
-    }
+    fprintf(f, "comp.config.record_enabled=%d\n", debugger.config.recordEnabled ? 1 : 0);
     if (!debugger.config.logosEnabled) {
         fprintf(f, "comp.config.logos_enabled=0\n");
     }
@@ -165,6 +165,8 @@ config_persistConfig(FILE *f)
     custom_ui_persistConfig(f);
     custom_log_persistConfig(f);
     shader_ui_persistConfig(f);
+    hex_convert_persistConfig(f);
+    settings_persistConfig(f);
 }
 
 void
@@ -336,6 +338,16 @@ config_loadConfigFile(const char *path)
         if (strncmp(key, "comp.shader_ui.", 15) == 0) {
             const char *prop = key + 15;
             shader_ui_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.hex_convert.", 17) == 0) {
+            const char *prop = key + 17;
+            hex_convert_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.settings.", 14) == 0) {
+            const char *prop = key + 14;
+            settings_loadConfigProperty(prop, value);
             continue;
         }
     }

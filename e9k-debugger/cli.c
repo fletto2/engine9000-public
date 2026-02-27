@@ -409,6 +409,25 @@ cli_parseArgs(int argc, char **argv)
             debugger.smokeTestMode = SMOKE_TEST_MODE_COMPARE;
             continue;
         }
+        if (strcmp(argv[i], "--remake-smoke") == 0 && i + 1 < argc) {
+            cli_copyPath(debugger.smokeTestPath, sizeof(debugger.smokeTestPath), argv[++i]);
+            debugger.smokeTestMode = SMOKE_TEST_MODE_REMAKE;
+            continue;
+        }
+        if (strcmp(argv[i], "--remake-smoke") == 0) {
+            cli_setError("remake-smoke: missing folder path");
+            return;
+        }
+        if (strncmp(argv[i], "--remake-smoke=", sizeof("--remake-smoke=") - 1) == 0) {
+            if (argv[i][sizeof("--remake-smoke=") - 1] == '\0') {
+                cli_setError("remake-smoke: missing folder path");
+                return;
+            }
+            cli_copyPath(debugger.smokeTestPath, sizeof(debugger.smokeTestPath),
+                         argv[i] + sizeof("--remake-smoke=") - 1);
+            debugger.smokeTestMode = SMOKE_TEST_MODE_REMAKE;
+            continue;
+        }
         if (strcmp(argv[i], "--make-test") == 0 && i + 1 < argc) {
             char folder[PATH_MAX];
             folder[0] = '\0';
@@ -589,6 +608,7 @@ cli_printUsage(const char *argv0)
     printf("  --record PATH                Record input events to a file\n");
     printf("  --playback PATH              Replay input events from a file\n");
     printf("  --make-smoke PATH            Save frames and inputs to a folder\n");
+    printf("  --remake-smoke PATH          Replay inputs and regenerate smoke frames\n");
     printf("  --smoke-test PATH            Replay inputs and compare frames\n");
     printf("  --smoke-open                 Open montage on smoke-test failure\n");
     printf("  --make-test PATH             Record inputs + UI test frame captures\n");

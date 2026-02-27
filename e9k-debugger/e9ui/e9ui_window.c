@@ -29,15 +29,26 @@ typedef struct e9ui_window_overlay_state
     int resizeMask;
     int resizeStartMouseX;
     int resizeStartMouseY;
+    int minWidthPx;
+    int minHeightPx;
     e9ui_window_close_cb_t onClose;
     void *onCloseUser;
 } e9ui_window_overlay_state_t;
+
+typedef struct e9ui_window_deferred_close_call
+{
+    e9ui_window_t *owner;
+    e9ui_window_close_cb_t onClose;
+    void *onCloseUser;
+} e9ui_window_deferred_close_call_t;
 
 struct e9ui_window
 {
     e9ui_window_backend_t backend;
     e9ui_component_t *windowComp;
     int open;
+    int minWidthPx;
+    int minHeightPx;
 };
 
 static SDL_Cursor *e9ui_window_overlayCursorArrow = NULL;
@@ -47,6 +58,9 @@ static SDL_Cursor *e9ui_window_overlayCursorNs = NULL;
 static SDL_Cursor *e9ui_window_overlayCursorEw = NULL;
 static SDL_Cursor *e9ui_window_overlayCursorNwse = NULL;
 static SDL_Cursor *e9ui_window_overlayCursorNesw = NULL;
+static SDL_Texture *e9ui_window_overlayCloseIcon = NULL;
+static int e9ui_window_overlayCloseIconW = 0;
+static int e9ui_window_overlayCloseIconH = 0;
 
 enum
 {
@@ -82,6 +96,84 @@ e9ui_window_overlayEnsureCursors(void)
     }
 }
 
+void
+e9ui_window_resetOverlayResources(void)
+{
+    if (e9ui_window_overlayCursorArrow) {
+        SDL_FreeCursor(e9ui_window_overlayCursorArrow);
+        e9ui_window_overlayCursorArrow = NULL;
+    }
+    if (e9ui_window_overlayCursorHand) {
+        SDL_FreeCursor(e9ui_window_overlayCursorHand);
+        e9ui_window_overlayCursorHand = NULL;
+    }
+    if (e9ui_window_overlayCursorMove) {
+        SDL_FreeCursor(e9ui_window_overlayCursorMove);
+        e9ui_window_overlayCursorMove = NULL;
+    }
+    if (e9ui_window_overlayCursorNs) {
+        SDL_FreeCursor(e9ui_window_overlayCursorNs);
+        e9ui_window_overlayCursorNs = NULL;
+    }
+    if (e9ui_window_overlayCursorEw) {
+        SDL_FreeCursor(e9ui_window_overlayCursorEw);
+        e9ui_window_overlayCursorEw = NULL;
+    }
+    if (e9ui_window_overlayCursorNwse) {
+        SDL_FreeCursor(e9ui_window_overlayCursorNwse);
+        e9ui_window_overlayCursorNwse = NULL;
+    }
+    if (e9ui_window_overlayCursorNesw) {
+        SDL_FreeCursor(e9ui_window_overlayCursorNesw);
+        e9ui_window_overlayCursorNesw = NULL;
+    }
+    if (e9ui_window_overlayCloseIcon) {
+        SDL_DestroyTexture(e9ui_window_overlayCloseIcon);
+        e9ui_window_overlayCloseIcon = NULL;
+    }
+    e9ui_window_overlayCloseIconW = 0;
+    e9ui_window_overlayCloseIconH = 0;
+}
+
+static void
+e9ui_window_overlayRunDeferredClose(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    e9ui_window_deferred_close_call_t *call = (e9ui_window_deferred_close_call_t *)user;
+    if (!call) {
+        return;
+    }
+    if (call->onClose) {
+        call->onClose(call->owner, call->onCloseUser);
+    }
+    alloc_free(call);
+}
+
+static void
+e9ui_window_overlayNotifyCloseDeferred(e9ui_context_t *ctx, e9ui_window_overlay_state_t *st)
+{
+    if (!ctx || !st || !st->onClose) {
+        return;
+    }
+    e9ui_window_close_cb_t onClose = st->onClose;
+    void *onCloseUser = st->onCloseUser;
+    e9ui_window_t *owner = st->owner;
+    st->onClose = NULL;
+    e9ui_window_deferred_close_call_t *call =
+        (e9ui_window_deferred_close_call_t *)alloc_calloc(1, sizeof(*call));
+    if (!call) {
+        onClose(owner, onCloseUser);
+        return;
+    }
+    call->owner = owner;
+    call->onClose = onClose;
+    call->onCloseUser = onCloseUser;
+    if (!e9ui_defer(ctx, e9ui_window_overlayRunDeferredClose, call)) {
+        alloc_free(call);
+        onClose(owner, onCloseUser);
+    }
+}
+
 static SDL_Cursor *
 e9ui_window_overlayResizeCursorForMask(int resizeMask)
 {
@@ -107,20 +199,17 @@ e9ui_window_overlayResizeCursorForMask(int resizeMask)
 static SDL_Texture *
 e9ui_window_overlayGetCloseIcon(SDL_Renderer *renderer, int *outW, int *outH)
 {
-    static SDL_Texture *icon = NULL;
-    static int iconW = 0;
-    static int iconH = 0;
     if (!renderer) {
         return NULL;
     }
-    if (icon) {
+    if (e9ui_window_overlayCloseIcon) {
         if (outW) {
-            *outW = iconW;
+            *outW = e9ui_window_overlayCloseIconW;
         }
         if (outH) {
-            *outH = iconH;
+            *outH = e9ui_window_overlayCloseIconH;
         }
-        return icon;
+        return e9ui_window_overlayCloseIcon;
     }
     char path[PATH_MAX];
     if (!file_getAssetPath("assets/icons/close.png", path, sizeof(path))) {
@@ -131,17 +220,48 @@ e9ui_window_overlayGetCloseIcon(SDL_Renderer *renderer, int *outW, int *outH)
         debug_error("e9ui_window: failed to load close icon %s: %s", path, IMG_GetError());
         return NULL;
     }
-    icon = SDL_CreateTextureFromSurface(renderer, s);
-    iconW = s->w;
-    iconH = s->h;
+    e9ui_window_overlayCloseIcon = SDL_CreateTextureFromSurface(renderer, s);
+    e9ui_window_overlayCloseIconW = s->w;
+    e9ui_window_overlayCloseIconH = s->h;
     SDL_FreeSurface(s);
     if (outW) {
-        *outW = iconW;
+        *outW = e9ui_window_overlayCloseIconW;
     }
     if (outH) {
-        *outH = iconH;
+        *outH = e9ui_window_overlayCloseIconH;
     }
-    return icon;
+    return e9ui_window_overlayCloseIcon;
+}
+
+static int
+e9ui_window_overlayIsForeground(const e9ui_component_t *self)
+{
+    if (!self || !e9ui) {
+        return 0;
+    }
+    e9ui_component_t *hostRoot = e9ui_getOverlayHost();
+    if (!hostRoot) {
+        hostRoot = e9ui->root;
+    }
+    if (!hostRoot || !hostRoot->children) {
+        return 0;
+    }
+    list_t *last = list_last(hostRoot->children);
+    if (!last || !last->data) {
+        return 0;
+    }
+    e9ui_component_child_t *container = (e9ui_component_child_t *)last->data;
+    return (container && container->component == self) ? 1 : 0;
+}
+
+static Uint8
+e9ui_window_overlayLighten(Uint8 value, Uint8 amount)
+{
+    int out = (int)value + (int)amount;
+    if (out > 255) {
+        out = 255;
+    }
+    return (Uint8)out;
 }
 
 static int
@@ -192,10 +312,20 @@ e9ui_window_overlayLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect
 }
 
 static void
-e9ui_window_overlayDrawTitlebar(e9ui_window_overlay_state_t *st, e9ui_context_t *ctx, SDL_Rect rect)
+e9ui_window_overlayDrawTitlebar(e9ui_component_t *self, e9ui_window_overlay_state_t *st, e9ui_context_t *ctx, SDL_Rect rect)
 {
     const e9k_theme_titlebar_t *theme = &e9ui->theme.titlebar;
-    SDL_SetRenderDrawColor(ctx->renderer, theme->background.r, theme->background.g, theme->background.b, theme->background.a);
+    SDL_Color titleBackground = theme->background;
+    if (e9ui_window_overlayIsForeground(self)) {
+        titleBackground.r = e9ui_window_overlayLighten(titleBackground.r, 10);
+        titleBackground.g = e9ui_window_overlayLighten(titleBackground.g, 10);
+        titleBackground.b = e9ui_window_overlayLighten(titleBackground.b, 10);
+    }
+    SDL_SetRenderDrawColor(ctx->renderer,
+                           titleBackground.r,
+                           titleBackground.g,
+                           titleBackground.b,
+                           titleBackground.a);
     SDL_RenderFillRect(ctx->renderer, &rect);
 
     int closePad = e9ui_scale_px(ctx, 6);
@@ -265,16 +395,16 @@ e9ui_window_overlayRender(e9ui_component_t *self, e9ui_context_t *ctx)
     } else {
         SDL_RenderSetClipRect(ctx->renderer, &bg);
     }
-    SDL_SetRenderDrawColor(ctx->renderer, 24, 24, 24, 255);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
     SDL_RenderFillRect(ctx->renderer, &bg);
-    SDL_SetRenderDrawColor(ctx->renderer, 70, 70, 70, 255);
-    SDL_RenderDrawRect(ctx->renderer, &bg);
 
     SDL_Rect titleRect = { self->bounds.x, self->bounds.y, self->bounds.w, e9ui_window_overlayTitlebarHeight(ctx) };
-    e9ui_window_overlayDrawTitlebar(st, ctx, titleRect);
+    e9ui_window_overlayDrawTitlebar(self, st, ctx, titleRect);
     if (st->body && st->body->render) {
         st->body->render(st->body, ctx);
     }
+    SDL_SetRenderDrawColor(ctx->renderer, 70, 70, 70, 255);
+    SDL_RenderDrawRect(ctx->renderer, &bg);
     if (hadClip) {
         SDL_RenderSetClipRect(ctx->renderer, &prevClip);
     } else {
@@ -432,8 +562,8 @@ e9ui_window_overlayApplyResizeDrag(e9ui_window_overlay_state_t *st, const e9ui_c
     if (!st || !ctx || !st->resizing || !st->resizeMask) {
         return;
     }
-    int minW = e9ui_scale_px(ctx, 360);
-    int minH = e9ui_scale_px(ctx, 320);
+    int minW = e9ui_scale_px(ctx, (st->minWidthPx > 0) ? st->minWidthPx : 360);
+    int minH = e9ui_scale_px(ctx, (st->minHeightPx > 0) ? st->minHeightPx : 320);
     int dx = mouseX - st->resizeStartMouseX;
     int dy = mouseY - st->resizeStartMouseY;
 
@@ -585,7 +715,7 @@ e9ui_window_overlayHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, cons
         }
         if (e9ui_window_overlayPointInRect(&st->closeRect, mx, my)) {
             if (st->onClose) {
-                st->onClose(st->owner, st->onCloseUser);
+                e9ui_window_overlayNotifyCloseDeferred(ctx, st);
             }
             return 1;
         }
@@ -644,7 +774,7 @@ e9ui_window_overlayHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, cons
         e9ui_component_t *focus = e9ui_getFocus(ctx);
         if (focus && e9ui_window_componentContainsComponent(self, focus)) {
             if (st->onClose) {
-                st->onClose(st->owner, st->onCloseUser);
+                e9ui_window_overlayNotifyCloseDeferred(ctx, st);
             }
             return 1;
         }
@@ -739,6 +869,8 @@ e9ui_window_overlayMake(e9ui_window_t *owner,
     st->owner = owner;
     st->rect = rect;
     st->body = body;
+    st->minWidthPx = owner ? owner->minWidthPx : 0;
+    st->minHeightPx = owner ? owner->minHeightPx : 0;
     st->onClose = onClose;
     st->onCloseUser = onCloseUser;
     if (title && *title) {
@@ -770,6 +902,22 @@ e9ui_windowCreate(e9ui_window_backend_t backend)
     }
     window->backend = backend;
     return window;
+}
+
+void
+e9ui_windowSetMinSize(e9ui_window_t *window, int minWidthPx, int minHeightPx)
+{
+    if (!window) {
+        return;
+    }
+    window->minWidthPx = (minWidthPx > 0) ? minWidthPx : 0;
+    window->minHeightPx = (minHeightPx > 0) ? minHeightPx : 0;
+    if (window->windowComp && window->windowComp->state &&
+        window->backend == e9ui_window_backend_overlay) {
+        e9ui_window_overlay_state_t *st = (e9ui_window_overlay_state_t *)window->windowComp->state;
+        st->minWidthPx = window->minWidthPx;
+        st->minHeightPx = window->minHeightPx;
+    }
 }
 
 void

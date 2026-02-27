@@ -409,28 +409,6 @@ rom_config_buildJsonPathCore(char *out, size_t cap, const char *saveDir, const c
 }
 
 static int
-rom_config_buildLegacyJsonPathCore(char *out, size_t cap, const char *saveDir, const char *romPath)
-{
-    if (!out || cap == 0 || !saveDir || !romPath) {
-        return 0;
-    }
-    const char *base = rom_config_basename(romPath);
-    if (!base || !*base) {
-        return 0;
-    }
-    size_t dirLen = strlen(saveDir);
-    int needsSlash = (dirLen > 0 && saveDir[dirLen - 1] != '/' && saveDir[dirLen - 1] != '\\');
-    int written = snprintf(out, cap, "%s%s%s-e9k-debug.json", saveDir, needsSlash ? "/" : "", base);
-    if (written < 0 || (size_t)written >= cap) {
-        if (cap > 0) {
-            out[0] = '\0';
-        }
-        return 0;
-    }
-    return 1;
-}
-
-static int
 rom_config_findExistingPath(char *out, size_t cap, const char *saveDir, const char *romPath)
 {
     if (!out || cap == 0) {
@@ -446,14 +424,6 @@ rom_config_findExistingPath(char *out, size_t cap, const char *saveDir, const ch
     }
     if (rom_config_pathExistsFile(jsonPath)) {
         strutil_strlcpy(out, cap, jsonPath);
-        return 1;
-    }
-    char legacyPath[PATH_MAX];
-    if (!rom_config_buildLegacyJsonPathCore(legacyPath, sizeof(legacyPath), saveDir, romPath)) {
-        return 0;
-    }
-    if (rom_config_pathExistsFile(legacyPath)) {
-        strutil_strlcpy(out, cap, legacyPath);
         return 1;
     }
     return 0;
@@ -1213,26 +1183,16 @@ rom_config_loadSettingsForRom(const char *saveDir, const char *romPath,
     if (!rom_config_buildJsonPathCore(jsonPath, sizeof(jsonPath), effectiveSaveDir, romPath)) {
         return 0;
     }
-    char legacyPath[PATH_MAX];
-    int haveLegacy = rom_config_buildLegacyJsonPathCore(legacyPath, sizeof(legacyPath), effectiveSaveDir, romPath);
     char fallbackJsonPath[PATH_MAX];
     fallbackJsonPath[0] = '\0';
-    char fallbackLegacyPath[PATH_MAX];
-    fallbackLegacyPath[0] = '\0';
-    int haveFallbackLegacy = 0;
     if (testBaseSaveDir && *testBaseSaveDir && strcmp(testBaseSaveDir, effectiveSaveDir) != 0) {
         (void)rom_config_buildJsonPathCore(fallbackJsonPath, sizeof(fallbackJsonPath), testBaseSaveDir, romPath);
-        haveFallbackLegacy = rom_config_buildLegacyJsonPathCore(fallbackLegacyPath, sizeof(fallbackLegacyPath), testBaseSaveDir, romPath);
     }
     const char *pathToRead = NULL;
     if (rom_config_pathExistsFile(jsonPath)) {
         pathToRead = jsonPath;
-    } else if (haveLegacy && rom_config_pathExistsFile(legacyPath)) {
-        pathToRead = legacyPath;
     } else if (fallbackJsonPath[0] && rom_config_pathExistsFile(fallbackJsonPath)) {
         pathToRead = fallbackJsonPath;
-    } else if (haveFallbackLegacy && fallbackLegacyPath[0] && rom_config_pathExistsFile(fallbackLegacyPath)) {
-        pathToRead = fallbackLegacyPath;
     }
     if (!pathToRead) {
         return 0;
@@ -1242,7 +1202,6 @@ rom_config_loadSettingsForRom(const char *saveDir, const char *romPath,
     if (!rom_config_parseFile(pathToRead, &data)) {
         return 0;
     }
-
     if (outHasElf) {
         *outHasElf = data.hasElf ? 1 : 0;
     }
@@ -1362,8 +1321,9 @@ rom_config_loadRuntimeStateOnBoot(void)
 void
 rom_config_saveOnExit(void)
 {
-    if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
-      return;
+    if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE ||
+        debugger.smokeTestMode == SMOKE_TEST_MODE_REMAKE) {
+        return;
     }
     
     if (ui_test_getMode() != UI_TEST_MODE_NONE) {
@@ -1378,44 +1338,30 @@ rom_config_saveOnExit(void)
     if (!rom_config_buildJsonPathCore(jsonPath, sizeof(jsonPath), saveDir, romPath)) {
         return;
     }
-
     uint64_t romChecksum = 0;
     if (!rom_config_computeRomChecksum(romPath, &romChecksum)) {
         return;
     }
 
     rom_config_data_t data;
-    memset(&data, 0, sizeof(data));
+    int loaded = rom_config_parseFile(jsonPath, &data);
+    if (!loaded) {
+        memset(&data, 0, sizeof(data));
+    }
     data.romChecksum = romChecksum;
 
-    if (!rom_config_activeInit) {
-        rom_config_setActiveDefaultsFromCurrentSystem();
-    }
-    if (rom_config_activeInit) {
-        strutil_strlcpy(data.elfPath, sizeof(data.elfPath), rom_config_activeElfPath);
-        strutil_strlcpy(data.sourceDir, sizeof(data.sourceDir), rom_config_activeSourceDir);
-        strutil_strlcpy(data.toolchainPrefix, sizeof(data.toolchainPrefix), rom_config_activeToolchainPrefix);
-        data.hasElf = rom_config_activeElfPath[0] ? 1 : 0;
-        data.hasSource = rom_config_activeSourceDir[0] ? 1 : 0;
-        data.hasToolchain = rom_config_activeToolchainPrefix[0] ? 1 : 0;
-    }
-    for (size_t i = 0; i < debugger_input_bindings_specCount(); ++i) {
-        const debugger_input_bindings_spec_t *spec = debugger_input_bindings_specAt(i);
-        if (!spec || !spec->optionKey) {
-            continue;
-        }
-        const char *value = rom_config_getActiveInputBindingValue(spec->optionKey);
-        if (!value || !*value) {
-            continue;
-        }
-        (void)rom_config_setInputBindingValueInList(&data.inputBindings,
-                                                    &data.inputBindingCount,
-                                                    spec->optionKey,
-                                                    value);
-    }
-    rom_config_collectActiveTargetOptions(&data, target);
     const machine_breakpoint_t *bps = NULL;
     int bpCount = 0;
+    if (data.breakpoints) {
+        alloc_free(data.breakpoints);
+        data.breakpoints = NULL;
+        data.breakpointCount = 0;
+    }
+    if (data.protects) {
+        alloc_free(data.protects);
+        data.protects = NULL;
+        data.protectCount = 0;
+    }
     machine_getBreakpoints(&debugger.machine, &bps, &bpCount);
     data.breakpointsTextRelative = 1;
     if (bps && bpCount > 0) {
@@ -1496,15 +1442,8 @@ rom_config_saveSettingsForRom(const char *saveDir, const char *romPath,
     if (!rom_config_buildJsonPathCore(jsonPath, sizeof(jsonPath), effectiveSaveDir, romPath)) {
         return;
     }
-
     rom_config_data_t data;
     int loaded = rom_config_parseFile(jsonPath, &data);
-    if (!loaded) {
-        char legacyPath[PATH_MAX];
-        if (rom_config_buildLegacyJsonPathCore(legacyPath, sizeof(legacyPath), effectiveSaveDir, romPath)) {
-            loaded = rom_config_parseFile(legacyPath, &data);
-        }
-    }
     if (!loaded) {
         memset(&data, 0, sizeof(data));
     }

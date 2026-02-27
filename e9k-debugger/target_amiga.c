@@ -1,3 +1,7 @@
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+
 #include "debugger.h"
 #include "target.h"
 #include "emu_ami.h"
@@ -26,6 +30,48 @@ target_amiga_mouseCaptureOptionKey(void)
     return "e9k_debugger_amiga_mouse_capture";
 }
 
+#define TARGET_AMIGA_FLOPPY_RECENTS_MAX 8
+static const char target_amiga_floppyRecentClearLabel[] = "<CLEAR RECENTS>";
+static const char target_amiga_floppyRecentClearValue[] = "__e9k_amiga_clear_floppy_recents__";
+
+static const char *
+target_amiga_df0RecentOptionKeyAt(size_t index)
+{
+    static const char *keys[TARGET_AMIGA_FLOPPY_RECENTS_MAX] = {
+        "e9k_debugger_amiga_df0_recent_0",
+        "e9k_debugger_amiga_df0_recent_1",
+        "e9k_debugger_amiga_df0_recent_2",
+        "e9k_debugger_amiga_df0_recent_3",
+        "e9k_debugger_amiga_df0_recent_4",
+        "e9k_debugger_amiga_df0_recent_5",
+        "e9k_debugger_amiga_df0_recent_6",
+        "e9k_debugger_amiga_df0_recent_7"
+    };
+    if (index >= TARGET_AMIGA_FLOPPY_RECENTS_MAX) {
+        return NULL;
+    }
+    return keys[index];
+}
+
+static const char *
+target_amiga_df1RecentOptionKeyAt(size_t index)
+{
+    static const char *keys[TARGET_AMIGA_FLOPPY_RECENTS_MAX] = {
+        "e9k_debugger_amiga_df1_recent_0",
+        "e9k_debugger_amiga_df1_recent_1",
+        "e9k_debugger_amiga_df1_recent_2",
+        "e9k_debugger_amiga_df1_recent_3",
+        "e9k_debugger_amiga_df1_recent_4",
+        "e9k_debugger_amiga_df1_recent_5",
+        "e9k_debugger_amiga_df1_recent_6",
+        "e9k_debugger_amiga_df1_recent_7"
+    };
+    if (index >= TARGET_AMIGA_FLOPPY_RECENTS_MAX) {
+        return NULL;
+    }
+    return keys[index];
+}
+
 static const char *
 target_amiga_normalizeMouseCaptureOverrideValue(const char *value)
 {
@@ -43,6 +89,7 @@ target_amiga_normalizeMouseCaptureOverrideValue(const char *value)
 
 static char target_amiga_activeRomMouseCaptureOverride[16];
 static int target_amiga_hasActiveRomMouseCaptureOverride = 0;
+static char target_amiga_activeRomFloppyRecents[2][TARGET_AMIGA_FLOPPY_RECENTS_MAX][PATH_MAX];
 
 static const char *
 target_amiga_getActiveMouseCaptureOverride(void)
@@ -69,40 +116,228 @@ target_amiga_setActiveMouseCaptureOverride(const char *value)
     target_amiga_hasActiveRomMouseCaptureOverride = 1;
 }
 
+static int
+target_amiga_parseFloppyRecentOptionKey(const char *key, int *outDrive, size_t *outIndex)
+{
+    if (outDrive) {
+        *outDrive = -1;
+    }
+    if (outIndex) {
+        *outIndex = 0;
+    }
+    if (!key) {
+        return 0;
+    }
+
+    const char *prefix = NULL;
+    int drive = -1;
+    if (strncmp(key, "e9k_debugger_amiga_df0_recent_", 29) == 0) {
+        prefix = "e9k_debugger_amiga_df0_recent_";
+        drive = 0;
+    } else if (strncmp(key, "e9k_debugger_amiga_df1_recent_", 29) == 0) {
+        prefix = "e9k_debugger_amiga_df1_recent_";
+        drive = 1;
+    } else {
+        return 0;
+    }
+
+    const char *indexText = key + strlen(prefix);
+    if (!*indexText) {
+        return 0;
+    }
+    for (const char *p = indexText; *p; ++p) {
+        if (!isdigit((unsigned char)*p)) {
+            return 0;
+        }
+    }
+
+    int index = atoi(indexText);
+    if (index < 0 || index >= TARGET_AMIGA_FLOPPY_RECENTS_MAX) {
+        return 0;
+    }
+    if (outDrive) {
+        *outDrive = drive;
+    }
+    if (outIndex) {
+        *outIndex = (size_t)index;
+    }
+    return 1;
+}
+
+static void
+target_amiga_clearActiveFloppyRecents(void)
+{
+    memset(target_amiga_activeRomFloppyRecents, 0, sizeof(target_amiga_activeRomFloppyRecents));
+}
+
+static const char *
+target_amiga_getActiveFloppyRecentValue(int drive, size_t index)
+{
+    if (drive < 0 || drive > 1 || index >= TARGET_AMIGA_FLOPPY_RECENTS_MAX) {
+        return NULL;
+    }
+    if (!target_amiga_activeRomFloppyRecents[drive][index][0]) {
+        return NULL;
+    }
+    return target_amiga_activeRomFloppyRecents[drive][index];
+}
+
+static void
+target_amiga_setActiveFloppyRecentValue(int drive, size_t index, const char *value)
+{
+    if (drive < 0 || drive > 1 || index >= TARGET_AMIGA_FLOPPY_RECENTS_MAX) {
+        return;
+    }
+    if (!value || !*value) {
+        target_amiga_activeRomFloppyRecents[drive][index][0] = '\0';
+        return;
+    }
+    strutil_strlcpy(target_amiga_activeRomFloppyRecents[drive][index],
+                    sizeof(target_amiga_activeRomFloppyRecents[drive][index]),
+                    value);
+}
+
+static void
+target_amiga_addActiveFloppyRecent(int drive, const char *path)
+{
+    if (drive < 0 || drive > 1 || !path || !*path) {
+        return;
+    }
+
+    int existingIndex = -1;
+    for (int i = 0; i < TARGET_AMIGA_FLOPPY_RECENTS_MAX; ++i) {
+        const char *entry = target_amiga_activeRomFloppyRecents[drive][i];
+        if (!entry[0]) {
+            continue;
+        }
+        if (strcmp(entry, path) == 0) {
+            existingIndex = i;
+            break;
+        }
+    }
+
+    if (existingIndex == 0) {
+        return;
+    }
+
+    if (existingIndex > 0) {
+        char keep[PATH_MAX];
+        strutil_strlcpy(keep, sizeof(keep), target_amiga_activeRomFloppyRecents[drive][existingIndex]);
+        for (int i = existingIndex; i > 0; --i) {
+            strutil_strlcpy(target_amiga_activeRomFloppyRecents[drive][i],
+                            sizeof(target_amiga_activeRomFloppyRecents[drive][i]),
+                            target_amiga_activeRomFloppyRecents[drive][i - 1]);
+        }
+        strutil_strlcpy(target_amiga_activeRomFloppyRecents[drive][0],
+                        sizeof(target_amiga_activeRomFloppyRecents[drive][0]),
+                        keep);
+        return;
+    }
+
+    for (int i = TARGET_AMIGA_FLOPPY_RECENTS_MAX - 1; i > 0; --i) {
+        strutil_strlcpy(target_amiga_activeRomFloppyRecents[drive][i],
+                        sizeof(target_amiga_activeRomFloppyRecents[drive][i]),
+                        target_amiga_activeRomFloppyRecents[drive][i - 1]);
+    }
+    strutil_strlcpy(target_amiga_activeRomFloppyRecents[drive][0],
+                    sizeof(target_amiga_activeRomFloppyRecents[drive][0]),
+                    path);
+}
+
+static void
+target_amiga_refreshFloppyRecentsDropdown(e9ui_component_t *fileSelect, int drive)
+{
+    if (!fileSelect || drive < 0 || drive > 1) {
+        return;
+    }
+    e9ui_textbox_option_t options[TARGET_AMIGA_FLOPPY_RECENTS_MAX + 1];
+    int optionCount = 0;
+    for (int i = 0; i < TARGET_AMIGA_FLOPPY_RECENTS_MAX; ++i) {
+        const char *value = target_amiga_activeRomFloppyRecents[drive][i];
+        if (!value[0]) {
+            continue;
+        }
+        options[optionCount].value = value;
+        options[optionCount].label = value;
+        optionCount++;
+    }
+    options[optionCount].value = target_amiga_floppyRecentClearValue;
+    options[optionCount].label = target_amiga_floppyRecentClearLabel;
+    optionCount++;
+    e9ui_fileSelect_setOptions(fileSelect, optionCount > 0 ? options : NULL, optionCount);
+}
+
+static void
+target_amiga_captureFloppyRecentsFromUae(void)
+{
+    const char *df0 = amiga_uaeGetFloppyPath(0);
+    const char *df1 = amiga_uaeGetFloppyPath(1);
+    target_amiga_addActiveFloppyRecent(0, df0);
+    target_amiga_addActiveFloppyRecent(1, df1);
+}
+
 static size_t
 target_amiga_romConfigCustomOptionCount(void)
 {
-    return 1;
+    return 1 + (TARGET_AMIGA_FLOPPY_RECENTS_MAX * 2);
 }
 
 static const char *
 target_amiga_romConfigCustomOptionKeyAt(size_t index)
 {
-    return index == 0 ? target_amiga_mouseCaptureOptionKey() : NULL;
+    if (index == 0) {
+        return target_amiga_mouseCaptureOptionKey();
+    }
+    index--;
+    if (index < TARGET_AMIGA_FLOPPY_RECENTS_MAX) {
+        return target_amiga_df0RecentOptionKeyAt(index);
+    }
+    index -= TARGET_AMIGA_FLOPPY_RECENTS_MAX;
+    if (index < TARGET_AMIGA_FLOPPY_RECENTS_MAX) {
+        return target_amiga_df1RecentOptionKeyAt(index);
+    }
+    return NULL;
 }
 
 static const char *
 target_amiga_romConfigGetActiveCustomOptionValue(const char *key)
 {
-    if (!key || strcmp(key, target_amiga_mouseCaptureOptionKey()) != 0) {
+    if (!key) {
         return NULL;
     }
-    return target_amiga_getActiveMouseCaptureOverride();
+    if (strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0) {
+        return target_amiga_getActiveMouseCaptureOverride();
+    }
+    int drive = -1;
+    size_t index = 0;
+    if (target_amiga_parseFloppyRecentOptionKey(key, &drive, &index)) {
+        return target_amiga_getActiveFloppyRecentValue(drive, index);
+    }
+    return NULL;
 }
 
 static void
 target_amiga_romConfigSetActiveCustomOptionValue(const char *key, const char *value)
 {
-    if (!key || strcmp(key, target_amiga_mouseCaptureOptionKey()) != 0) {
+    if (!key) {
         return;
     }
-    target_amiga_setActiveMouseCaptureOverride(value);
+    if (strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0) {
+        target_amiga_setActiveMouseCaptureOverride(value);
+        return;
+    }
+    int drive = -1;
+    size_t index = 0;
+    if (target_amiga_parseFloppyRecentOptionKey(key, &drive, &index)) {
+        target_amiga_setActiveFloppyRecentValue(drive, index, value);
+    }
 }
 
 static void
 target_amiga_romConfigClearActiveCustomOptions(void)
 {
     target_amiga_setActiveMouseCaptureOverride(NULL);
+    target_amiga_clearActiveFloppyRecents();
 }
 
 static int
@@ -199,6 +434,20 @@ typedef struct target_amiga_romselect_extra {
     e9ui_component_t *hd0Select;
     struct target_amiga_toolchain_preset_state *toolchainPresetState;
 } target_amiga_romselect_extra_t;
+
+static void
+target_amiga_refreshFloppyRecentsDropdowns(target_amiga_romselect_extra_t *extra)
+{
+    if (!extra) {
+        return;
+    }
+    if (extra->df0Select) {
+        target_amiga_refreshFloppyRecentsDropdown(extra->df0Select, 0);
+    }
+    if (extra->df1Select) {
+        target_amiga_refreshFloppyRecentsDropdown(extra->df1Select, 1);
+    }
+}
 
 typedef struct target_amiga_toolchain_preset_state {
     e9ui_component_t *toolchainTextbox;
@@ -345,7 +594,7 @@ target_amiga_validateSettings(void)
             return;
         }
     }
-    amiga_uaeClearPuaeOptions();
+    target_amiga_captureFloppyRecentsFromUae();
     const char *saveDir = debugger.settingsEdit.amiga.libretro.saveDir[0] ?
         debugger.settingsEdit.amiga.libretro.saveDir : debugger.settingsEdit.amiga.libretro.systemDir;
     const char *romPath = debugger.settingsEdit.amiga.libretro.romPath;
@@ -417,8 +666,9 @@ target_amiga_defaultCorePath(void)
 static void
 target_amiga_settingsRomPathChanged(settings_romselect_state_t* st)  
 {
-  amiga_uaeLoadUaeOptions(st->romPath);
+  amiga_uaeLoadUaeOptions(st ? st->romPath : NULL);
   target_amiga_romselect_extra_t *extra = st ? (target_amiga_romselect_extra_t *)st->targetUser : NULL;
+  target_amiga_refreshFloppyRecentsDropdowns(extra);
   if (extra && extra->df0Select) {
     const char *df0 = amiga_uaeGetFloppyPath(0);
     e9ui_fileSelect_setText(extra->df0Select, df0 ? df0 : "");
@@ -629,18 +879,21 @@ target_amiga_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_state
 const char*
 target_amiga_coreOptionGetValue(const char* key)
 {
+  const char *value = NULL;
   if (strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0) {
     const char *overrideValue = target_amiga_getActiveMouseCaptureOverride();
     if (overrideValue && *overrideValue) {
-      return overrideValue;
+      value = overrideValue;
+    } else {
+      const struct retro_core_option_v2_definition *def = target_amiga_coreOptionsSyntheticDefAt(0);
+      value = def ? def->default_value : NULL;
     }
-    const struct retro_core_option_v2_definition *def = target_amiga_coreOptionsSyntheticDefAt(0);
-    return def ? def->default_value : NULL;
+  } else if (debugger_input_bindings_isOptionKey(key)) {
+    value = rom_config_getActiveInputBindingValue(key);
+  } else {
+    value = amiga_uaeGetPuaeOptionValue(key);
   }
-  if (debugger_input_bindings_isOptionKey(key)) {
-    return rom_config_getActiveInputBindingValue(key);
-  }
-  return amiga_uaeGetPuaeOptionValue(key);
+  return value;
 }
 
 
@@ -745,16 +998,8 @@ target_amiga_getBadgeTexture(SDL_Renderer *renderer, target_iface_t* t, int* out
 static void
 target_amiga_configControllerPorts(void)
 {
-  const char *joyportMode = amiga_uaeGetPuaeOptionValue("puae_joyport");
-  unsigned port1Device = RETRO_DEVICE_MOUSE;
-  if (joyportMode &&
-      (strcmp(joyportMode, "joystick") == 0 ||
-       strcmp(joyportMode, "Joystick") == 0 ||
-       strcmp(joyportMode, "Joystick (Port 1)") == 0)) {
-    port1Device = RETRO_DEVICE_JOYPAD;
-  }
   libretro_host_setControllerPortDevice(0, RETRO_DEVICE_JOYPAD);
-  libretro_host_setControllerPortDevice(1, port1Device);
+  libretro_host_setControllerPortDevice(1, RETRO_DEVICE_JOYPAD);
 }
 
 
@@ -778,8 +1023,25 @@ static void
 target_amiga_settingsFloppyChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *text, void *user)
 {
     (void)ctx;
-    (void)comp;
     int drive = (int)(intptr_t)user;
+    if (comp) {
+        const char *selectedValue = e9ui_fileSelect_getSelectedValue(comp);
+        if (selectedValue &&
+            strcmp(selectedValue, target_amiga_floppyRecentClearValue) == 0 &&
+            text &&
+            (strcmp(text, target_amiga_floppyRecentClearLabel) == 0 ||
+             strcmp(text, target_amiga_floppyRecentClearValue) == 0)) {
+            const char *currentPath = amiga_uaeGetFloppyPath(drive);
+            if (drive >= 0 && drive <= 1) {
+                for (int i = 0; i < TARGET_AMIGA_FLOPPY_RECENTS_MAX; ++i) {
+                    target_amiga_setActiveFloppyRecentValue(drive, (size_t)i, NULL);
+                }
+                target_amiga_refreshFloppyRecentsDropdown(comp, drive);
+            }
+            e9ui_fileSelect_setText(comp, currentPath ? currentPath : "");
+            return;
+        }
+    }
     const char *path = text ? text : "";
     amiga_uaeSetFloppyPath(drive, path);
     if (target == target_amiga() && libretro_host_isRunning()) {
@@ -902,6 +1164,7 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
         romState->romPath = debugger.settingsEdit.amiga.libretro.romPath;
         romState->romFolder = NULL;
     }
+    settings_syncActiveRomConfigForSelection();
 
     e9ui_component_t *fsRom = e9ui_fileSelect_make("UAE CONFIG", 120, 600, "...", romExts, 1, E9UI_FILESELECT_FILE);
     if (fsRom) {
@@ -920,12 +1183,14 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
         e9ui_fileSelect_setAllowEmpty(fsDf0, 1);
         e9ui_fileSelect_setText(fsDf0, df0 ? df0 : "");
         e9ui_fileSelect_setOnChange(fsDf0, target_amiga_settingsFloppyChanged, (void *)(intptr_t)0);
+        target_amiga_refreshFloppyRecentsDropdown(fsDf0, 0);
     }
     if (fsDf1) {
         const char *df1 = amiga_uaeGetFloppyPath(1);
         e9ui_fileSelect_setAllowEmpty(fsDf1, 1);
         e9ui_fileSelect_setText(fsDf1, df1 ? df1 : "");
         e9ui_fileSelect_setOnChange(fsDf1, target_amiga_settingsFloppyChanged, (void *)(intptr_t)1);
+        target_amiga_refreshFloppyRecentsDropdown(fsDf1, 1);
     }
     if (fsHd0) {
         const char *hd0 = amiga_uaeGetHardDriveFolderPath();
@@ -1046,6 +1311,7 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
         romState->sourceSelect = fsSource;
         romState->toolchainSelect = ltToolchain;
         settings_romSelectUpdateAllowEmpty(romState);
+        settings_romSelectRefreshRecents(romState);
     }
 
     e9ui_component_t *body = e9ui_stack_makeVertical();

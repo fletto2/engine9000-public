@@ -36,6 +36,9 @@ int
 input_record_isPlayback(void);
 
 int
+input_record_isPlaybackComplete(void);
+
+int
 input_record_isInjecting(void);
 
 int

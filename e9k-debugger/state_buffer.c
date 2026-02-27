@@ -1158,6 +1158,8 @@ state_buffer_snapshot(void)
 int
 state_buffer_restoreSnapshot(void)
 {
+    int wasPaused = state_buffer.current.paused ? 1 : 0;
+    int wasRollingPaused = state_buffer.current.rollingPaused ? 1 : 0;
     size_t saveCount = 0;
     for (int i = 0; i < STATE_BUFFER_LEVEL_COUNT; ++i) {
         saveCount += state_buffer.save.levels[i].count;
@@ -1165,7 +1167,12 @@ state_buffer_restoreSnapshot(void)
     if (saveCount == 0) {
         return 0;
     }
-    return state_buffer_clone(&state_buffer.current, &state_buffer.save);
+    if (!state_buffer_clone(&state_buffer.current, &state_buffer.save)) {
+        return 0;
+    }
+    state_buffer.current.paused = wasPaused;
+    state_buffer.current.rollingPaused = wasRollingPaused;
+    return 1;
 }
 
 int
@@ -1228,8 +1235,9 @@ state_buffer_saveSnapshotFile(const char *path, uint64_t rom_checksum)
 {
       ui_test_mode_t uiTestMode = ui_test_getMode();
     if (uiTestMode == UI_TEST_MODE_COMPARE || uiTestMode == UI_TEST_MODE_REMAKE ||
-	debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
-      return 0;
+        debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE ||
+        debugger.smokeTestMode == SMOKE_TEST_MODE_REMAKE) {
+        return 0;
     }
     
 

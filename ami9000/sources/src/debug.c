@@ -61,6 +61,10 @@ void e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldV
 #include "cputbl.h"
 #include "keybuf.h"
 
+#ifndef E9K_HACK_DMA_DEBUG_EXPORT
+#define E9K_HACK_DMA_DEBUG_EXPORT 0
+#endif
+
 static int trace_mode;
 static uae_u32 trace_param[3];
 
@@ -246,7 +250,7 @@ static const TCHAR help[] = {
 	_T("  dm                    Dump current address space map.\n")
 	_T("  v <vpos> [<hpos>] [<lines>]\n")
 	_T("                        Show DMA data (accurate only in cycle-exact mode).\n")
-	_T("                        v [-1 to -4] = enable visual DMA debugger.\n")
+	_T("                        v [-1 to -6] = enable DMA debugger. mode 6 collects only (no overlay).\n")
 	_T("  vh [<ratio> <lines>]  \"Heat map\"\n")
 	_T("  I <custom event>      Send custom event string\n")
 	_T("  ?<value>              Hex ($ and 0x)/Bin (%)/Dec (!) converter and calculator.\n")
@@ -1393,6 +1397,8 @@ static int nr_cop_records[2], curr_cop_set, selected_cop_set;
 #define NR_DMA_REC_VPOS 1000
 static struct dma_rec *dma_record[2];
 static int dma_record_toggle, dma_record_frame[2];
+static int dma_record_hoffset;
+static int record_dma_maxhpos, record_dma_maxvpos;
 
 static void record_dma_clear(int r)
 {
@@ -1444,6 +1450,129 @@ void record_dma_reset(int start)
 		debug_dma = start;
 	}
 }
+
+#if E9K_HACK_DMA_DEBUG_EXPORT
+int
+debug_dmaExportGetFrame(int frameSelect,
+	const struct dma_rec **outRecords,
+	int *outRecordCount,
+	int *outHposCount,
+	int *outVposCount,
+	int *outFrameNumber,
+	int *outRecordToggle,
+	int *outDmaHoffset,
+	int *outDebugDmaEnabled)
+{
+	int recordIndex = 0;
+
+	if (outRecords) {
+		*outRecords = NULL;
+	}
+	if (outRecordCount) {
+		*outRecordCount = 0;
+	}
+	if (outHposCount) {
+		*outHposCount = 0;
+	}
+	if (outVposCount) {
+		*outVposCount = 0;
+	}
+	if (outFrameNumber) {
+		*outFrameNumber = -1;
+	}
+	if (outRecordToggle) {
+		*outRecordToggle = -1;
+	}
+	if (outDmaHoffset) {
+		*outDmaHoffset = 0;
+	}
+	if (outDebugDmaEnabled) {
+		*outDebugDmaEnabled = debug_dma;
+	}
+
+	if (!dma_record[0] || !dma_record[1]) {
+		if (debug_dma) {
+			record_dma_reset(1);
+			record_dma_reset(1);
+		}
+	}
+	if (!dma_record[0] || !dma_record[1]) {
+		return 0;
+	}
+
+	if (frameSelect == DEBUG_DMA_EXPORT_FRAME_ACTIVE) {
+		recordIndex = dma_record_toggle;
+	} else {
+		recordIndex = dma_record_toggle ^ 1;
+	}
+
+	if (recordIndex < 0 || recordIndex > 1) {
+		return 0;
+	}
+
+	if (outRecords) {
+		*outRecords = dma_record[recordIndex];
+	}
+	if (outRecordCount) {
+		*outRecordCount = NR_DMA_REC_HPOS * NR_DMA_REC_VPOS;
+	}
+	if (outHposCount) {
+		*outHposCount = NR_DMA_REC_HPOS;
+	}
+	if (outVposCount) {
+		*outVposCount = NR_DMA_REC_VPOS;
+	}
+	if (outFrameNumber) {
+		*outFrameNumber = dma_record_frame[recordIndex];
+	}
+	if (outRecordToggle) {
+		*outRecordToggle = recordIndex;
+	}
+	if (outDmaHoffset) {
+		*outDmaHoffset = dma_record_hoffset;
+	}
+	return 1;
+}
+#else
+int
+debug_dmaExportGetFrame(int frameSelect,
+	const struct dma_rec **outRecords,
+	int *outRecordCount,
+	int *outHposCount,
+	int *outVposCount,
+	int *outFrameNumber,
+	int *outRecordToggle,
+	int *outDmaHoffset,
+	int *outDebugDmaEnabled)
+{
+	(void)frameSelect;
+	if (outRecords) {
+		*outRecords = NULL;
+	}
+	if (outRecordCount) {
+		*outRecordCount = 0;
+	}
+	if (outHposCount) {
+		*outHposCount = 0;
+	}
+	if (outVposCount) {
+		*outVposCount = 0;
+	}
+	if (outFrameNumber) {
+		*outFrameNumber = -1;
+	}
+	if (outRecordToggle) {
+		*outRecordToggle = -1;
+	}
+	if (outDmaHoffset) {
+		*outDmaHoffset = 0;
+	}
+	if (outDebugDmaEnabled) {
+		*outDebugDmaEnabled = debug_dma;
+	}
+	return 0;
+}
+#endif
 
 void record_copper_reset (void)
 {
@@ -1556,8 +1685,6 @@ static void set_debug_colors(void)
 }
 
 static int cycles_toggle;
-static int record_dma_maxhpos, record_dma_maxvpos;
-static int dma_record_hoffset;
 
 static void debug_draw_cycles(uae_u8 *buf, int bpp, int line, int width, int height, uae_u32 *xredcolors, uae_u32 *xgreencolors, uae_u32 *xbluescolors)
 {

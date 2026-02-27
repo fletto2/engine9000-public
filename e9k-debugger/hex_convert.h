@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <stdio.h>
+
 #include "e9ui.h"
 
 int
@@ -18,3 +20,9 @@ hex_convert_close(void);
 
 void
 hex_convert_toggle(e9ui_context_t *ctx);
+
+void
+hex_convert_persistConfig(FILE *file);
+
+int
+hex_convert_loadConfigProperty(const char *prop, const char *value);

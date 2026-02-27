@@ -77,7 +77,6 @@ typedef struct shader_ui_overlay_body_state {
 
 typedef struct e9k_shader_ui {
     int open;
-    int closeRequested;
     int dirty;
     int winX;
     int winY;
@@ -843,6 +842,25 @@ shader_ui_buildBindings(e9k_shader_ui_t *ui)
 }
 
 static void
+shader_ui_deferredShutdown(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    (void)user;
+    shader_ui_shutdown();
+}
+
+static void
+shader_ui_requestClose(e9ui_context_t *ctx, e9k_shader_ui_t *ui)
+{
+    if (!ui) {
+        return;
+    }
+    (void)e9ui_defer(ctx ? ctx : (e9ui ? &e9ui->ctx : &ui->ctx),
+                     shader_ui_deferredShutdown,
+                     ui);
+}
+
+static void
 shader_ui_cancel(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
@@ -851,7 +869,7 @@ shader_ui_cancel(e9ui_context_t *ctx, void *user)
         return;
     }
     shader_ui_restoreSnapshot(ui);
-    ui->closeRequested = 1;
+    shader_ui_requestClose(ctx, ui);
 }
 
 static void
@@ -872,7 +890,7 @@ shader_ui_apply(e9ui_context_t *ctx, void *user)
         return;
     }
     config_saveConfig();
-    ui->closeRequested = 1;
+    shader_ui_requestClose(ctx, ui);
 }
 
 static e9ui_component_t *
@@ -1116,7 +1134,6 @@ shader_ui_init(void)
     memset(&ui->ctx, 0, sizeof(ui->ctx));
     ui->ctx.font = e9ui->ctx.font;
     shader_ui_snapshot(ui);
-    ui->closeRequested = 0;
     ui->dirty = 1;
 
     ui->root = shader_ui_buildRoot(ui);
@@ -1199,7 +1216,6 @@ shader_ui_shutdown(void)
     ui->renderer = NULL;
     ui->window = NULL;
     ui->open = 0;
-    ui->closeRequested = 0;
     ui->dirty = 0;
     memset(&ui->ctx, 0, sizeof(ui->ctx));
 }
@@ -1233,10 +1249,6 @@ shader_ui_render(void)
 {
     e9k_shader_ui_t *ui = &shader_ui_state;
     if (!ui->open || !ui->root) {
-        return;
-    }
-    if (ui->closeRequested) {
-        shader_ui_shutdown();
         return;
     }
     if (e9ui_windowCaptureRectChanged(ui->windowHost,

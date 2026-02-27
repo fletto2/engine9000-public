@@ -920,7 +920,7 @@ core_options_cloneWithDebuggerInput(int targetIndex,
         memset(dst, 0, sizeof(*dst));
         dst->key = core_options_dupString(spec->optionKey);
         dst->desc = core_options_dupString(label);
-        dst->info = core_options_dupString(spec->info);
+        dst->info = NULL;
         dst->category_key = core_options_dupString(resolvedInputCategoryKey);
 
         char defaultValue[64];
@@ -944,6 +944,10 @@ core_options_cloneWithDebuggerInput(int targetIndex,
             }
             dst = &defs[nextDef++];
             core_options_cloneDefinition(dst, src);
+            if (dst->info) {
+                alloc_free((void *)dst->info);
+                dst->info = NULL;
+            }
             if (dst->category_key) {
                 alloc_free((void *)dst->category_key);
             }
@@ -1864,6 +1868,9 @@ core_options_showModal(e9ui_context_t *ctx)
     const char *corePath = (selectedTarget && selectedTarget->defaultCorePath) ? selectedTarget->defaultCorePath() : NULL;
     const char *systemDir = libcfg ? libcfg->systemDir : NULL;
     const char *saveDir = libcfg ? libcfg->saveDir : NULL;
+    if (e9ui && e9ui->settingsModal) {
+        settings_syncActiveRomConfigForSelection();
+    }
     if (!corePath || !*corePath) {
         e9ui_showTransientMessage("CORE OPTIONS: NO CORE SELECTED");
         return;
@@ -1933,31 +1940,37 @@ core_options_showModal(e9ui_context_t *ctx)
     st->defs = st->ownedDefs;
     st->defCount = st->ownedDefCount;
 
-    for (size_t i = 0; i < st->defCount; ++i) {
-        const struct retro_core_option_v2_definition *def = &st->defs[i];
-        if (!def->key) {
-            continue;
-        }
-        core_options_kv_t *ent = core_options_getOrAddEntry(st, def->key);
-	    if (!ent) {
-	        continue;
-	    }
-	    const char *initial = NULL;
-	    int allowSyntheticCurrent = 1;
-	    if (e9ui && e9ui->settingsModal && cfg && cfg->target && cfg->target != target) {
-	        allowSyntheticCurrent = 0;
-	    }
+	    for (size_t i = 0; i < st->defCount; ++i) {
+	        const struct retro_core_option_v2_definition *def = &st->defs[i];
+	        if (!def->key) {
+	            continue;
+	        }
+	        core_options_kv_t *ent = core_options_getOrAddEntry(st, def->key);
+		    if (!ent) {
+		        continue;
+		    }
+		    const char *initial = NULL;
+		    int allowSyntheticCurrent = 1;
+		    if (e9ui && e9ui->settingsModal && cfg && cfg->target && cfg->target != target) {
+		        allowSyntheticCurrent = 0;
+		    }
 #if 1
-		if (cfg && cfg->target && core_options_isDebuggerSyntheticOptionKey(def->key) && allowSyntheticCurrent) {
-		  initial = cfg->target->coreOptionGetValue(def->key);
-		} else if (cfg && e9ui && e9ui->settingsModal && !core_options_isDebuggerSyntheticOptionKey(def->key)) {
-		  initial = cfg->target->coreOptionGetValue(def->key);
-		}
+			if (cfg && cfg->target && core_options_isDebuggerSyntheticOptionKey(def->key) && allowSyntheticCurrent) {
+			  initial = cfg->target->coreOptionGetValue(def->key);
+			} else if (cfg && e9ui && e9ui->settingsModal && !core_options_isDebuggerSyntheticOptionKey(def->key)) {
+			  initial = cfg->target->coreOptionGetValue(def->key);
+			}
 
-	if (!initial && st->targetCoreRunning && !core_options_isDebuggerSyntheticOptionKey(def->key)) {
-	  initial = libretro_host_getCoreOptionValue(def->key);
-        } else if (!core_options_isDebuggerSyntheticOptionKey(def->key)) {
-	  initial = libretro_host_getCoreOptionOverrideValue(def->key);
+        if (!initial && !core_options_isDebuggerSyntheticOptionKey(def->key)) {
+            if (st->targetCoreRunning) {
+                initial = libretro_host_getCoreOptionValue(def->key);
+            }
+            if (!initial) {
+                const char *overrideValue = libretro_host_getCoreOptionOverrideValue(def->key);
+                if (overrideValue) {
+                    initial = overrideValue;
+                }
+            }
         }
 #else //TODO
         if (cfg && cfg->coreSystem == DEBUGGER_SYSTEM_AMIGA) {
@@ -1973,12 +1986,12 @@ core_options_showModal(e9ui_context_t *ctx)
             initial = libretro_host_getCoreOptionOverrideValue(def->key);
         }
 #endif
-        if (!initial) {
-            initial = def->default_value ? def->default_value : "";
-        }
-        alloc_free(ent->value);
-        ent->value = alloc_strdup(initial);
-    }
+	        if (!initial) {
+	            initial = def->default_value ? def->default_value : "";
+	        }
+	        alloc_free(ent->value);
+	        ent->value = alloc_strdup(initial);
+	    }
 
     int margin = e9ui_scale_px(ctx, 32);
     int w = ctx->winW - margin * 2;

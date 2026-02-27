@@ -89,7 +89,7 @@ smoke_test_hasSuffix(const char *name, const char *suffix)
 static int
 smoke_test_clearFolderEntry(const char *path, void *user)
 {
-    (void)user;
+    int clearInputs = user ? (*(const int *)user) : 0;
     if (!path || !*path) {
         return 1;
     }
@@ -97,19 +97,20 @@ smoke_test_clearFolderEntry(const char *path, void *user)
     const char *back = strrchr(path, '\\');
     const char *base = slash > back ? slash : back;
     const char *name = base ? base + 1 : path;
-    if (smoke_test_hasSuffix(name, ".png") || smoke_test_hasSuffix(name, ".inp")) {
+    if (smoke_test_hasSuffix(name, ".png") ||
+        (clearInputs && smoke_test_hasSuffix(name, ".inp"))) {
         remove(path);
     }
     return 1;
 }
 
 static void
-smoke_test_clearFolder(const char *path)
+smoke_test_clearFolder(const char *path, int clearInputs)
 {
     if (!path || !*path) {
         return;
     }
-    debugger_platform_scanFolder(path, smoke_test_clearFolderEntry, NULL);
+    debugger_platform_scanFolder(path, smoke_test_clearFolderEntry, &clearInputs);
 }
 
 int
@@ -125,7 +126,9 @@ smoke_test_init(void)
         return 0;
     }
     if (smoke_test_mode == SMOKE_TEST_MODE_RECORD) {
-        smoke_test_clearFolder(smoke_test_folder);
+        smoke_test_clearFolder(smoke_test_folder, 1);
+    } else if (smoke_test_mode == SMOKE_TEST_MODE_REMAKE) {
+        smoke_test_clearFolder(smoke_test_folder, 0);
     }
     if (smoke_test_mode == SMOKE_TEST_MODE_NONE) {
         smoke_test_enabled = 0;
@@ -185,7 +188,8 @@ smoke_test_bootstrap(struct e9k_debugger *dbg)
         debug_error("test: cannot combine --make-test/--remake-test/--test with smoke test options");
         return 0;
     }
-    if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+    if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE ||
+        dbg->smokeTestMode == SMOKE_TEST_MODE_REMAKE) {
         dbg->speedMultiplier = 10;
     }
     if (dbg->smokeTestMode == SMOKE_TEST_MODE_RECORD) {
@@ -193,9 +197,11 @@ smoke_test_bootstrap(struct e9k_debugger *dbg)
             debug_error("make-smoke: cannot use --playback with --make-smoke");
             return 0;
         }
-    } else if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+    } else if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE ||
+               dbg->smokeTestMode == SMOKE_TEST_MODE_REMAKE) {
         if (dbg->recordPath[0] || dbg->playbackPath[0]) {
-            debug_error("smoke-test: cannot combine with --record or --playback");
+            debug_error("%s: cannot combine with --record or --playback",
+                        dbg->smokeTestMode == SMOKE_TEST_MODE_REMAKE ? "remake-smoke" : "smoke-test");
             return 0;
         }
     }
@@ -209,7 +215,8 @@ smoke_test_bootstrap(struct e9k_debugger *dbg)
     if (smoke_test_getRecordPath(path, sizeof(path))) {
         if (dbg->smokeTestMode == SMOKE_TEST_MODE_RECORD) {
             strutil_strlcpy(dbg->recordPath, sizeof(dbg->recordPath), path);
-        } else if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+        } else if (dbg->smokeTestMode == SMOKE_TEST_MODE_COMPARE ||
+                   dbg->smokeTestMode == SMOKE_TEST_MODE_REMAKE) {
             strutil_strlcpy(dbg->playbackPath, sizeof(dbg->playbackPath), path);
         }
     }

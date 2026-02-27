@@ -34,6 +34,7 @@
 
 static int hotkeys_enabled = 1;
 static e9ui_component_t *hotkeys_configModal = NULL;
+static int hotkeys_textboxShortcutMatcherInstalled = 0;
 
 typedef struct hotkeys_config_spec
 {
@@ -99,6 +100,8 @@ static const hotkeys_config_spec_t hotkeys_configSpecs[] = {
     { "reset_core", "Reset Core", SDLK_F9, 0 },
     { "hotkeys_toggle", "Hotkeys On/Off", SDLK_F11, 0 },
     { "settings", "Settings", SDLK_F12, 0 },
+    { "hex_convert", "Hex Converter", SDLK_i, KMOD_CTRL },
+    { "hex_convert_inline", "In-place Hex Convert", SDLK_h, KMOD_CTRL },
     { "fullscreen", "Fullscreen", SDLK_RETURN, KMOD_ALT },
     { "mouse_release", "Mouse Release", SDLK_LALT, (SDL_Keymod)(KMOD_CTRL | KMOD_ALT) },
     { "prompt_focus", "Prompt Focus", SDLK_TAB, 0 },
@@ -124,6 +127,9 @@ static size_t hotkeys_actionRegistrationCap = 0;
 
 static e9ui_component_t *
 hotkeys_findTopModal(void);
+
+static int
+hotkeys_eventMatchesAction(const SDL_KeyboardEvent *kev, const char *actionId);
 
 static void
 hotkeys_getConfigBindingAt(size_t index, SDL_Keycode *key, SDL_Keymod *mods);
@@ -190,6 +196,26 @@ hotkeys_getConfigBindingById(const char *actionId, SDL_Keycode *key, SDL_Keymod 
     }
     hotkeys_getConfigBindingAt((size_t)index, key, mods);
     return 1;
+}
+
+static int
+hotkeys_textboxShortcutMatches(const SDL_KeyboardEvent *kev, const char *shortcutId, void *user)
+{
+    (void)user;
+    if (!kev || !shortcutId) {
+        return 0;
+    }
+    return hotkeys_eventMatchesAction(kev, shortcutId);
+}
+
+static void
+hotkeys_installTextboxShortcutMatcher(void)
+{
+    if (hotkeys_textboxShortcutMatcherInstalled) {
+        return;
+    }
+    e9ui_textbox_setShortcutMatcher(hotkeys_textboxShortcutMatches, NULL);
+    hotkeys_textboxShortcutMatcherInstalled = 1;
 }
 
 static void
@@ -1762,6 +1788,7 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
     if (!ctx || !kev) {
         return 0;
     }
+    hotkeys_installTextboxShortcutMatcher();
     SDL_Keycode key = kev->keysym.sym;
     if (hotkeys_configModal) {
         if (key == SDLK_ESCAPE) {
@@ -1788,13 +1815,6 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
     }
     SDL_Keymod ctrlMods = (SDL_Keymod)(kev->keysym.mod & (KMOD_CTRL | KMOD_GUI));
     SDL_Keymod blockedMods = (SDL_Keymod)(kev->keysym.mod & KMOD_ALT);
-    if (key == SDLK_i && ctrlMods != 0 && blockedMods == 0) {
-        SDL_Keymod extraMods = (SDL_Keymod)(kev->keysym.mod & KMOD_SHIFT);
-        if (extraMods == 0 && kev->repeat == 0) {
-            hex_convert_toggle(ctx);
-            return 1;
-        }
-    }
     if (key == SDLK_c && ctrlMods != 0 && blockedMods == 0) {
         if (e9ui_text_select_hasSelection()) {
             e9ui_component_t *focus = e9ui_getFocus(ctx);
@@ -1815,7 +1835,13 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
             return 1;
         }
     }
-    if (!hotkeys_enabled && !hotkeys_eventMatchesAction(kev, "fullscreen")) {
+    if (kev->repeat == 0 && hotkeys_eventMatchesAction(kev, "hex_convert")) {
+        hex_convert_toggle(ctx);
+        return 1;
+    }
+    if (!hotkeys_enabled &&
+        !hotkeys_eventMatchesAction(kev, "fullscreen") &&
+        !hotkeys_eventMatchesAction(kev, "hex_convert")) {
         return 0;
     }
     if (key == SDLK_ESCAPE) {

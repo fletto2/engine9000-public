@@ -33,6 +33,10 @@ extern bool libretro_frame_end;
 #define E9K_DEBUGGER_CUSTOM_LOGGER 0
 #endif
 
+#ifndef E9K_HACK_DMA_DEBUG_EXPORT
+#define E9K_HACK_DMA_DEBUG_EXPORT 0
+#endif
+
 #if E9K_DEBUGGER_CUSTOM_LOGGER
 #define E9K_DEBUG_AMI_CUSTOM_LOG_ENTRY_CAP 262144u
 #endif
@@ -1063,6 +1067,21 @@ e9k_debug_ami_customLogFrameCommit(void)
 {
 	e9k_debug_ami_customLogFlushFrame();
 }
+#else
+void
+e9k_debug_ami_customLogWrite(int vpos, int hpos, uae_u32 reg, uae_u16 value, uae_u32 sourcePc)
+{
+	(void)vpos;
+	(void)hpos;
+	(void)reg;
+	(void)value;
+	(void)sourcePc;
+}
+
+void
+e9k_debug_ami_customLogFrameCommit(void)
+{
+}
 #endif
 
 E9K_DEBUG_EXPORT void
@@ -1243,6 +1262,7 @@ E9K_DEBUG_EXPORT void
 e9k_vblank_notify(void)
 {
 #if E9K_HACK_BLITTER_VIS
+	custom_blitterVisFrameTick();
 	blitter_debugFrameTick();
 #endif
 	if (e9k_debug_protectEnabledMask || e9k_debug_watchpointEnabledMask) {
@@ -1409,15 +1429,20 @@ E9K_DEBUG_EXPORT size_t
 e9k_debug_ami_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap)
 {
 #if E9K_HACK_BLITTER_VIS
+	uint32_t maxWriteBytesEstimateFrame = 0u;
 	if (!out || cap < sizeof(*out)) {
 		return 0;
 	}
+	maxWriteBytesEstimateFrame = custom_blitterVisGetMaxWriteBytesLastFrame();
 	out->enabled = blitter_getDebugWriteEnabled() ? 1u : 0u;
 	out->mode = (uint32_t)blitter_getDebugVisMode();
 	out->blink = blitter_getDebugVisBlink() ? 1u : 0u;
 	out->livePhase = blitter_getDebugShowLivePhase() ? 1u : 0u;
 	out->activeCount = blitter_getDebugActiveCount();
-	out->writesThisFrame = blitter_getDebugWritesThisFrame();
+	out->blitsThisFrame = blitter_getDebugBlitsLastFrame();
+	out->writesThisFrame = blitter_getDebugWritesLastFrame();
+	out->writeBytesThisFrame = blitter_getDebugWriteBytesLastFrame();
+	out->writeBytesMaxEstimateFrame = maxWriteBytesEstimateFrame;
 	out->frameCounter = blitter_getDebugFrameCounter();
 	out->fetchQueriesThisFrame = blitter_getDebugFetchQueriesThisFrame();
 	out->fetchHitsThisFrame = blitter_getDebugFetchHitsThisFrame();
@@ -1428,6 +1453,191 @@ e9k_debug_ami_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, siz
 	(void)out;
 	(void)cap;
 	return 0;
+#endif
+}
+
+static void
+e9k_debug_dmaDebugCopyRecord(e9k_debug_ami_dma_debug_record_t *dst, const struct dma_rec *src)
+{
+	if (!dst || !src) {
+		return;
+	}
+	dst->hpos = src->hpos;
+	dst->vpos = src->vpos;
+	dst->dhpos = src->dhpos;
+	dst->reg = (uint16_t)src->reg;
+	dst->size = (uint16_t)src->size;
+	dst->dat = (uint64_t)src->dat;
+	dst->addr = (uint32_t)src->addr;
+	dst->evt = (uint32_t)src->evt;
+	dst->evt2 = (uint32_t)src->evt2;
+	dst->evtdata = (uint32_t)src->evtdata;
+	dst->type = (int16_t)src->type;
+	dst->extra = (uint16_t)src->extra;
+	dst->intlev = (int8_t)src->intlev;
+	dst->ipl = (int8_t)src->ipl;
+	dst->ipl2 = (int8_t)src->ipl2;
+	dst->evtdataset = src->evtdataset ? 1u : 0u;
+	dst->cf_reg = (uint16_t)src->cf_reg;
+	dst->cf_dat = (uint16_t)src->cf_dat;
+	dst->cf_addr = (uint16_t)src->cf_addr;
+	dst->ciareg = src->ciareg;
+	dst->ciamask = src->ciamask;
+	dst->ciaphase = src->ciaphase;
+	dst->ciavalue = (uint16_t)src->ciavalue;
+	dst->ciarw = src->ciarw ? 1u : 0u;
+	dst->end = src->end ? 1u : 0u;
+	dst->reserved[0] = 0u;
+	dst->reserved[1] = 0u;
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_ami_dma_debug_read_frame(uint32_t frameSelect,
+                                   e9k_debug_ami_dma_debug_record_t *out,
+                                   size_t cap,
+                                   e9k_debug_ami_dma_debug_frame_info_t *outInfo,
+                                   size_t infoCap)
+{
+#if E9K_HACK_DMA_DEBUG_EXPORT
+	const struct dma_rec *records = NULL;
+	int recordCount = 0;
+	int hposCount = 0;
+	int vposCount = 0;
+	int frameNumber = -1;
+	int recordToggle = -1;
+	int dmaHoffset = 0;
+	int debugDmaEnabled = 0;
+	int coreFrameSelect = DEBUG_DMA_EXPORT_FRAME_LATEST_COMPLETE;
+	size_t totalCount = 0;
+
+	if (frameSelect == E9K_DEBUG_AMI_DMA_DEBUG_FRAME_ACTIVE) {
+		coreFrameSelect = DEBUG_DMA_EXPORT_FRAME_ACTIVE;
+	}
+	if (outInfo && infoCap >= sizeof(*outInfo)) {
+		memset(outInfo, 0, sizeof(*outInfo));
+		outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
+		outInfo->frameSelect = frameSelect;
+	}
+	if (!debug_dmaExportGetFrame(coreFrameSelect,
+				&records,
+				&recordCount,
+				&hposCount,
+				&vposCount,
+				&frameNumber,
+				&recordToggle,
+				&dmaHoffset,
+				&debugDmaEnabled)) {
+		return 0u;
+	}
+
+	if (recordCount < 0) {
+		recordCount = 0;
+	}
+	totalCount = (size_t)recordCount;
+
+	if (outInfo && infoCap >= sizeof(*outInfo)) {
+		outInfo->frameNumber = frameNumber;
+		outInfo->recordToggle = recordToggle;
+		outInfo->hposCount = hposCount;
+		outInfo->vposCount = vposCount;
+		outInfo->dmaHoffset = dmaHoffset;
+		outInfo->recordCount = (uint32_t)recordCount;
+		outInfo->debugDmaEnabled = debugDmaEnabled > 0 ? 1u : 0u;
+	}
+
+	if (!records || !out || cap == 0u) {
+		return totalCount;
+	}
+
+	size_t writeCount = totalCount;
+	if (writeCount > cap) {
+		writeCount = cap;
+	}
+	for (size_t i = 0; i < writeCount; ++i) {
+		e9k_debug_dmaDebugCopyRecord(&out[i], &records[i]);
+	}
+	return totalCount;
+#else
+	(void)frameSelect;
+	(void)out;
+	(void)cap;
+	if (outInfo && infoCap >= sizeof(*outInfo)) {
+		memset(outInfo, 0, sizeof(*outInfo));
+		outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
+		outInfo->frameSelect = frameSelect;
+	}
+	(void)infoCap;
+	return 0u;
+#endif
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_ami_dma_debug_get_frame_ptr(uint32_t frameSelect,
+                                      const e9k_debug_ami_dma_debug_raw_record_t **outRecords,
+                                      e9k_debug_ami_dma_debug_frame_info_t *outInfo,
+                                      size_t infoCap)
+{
+#if E9K_HACK_DMA_DEBUG_EXPORT
+	const struct dma_rec *records = NULL;
+	int recordCount = 0;
+	int hposCount = 0;
+	int vposCount = 0;
+	int frameNumber = -1;
+	int recordToggle = -1;
+	int dmaHoffset = 0;
+	int debugDmaEnabled = 0;
+	int coreFrameSelect = DEBUG_DMA_EXPORT_FRAME_LATEST_COMPLETE;
+
+	if (frameSelect == E9K_DEBUG_AMI_DMA_DEBUG_FRAME_ACTIVE) {
+		coreFrameSelect = DEBUG_DMA_EXPORT_FRAME_ACTIVE;
+	}
+	if (outRecords) {
+		*outRecords = NULL;
+	}
+	if (outInfo && infoCap >= sizeof(*outInfo)) {
+		memset(outInfo, 0, sizeof(*outInfo));
+		outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
+		outInfo->frameSelect = frameSelect;
+	}
+	if (!debug_dmaExportGetFrame(coreFrameSelect,
+				&records,
+				&recordCount,
+				&hposCount,
+				&vposCount,
+				&frameNumber,
+				&recordToggle,
+				&dmaHoffset,
+				&debugDmaEnabled)) {
+		return 0u;
+	}
+	if (recordCount < 0) {
+		recordCount = 0;
+	}
+	if (outInfo && infoCap >= sizeof(*outInfo)) {
+		outInfo->frameNumber = frameNumber;
+		outInfo->recordToggle = recordToggle;
+		outInfo->hposCount = hposCount;
+		outInfo->vposCount = vposCount;
+		outInfo->dmaHoffset = dmaHoffset;
+		outInfo->recordCount = (uint32_t)recordCount;
+		outInfo->debugDmaEnabled = debugDmaEnabled > 0 ? 1u : 0u;
+	}
+	if (outRecords && records) {
+		*outRecords = (const e9k_debug_ami_dma_debug_raw_record_t *)records;
+	}
+	return (size_t)recordCount;
+#else
+	(void)frameSelect;
+	if (outRecords) {
+		*outRecords = NULL;
+	}
+	if (outInfo && infoCap >= sizeof(*outInfo)) {
+		memset(outInfo, 0, sizeof(*outInfo));
+		outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
+		outInfo->frameSelect = frameSelect;
+	}
+	(void)infoCap;
+	return 0u;
 #endif
 }
 

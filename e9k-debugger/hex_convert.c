@@ -9,14 +9,22 @@
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "config.h"
 #include "hex_convert.h"
 
 typedef struct hex_convert_state {
-    e9ui_component_t *modal;
+    e9ui_window_t *windowHost;
     e9ui_component_t *decimalTextbox;
     e9ui_component_t *hexTextbox;
+    int winX;
+    int winY;
+    int winW;
+    int winH;
+    int winHasSaved;
     int syncing;
 } hex_convert_state_t;
 
@@ -27,6 +35,52 @@ hex_convert_setHexFromDecimal(void);
 
 static void
 hex_convert_setDecimalFromHex(void);
+
+static int
+hex_convert_parseInt(const char *value, int *outValue);
+
+static e9ui_window_backend_t
+hex_convert_windowBackend(void);
+
+static e9ui_rect_t
+hex_convert_defaultRect(e9ui_context_t *ctx, int contentWidthPx);
+
+static int
+hex_convert_parseInt(const char *value, int *outValue)
+{
+    if (!value || !outValue) {
+        return 0;
+    }
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (!end || end == value || *end != '\0') {
+        return 0;
+    }
+    if (parsed < INT_MIN || parsed > INT_MAX) {
+        return 0;
+    }
+    *outValue = (int)parsed;
+    return 1;
+}
+
+static e9ui_window_backend_t
+hex_convert_windowBackend(void)
+{
+    return e9ui_window_backend_overlay;
+}
+
+static e9ui_rect_t
+hex_convert_defaultRect(e9ui_context_t *ctx, int contentWidthPx)
+{
+    e9ui_rect_t rect = { 0, 0, contentWidthPx + e9ui_scale_px(ctx, 20), e9ui_scale_px(ctx, 140) };
+    if (rect.w < e9ui_scale_px(ctx, 260)) {
+        rect.w = e9ui_scale_px(ctx, 260);
+    }
+    if (rect.h < e9ui_scale_px(ctx, 120)) {
+        rect.h = e9ui_scale_px(ctx, 120);
+    }
+    return rect;
+}
 
 static int
 hex_convert_parseU64(const char *text, int base, uint64_t *outValue)
@@ -280,24 +334,32 @@ hex_convert_hexChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *
 static void
 hex_convert_closeModal(void)
 {
-    if (!hex_convert_state.modal) {
+    if (!hex_convert_state.windowHost) {
         return;
     }
-    e9ui_setFocus(&e9ui->ctx, NULL);
-    e9ui_setHidden(hex_convert_state.modal, 1);
-    if (!e9ui->pendingRemove) {
-        e9ui->pendingRemove = hex_convert_state.modal;
+    if (e9ui_windowIsOpen(hex_convert_state.windowHost)) {
+        (void)e9ui_windowCaptureRectSnapshot(hex_convert_state.windowHost,
+                                             e9ui ? &e9ui->ctx : NULL,
+                                             &hex_convert_state.winHasSaved,
+                                             &hex_convert_state.winX,
+                                             &hex_convert_state.winY,
+                                             &hex_convert_state.winW,
+                                             &hex_convert_state.winH);
+        e9ui_windowClose(hex_convert_state.windowHost);
     }
-    hex_convert_state.modal = NULL;
+    e9ui_windowDestroy(hex_convert_state.windowHost);
+    hex_convert_state.windowHost = NULL;
+    e9ui_setFocus(&e9ui->ctx, NULL);
     hex_convert_state.decimalTextbox = NULL;
     hex_convert_state.hexTextbox = NULL;
     hex_convert_state.syncing = 0;
+    config_saveConfig();
 }
 
 static void
-hex_convert_uiClosed(e9ui_component_t *modal, void *user)
+hex_convert_uiClosed(e9ui_window_t *window, void *user)
 {
-    (void)modal;
+    (void)window;
     (void)user;
     hex_convert_closeModal();
 }
@@ -308,7 +370,7 @@ hex_convert_show(e9ui_context_t *ctx)
     if (!ctx) {
         return;
     }
-    if (hex_convert_state.modal) {
+    if (hex_convert_state.windowHost && e9ui_windowIsOpen(hex_convert_state.windowHost)) {
         e9ui_setFocus(ctx, hex_convert_state.decimalTextbox);
         return;
     }
@@ -318,18 +380,11 @@ hex_convert_show(e9ui_context_t *ctx)
     int rowGapScaled = e9ui_scale_px(ctx, 16);
     int boxPadScaled = e9ui_scale_px(ctx, 14);
     int innerWidthScaled = totalWidthScaled * 2 + rowGapScaled + boxPadScaled * 2;
-    int modalMarginScaled = e9ui_scale_px(ctx, 20);
-    e9ui_rect_t rect = {0, 0, innerWidthScaled + modalMarginScaled, 140};
-    if (ctx->winW > rect.w) {
-        rect.x = (ctx->winW - rect.w) / 2;
-    }
-    if (ctx->winH > rect.h) {
-        rect.y = (ctx->winH - rect.h) / 2;
-    }
-    hex_convert_state.modal = e9ui_modal_show(ctx, "DECIMAL <-> HEX", rect, hex_convert_uiClosed, NULL);
-    if (!hex_convert_state.modal) {
+    hex_convert_state.windowHost = e9ui_windowCreate(hex_convert_windowBackend());
+    if (!hex_convert_state.windowHost) {
         return;
     }
+    e9ui_windowSetMinSize(hex_convert_state.windowHost, 260, 120);
     e9ui_component_t *row = e9ui_hstack_make();
     e9ui_component_t *rowDecimal = e9ui_labeled_textbox_make("Dec", labelWidth, totalWidth, NULL, NULL);
     e9ui_component_t *rowHex = e9ui_labeled_textbox_make("Hex", labelWidth, totalWidth, NULL, NULL);
@@ -352,14 +407,36 @@ hex_convert_show(e9ui_context_t *ctx)
     e9ui_labeled_textbox_setOnChange(rowDecimal, hex_convert_decimalChanged, NULL);
     e9ui_labeled_textbox_setOnChange(rowHex, hex_convert_hexChanged, NULL);
     e9ui_hstack_addFixed(row, rowDecimal, totalWidthScaled);
-    e9ui_hstack_addFixed(row, e9ui_spacer_make(16), 16);
+    e9ui_hstack_addFixed(row, e9ui_spacer_make(16), rowGapScaled);
     e9ui_hstack_addFixed(row, rowHex, totalWidthScaled);
 
     e9ui_component_t *padded = e9ui_box_make(row);
     e9ui_box_setPadding(padded, 14);
     e9ui_component_t *center = e9ui_center_make(padded);
     e9ui_center_setSize(center, e9ui_unscale_px(ctx, innerWidthScaled), 0);
-    e9ui_modal_setBodyChild(hex_convert_state.modal, center, ctx);
+    e9ui_rect_t rect = e9ui_windowResolveOpenRect(ctx,
+                                                  hex_convert_defaultRect(ctx, innerWidthScaled),
+                                                  260,
+                                                  120,
+                                                  1,
+                                                  hex_convert_state.winHasSaved ? 1 : 0,
+                                                  (hex_convert_state.winHasSaved &&
+                                                   hex_convert_state.winW > 0 &&
+                                                   hex_convert_state.winH > 0) ? 1 : 0,
+                                                  hex_convert_state.winX,
+                                                  hex_convert_state.winY,
+                                                  hex_convert_state.winW,
+                                                  hex_convert_state.winH);
+    if (!e9ui_windowOpen(hex_convert_state.windowHost,
+                         "DECIMAL <-> HEX",
+                         rect,
+                         center,
+                         hex_convert_uiClosed,
+                         NULL,
+                         ctx)) {
+        hex_convert_closeModal();
+        return;
+    }
     if (!hex_convert_applySelection(ctx)) {
         e9ui_setFocus(ctx, hex_convert_state.decimalTextbox);
     }
@@ -368,7 +445,7 @@ hex_convert_show(e9ui_context_t *ctx)
 int
 hex_convert_isOpen(void)
 {
-    return hex_convert_state.modal ? 1 : 0;
+    return (hex_convert_state.windowHost && e9ui_windowIsOpen(hex_convert_state.windowHost)) ? 1 : 0;
 }
 
 void
@@ -380,9 +457,67 @@ hex_convert_close(void)
 void
 hex_convert_toggle(e9ui_context_t *ctx)
 {
-    if (hex_convert_state.modal) {
+    if (hex_convert_isOpen()) {
         hex_convert_closeModal();
     } else {
         hex_convert_show(ctx);
     }
+}
+
+void
+hex_convert_persistConfig(FILE *file)
+{
+    if (!file) {
+        return;
+    }
+    if (hex_convert_state.windowHost && e9ui_windowIsOpen(hex_convert_state.windowHost)) {
+        (void)e9ui_windowCaptureRectSnapshot(hex_convert_state.windowHost,
+                                             e9ui ? &e9ui->ctx : NULL,
+                                             &hex_convert_state.winHasSaved,
+                                             &hex_convert_state.winX,
+                                             &hex_convert_state.winY,
+                                             &hex_convert_state.winW,
+                                             &hex_convert_state.winH);
+    }
+    if (!hex_convert_state.winHasSaved) {
+        return;
+    }
+    fprintf(file, "comp.hex_convert.win_x=%d\n", hex_convert_state.winX);
+    fprintf(file, "comp.hex_convert.win_y=%d\n", hex_convert_state.winY);
+    fprintf(file, "comp.hex_convert.win_w=%d\n", hex_convert_state.winW);
+    fprintf(file, "comp.hex_convert.win_h=%d\n", hex_convert_state.winH);
+}
+
+int
+hex_convert_loadConfigProperty(const char *prop, const char *value)
+{
+    if (!prop || !value) {
+        return 0;
+    }
+    int parsed = 0;
+    if (strcmp(prop, "win_x") == 0) {
+        if (!hex_convert_parseInt(value, &parsed)) {
+            return 0;
+        }
+        hex_convert_state.winX = parsed;
+    } else if (strcmp(prop, "win_y") == 0) {
+        if (!hex_convert_parseInt(value, &parsed)) {
+            return 0;
+        }
+        hex_convert_state.winY = parsed;
+    } else if (strcmp(prop, "win_w") == 0) {
+        if (!hex_convert_parseInt(value, &parsed)) {
+            return 0;
+        }
+        hex_convert_state.winW = parsed;
+    } else if (strcmp(prop, "win_h") == 0) {
+        if (!hex_convert_parseInt(value, &parsed)) {
+            return 0;
+        }
+        hex_convert_state.winH = parsed;
+    } else {
+        return 0;
+    }
+    hex_convert_state.winHasSaved = 1;
+    return 1;
 }

@@ -303,6 +303,7 @@ runtime_runLoop(void)
         }
         profile_drainStream();
         ui_updateSourceTitle();
+        ui_updateWindowTitle();
         e9ui_renderFrame();
         custom_ui_render();
         custom_log_render();
@@ -315,6 +316,18 @@ runtime_runLoop(void)
             break;
         }
         if (ui_test_hasFailed()) {
+            break;
+        }
+        if (debugger.smokeTestMode != SMOKE_TEST_MODE_NONE &&
+            debugger.smokeTestMode != SMOKE_TEST_MODE_RECORD &&
+            input_record_isPlaybackComplete()) {
+            debugger.smokeTestCompleted = 1;
+            debugger.smokeTestExitCode = 0;
+            if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+                debug_printf("*** SMOKE TEST PASSED ***");
+            } else if (debugger.smokeTestMode == SMOKE_TEST_MODE_REMAKE) {
+                debug_printf("*** REMAKE SMOKE COMPLETE ***");
+            }
             break;
         }
         if (ui_test_checkPlaybackComplete()) {

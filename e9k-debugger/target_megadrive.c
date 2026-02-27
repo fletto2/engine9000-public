@@ -120,6 +120,7 @@ target_megadrive_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t
         romState->sourceSelect = fsSource;
         romState->toolchainSelect = ltToolchain;
         settings_romSelectUpdateAllowEmpty(romState);
+        settings_romSelectRefreshRecents(romState);
     }
 
     e9ui_component_t *body = e9ui_stack_makeVertical();

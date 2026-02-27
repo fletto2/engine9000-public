@@ -21,6 +21,10 @@
 
 #ifdef DEBUGGER
 
+#ifndef E9K_HACK_DMA_DEBUG_EXPORT
+#define E9K_HACK_DMA_DEBUG_EXPORT 0
+#endif
+
 #define	MAX_HIST 500
 #define MAX_LINEWIDTH 10000
 
@@ -29,6 +33,7 @@ extern int memwatch_enabled;
 extern int exception_debugging;
 extern int debug_copper;
 extern int debug_dma, debug_heatmap;
+#define DEBUG_DMA_MODE_COLLECT_ONLY 6
 extern int debug_sprite_mask;
 extern int debug_bpl_mask, debug_bpl_mask_one;
 extern int debugger_active;
@@ -246,7 +251,22 @@ struct dma_rec
 	bool end;
 };
 
+#define DEBUG_DMA_EXPORT_FRAME_LATEST_COMPLETE 0
+#define DEBUG_DMA_EXPORT_FRAME_ACTIVE 1
+
 extern struct dma_rec *last_dma_rec;
+
+#if E9K_HACK_DMA_DEBUG_EXPORT
+extern int debug_dmaExportGetFrame(int frameSelect,
+	const struct dma_rec **outRecords,
+	int *outRecordCount,
+	int *outHposCount,
+	int *outVposCount,
+	int *outFrameNumber,
+	int *outRecordToggle,
+	int *outDmaHoffset,
+	int *outDebugDmaEnabled);
+#endif
 
 #define DMA_EVENT_BLITIRQ 1
 #define DMA_EVENT_BLITFINALD 2

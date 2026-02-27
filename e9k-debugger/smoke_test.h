@@ -14,7 +14,8 @@
 typedef enum smoke_test_mode {
     SMOKE_TEST_MODE_NONE = 0,
     SMOKE_TEST_MODE_RECORD = 1,
-    SMOKE_TEST_MODE_COMPARE = 2
+    SMOKE_TEST_MODE_COMPARE = 2,
+    SMOKE_TEST_MODE_REMAKE = 3
 } smoke_test_mode_t;
 
 struct e9k_debugger;

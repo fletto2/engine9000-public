@@ -37,10 +37,16 @@ e9ui_windowOpen(e9ui_window_t *window,
                 e9ui_context_t *ctx);
 
 void
+e9ui_windowSetMinSize(e9ui_window_t *window, int minWidthPx, int minHeightPx);
+
+void
 e9ui_windowClose(e9ui_window_t *window);
 
 void
 e9ui_windowCloseAllOverlay(void);
+
+void
+e9ui_window_resetOverlayResources(void);
 
 int
 e9ui_windowIsOpen(const e9ui_window_t *window);

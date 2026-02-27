@@ -73,7 +73,6 @@ typedef struct mega_sprite_debug_state
     uint32_t lastHash;
     int cachedValid;
     int open;
-    int closeRequested;
     int showLinks;
     int showOrderNumbers;
     int highlightIssuesOnly;
@@ -340,7 +339,7 @@ mega_sprite_debug_overlayWindowCloseRequested(e9ui_window_t *window, void *user)
 {
     (void)window;
     (void)user;
-    mega_sprite_debug_state.closeRequested = 1;
+    mega_sprite_debug_toggle();
 }
 
 static void
@@ -674,7 +673,6 @@ mega_sprite_debug_toggle(void)
         mega_sprite_debug_state.window = e9ui->ctx.window;
         mega_sprite_debug_state.renderer = e9ui->ctx.renderer;
         mega_sprite_debug_state.open = 1;
-        mega_sprite_debug_state.closeRequested = 0;
         mega_sprite_debug_state.showLinks = 1;
         mega_sprite_debug_state.showOrderNumbers = 1;
         mega_sprite_debug_state.highlightIssuesOnly = 0;
@@ -702,7 +700,6 @@ mega_sprite_debug_toggle(void)
     mega_sprite_debug_state.texW = 0;
     mega_sprite_debug_state.texH = 0;
     mega_sprite_debug_state.open = 0;
-    mega_sprite_debug_state.closeRequested = 0;
     mega_sprite_debug_state.cachedValid = 0;
     mega_sprite_debug_state.hasLastState = 0;
 }
@@ -1220,10 +1217,6 @@ mega_sprite_debug_renderFrameInternal(const e9k_debug_mega_sprite_state_t *st, i
 void
 mega_sprite_debug_render(const e9k_debug_mega_sprite_state_t *st)
 {
-    if (mega_sprite_debug_state.closeRequested && mega_sprite_debug_state.open) {
-        mega_sprite_debug_toggle();
-        return;
-    }
     if (st) {
         mega_sprite_debug_state.lastState = *st;
         mega_sprite_debug_state.hasLastState = 1;

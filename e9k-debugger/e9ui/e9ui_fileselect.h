@@ -9,6 +9,7 @@
 #pragma once
 
 #include "e9ui_component.h"
+#include "e9ui_textbox.h"
 
 typedef enum {
     E9UI_FILESELECT_FILE = 0,
@@ -44,6 +45,12 @@ e9ui_fileSelect_getText(const e9ui_component_t *comp);
 
 void
 e9ui_fileSelect_setOnChange(e9ui_component_t *comp, e9ui_fileselect_change_cb_t cb, void *user);
+
+void
+e9ui_fileSelect_setOptions(e9ui_component_t *comp, const e9ui_textbox_option_t *options, int optionCount);
+
+const char *
+e9ui_fileSelect_getSelectedValue(const e9ui_component_t *comp);
 
 void
 e9ui_fileSelect_enableNewButton(e9ui_component_t *comp, const char *buttonText);

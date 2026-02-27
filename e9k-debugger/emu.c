@@ -33,6 +33,7 @@ typedef struct emu_range_bar_binding {
 typedef struct geo9000_state {
     int wasFocused;
     char *seekBarMeta;
+    int seekBarForcedHidden;
     int histogramEnabled;
     char *shaderUiBtnMeta;
     char *buttonStackMeta;
@@ -567,7 +568,11 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
         }
         if (state && state->seekBarMeta) {
             e9ui_component_t *seek = e9ui_child_find(self, state->seekBarMeta);
-            if (seek && seek->handleEvent && seek->handleEvent(seek, ctx, ev)) {
+            if (seek &&
+                !state_buffer_isRollingPaused() &&
+                !e9ui_getHidden(seek) &&
+                seek->handleEvent &&
+                seek->handleEvent(seek, ctx, ev)) {
                 return 1;
             }
         }
@@ -776,8 +781,19 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
     }
 
     if (state && state->seekBarMeta) {
-            e9ui_component_t *seek = e9ui_child_find(self, state->seekBarMeta);
-            if (seek) {
+        e9ui_component_t *seek = e9ui_child_find(self, state->seekBarMeta);
+        if (seek) {
+            seek->disabled = state_buffer_isRollingPaused() ? 1 : 0;
+            if (seek->disabled) {
+                if (!state->seekBarForcedHidden) {
+                    e9ui_setHidden(seek, 1);
+                    state->seekBarForcedHidden = 1;
+                }
+            } else {
+                if (state->seekBarForcedHidden) {
+                    e9ui_setHidden(seek, 0);
+                    state->seekBarForcedHidden = 0;
+                }
                 e9ui_rect_t vid_bounds = { dst.x, dst.y, dst.w, dst.h };
                 e9ui_seek_bar_layoutInParent(seek, ctx, vid_bounds);
                 e9ui_setAutoHideClip(seek, &self->bounds);
@@ -786,6 +802,7 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
                 }
             }
         }
+    }
 }
 
 static void
@@ -847,6 +864,13 @@ emu_makeComponent(void)
         e9ui_seek_bar_setCallback(seek, emu_seekBarChanged, NULL);
         e9ui_seek_bar_setDragCallback(seek, emu_seekBarDragging, seek);
         e9ui_seek_bar_setTooltipCallback(seek, emu_seekTooltip, NULL);
+        seek->disabled = state_buffer_isRollingPaused() ? 1 : 0;
+        if (seek->disabled) {
+            e9ui_setHidden(seek, 1);
+            state->seekBarForcedHidden = 1;
+        } else {
+            state->seekBarForcedHidden = 0;
+        }
         e9ui_setAutoHide(seek, 1, e9ui_seek_bar_getHoverMargin(seek));
         state->seekBarMeta = alloc_strdup("seek_bar");
         e9ui_child_add(comp, seek, state->seekBarMeta);

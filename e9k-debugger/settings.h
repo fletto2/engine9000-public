@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <stdio.h>
+
 #include "e9ui.h"
 
 struct e9k_amiga_config;
@@ -79,6 +81,12 @@ settings_romFolderChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const cha
 void
 settings_romSelectUpdateAllowEmpty(settings_romselect_state_t *st);
 
+void
+settings_romSelectRefreshRecents(settings_romselect_state_t *st);
+
+void
+settings_syncActiveRomConfigForSelection(void);
+
 int
 settings_pathExistsFile(const char *path);
 
@@ -114,5 +122,11 @@ settings_toolchainPrefixChanged(e9ui_context_t *ctx, e9ui_component_t *comp, con
 
 void
 settings_audioChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *text, void *user);
+
+void
+settings_persistConfig(FILE *file);
+
+int
+settings_loadConfigProperty(const char *prop, const char *value);
 
 extern int settings_coreOptionsDirty;

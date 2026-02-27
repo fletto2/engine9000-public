@@ -32,3 +32,5 @@ test.log
 docs/platform_ifdef_migration_plan.md
 elowar
 releases
+silents.uae
+*.uae

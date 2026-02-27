@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -68,13 +69,91 @@ typedef struct e9k_debug_ami_blitter_vis_stats {
     uint32_t blink;
     uint32_t livePhase;
     uint32_t activeCount;
+    uint32_t blitsThisFrame;
     uint32_t writesThisFrame;
+    uint32_t writeBytesThisFrame;
+    uint32_t writeBytesMaxEstimateFrame;
     uint32_t frameCounter;
     uint32_t fetchQueriesThisFrame;
     uint32_t fetchHitsThisFrame;
     uint32_t drawMarkCallsFrame;
     uint32_t drawMarkCallsSnapshot;
 } e9k_debug_ami_blitter_vis_stats_t;
+
+#define E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE 0u
+#define E9K_DEBUG_AMI_DMA_DEBUG_FRAME_ACTIVE 1u
+#define E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION 1u
+#define E9K_DEBUG_AMI_DMA_EVENT2_COPPERUSE 0x00000004u
+#define E9K_DEBUG_AMI_DMA_DEBUG_MODE_COLLECT_ONLY 6u
+
+typedef struct e9k_debug_ami_dma_debug_frame_info {
+    uint32_t version;
+    uint32_t frameSelect;
+    int32_t frameNumber;
+    int32_t recordToggle;
+    int32_t hposCount;
+    int32_t vposCount;
+    int32_t dmaHoffset;
+    uint32_t recordCount;
+    uint32_t debugDmaEnabled;
+} e9k_debug_ami_dma_debug_frame_info_t;
+
+typedef struct e9k_debug_ami_dma_debug_record {
+    int32_t hpos;
+    int32_t vpos;
+    int32_t dhpos;
+    uint16_t reg;
+    uint16_t size;
+    uint64_t dat;
+    uint32_t addr;
+    uint32_t evt;
+    uint32_t evt2;
+    uint32_t evtdata;
+    int16_t type;
+    uint16_t extra;
+    int8_t intlev;
+    int8_t ipl;
+    int8_t ipl2;
+    uint8_t evtdataset;
+    uint16_t cf_reg;
+    uint16_t cf_dat;
+    uint16_t cf_addr;
+    int32_t ciareg;
+    int32_t ciamask;
+    int32_t ciaphase;
+    uint16_t ciavalue;
+    uint8_t ciarw;
+    uint8_t end;
+    uint8_t reserved[2];
+} e9k_debug_ami_dma_debug_record_t;
+
+typedef struct e9k_debug_ami_dma_debug_raw_record {
+    int hpos;
+    int vpos;
+    int dhpos;
+    uint16_t reg;
+    uint64_t dat;
+    uint16_t size;
+    uint32_t addr;
+    uint32_t evt;
+    uint32_t evt2;
+    uint32_t evtdata;
+    bool evtdataset;
+    int16_t type;
+    uint16_t extra;
+    int8_t intlev;
+    int8_t ipl;
+    int8_t ipl2;
+    uint16_t cf_reg;
+    uint16_t cf_dat;
+    uint16_t cf_addr;
+    int ciareg;
+    int ciamask;
+    bool ciarw;
+    int ciaphase;
+    uint16_t ciavalue;
+    bool end;
+} e9k_debug_ami_dma_debug_raw_record_t;
 
 typedef struct e9k_debug_ami_custom_log_entry {
     uint16_t vpos;

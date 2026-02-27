@@ -75,6 +75,8 @@ typedef struct emu_ami_blitter_vis_cache {
     uint32_t *pixels;
     size_t pixelsCap;
     uint32_t *retainedBlitIds;
+    uint32_t *retainedFrames;
+    uint32_t *retainedRgbs;
     size_t retainedCap;
     uint32_t *blitFrameIds;
     uint32_t *blitFrameValues;
@@ -90,10 +92,26 @@ typedef struct emu_ami_blitter_vis_cache {
     size_t lineListCap;
     uint32_t overlayFrameCounter;
     int hasRetainedOverlay;
+    int hasLatestStats;
+    e9k_debug_ami_blitter_vis_stats_t latestStats;
 } emu_ami_blitter_vis_cache_t;
 
 static emu_ami_blitter_vis_cache_t emu_ami_blitterVisCache = {0};
 static int emu_ami_customLogCallbackBound = 0;
+
+int
+emu_ami_getBlitterVisLatestStats(e9k_debug_ami_blitter_vis_stats_t *outStats)
+{
+    if (!outStats) {
+        return 0;
+    }
+    memset(outStats, 0, sizeof(*outStats));
+    if (!emu_ami_blitterVisCache.hasLatestStats) {
+        return 0;
+    }
+    *outStats = emu_ami_blitterVisCache.latestStats;
+    return 1;
+}
 
 static const char *
 emu_ami_mouseCaptureOptionKey(void)
@@ -442,7 +460,7 @@ emu_ami_blitterVisAlphaForAge(uint32_t age, uint32_t decayFrames)
     return (uint8_t)alpha;
 }
 
-static int
+static __attribute__((unused)) int
 emu_ami_blitterVisEnsureBlitFrameTable(emu_ami_blitter_vis_cache_t *cache, size_t neededEntries)
 {
     if (!cache) {
@@ -504,7 +522,7 @@ emu_ami_blitterVisEnsureBlitFrameTable(emu_ami_blitter_vis_cache_t *cache, size_
     return 1;
 }
 
-static int
+static __attribute__((unused)) int
 emu_ami_blitterVisSetBlitFrame(emu_ami_blitter_vis_cache_t *cache, uint32_t blitId, uint32_t frameCounter)
 {
     if (!cache || !blitId) {
@@ -538,7 +556,7 @@ emu_ami_blitterVisSetBlitFrame(emu_ami_blitter_vis_cache_t *cache, uint32_t blit
     return 0;
 }
 
-static int
+static __attribute__((unused)) int
 emu_ami_blitterVisGetBlitFrame(const emu_ami_blitter_vis_cache_t *cache, uint32_t blitId, uint32_t *outFrame)
 {
     if (outFrame) {
@@ -989,11 +1007,18 @@ emu_ami_renderBlitterVisOverlay(e9ui_context_t *ctx, SDL_Rect *dst)
     }
 
     size_t fetchedCount = libretro_host_debugAmiReadBlitterVisPoints(emu_ami_blitterVisCache.points,
-                                                                      emu_ami_blitterVisCache.pointsCap,
-                                                                      &srcWidth,
-                                                                      &srcHeight);
+                                                                     emu_ami_blitterVisCache.pointsCap,
+                                                                     &srcWidth,
+                                                                     &srcHeight);
     e9k_debug_ami_blitter_vis_stats_t stats;
     int hasStats = libretro_host_debugAmiReadBlitterVisStats(&stats) ? 1 : 0;
+    if (hasStats) {
+        emu_ami_blitterVisCache.latestStats = stats;
+        emu_ami_blitterVisCache.hasLatestStats = 1;
+    } else {
+        memset(&emu_ami_blitterVisCache.latestStats, 0, sizeof(emu_ami_blitterVisCache.latestStats));
+        emu_ami_blitterVisCache.hasLatestStats = 0;
+    }
     uint32_t mode = 0u;
     uint32_t frameCounter = 0u;
     int overlayMode = 1;
@@ -1098,12 +1123,30 @@ emu_ami_renderBlitterVisOverlay(e9ui_context_t *ctx, SDL_Rect *dst)
             return;
         }
         emu_ami_blitterVisCache.retainedBlitIds = nextRetainedBlitIds;
+        uint32_t *nextRetainedFrames =
+            (uint32_t *)realloc(emu_ami_blitterVisCache.retainedFrames, pixelCount * sizeof(*nextRetainedFrames));
+        if (!nextRetainedFrames) {
+            return;
+        }
+        emu_ami_blitterVisCache.retainedFrames = nextRetainedFrames;
+        uint32_t *nextRetainedRgbs =
+            (uint32_t *)realloc(emu_ami_blitterVisCache.retainedRgbs, pixelCount * sizeof(*nextRetainedRgbs));
+        if (!nextRetainedRgbs) {
+            return;
+        }
+        emu_ami_blitterVisCache.retainedRgbs = nextRetainedRgbs;
         size_t oldRetainedCap = emu_ami_blitterVisCache.retainedCap;
         emu_ami_blitterVisCache.retainedCap = pixelCount;
         if (pixelCount > oldRetainedCap) {
             memset(emu_ami_blitterVisCache.retainedBlitIds + oldRetainedCap,
                    0,
                    (pixelCount - oldRetainedCap) * sizeof(*emu_ami_blitterVisCache.retainedBlitIds));
+            memset(emu_ami_blitterVisCache.retainedFrames + oldRetainedCap,
+                   0,
+                   (pixelCount - oldRetainedCap) * sizeof(*emu_ami_blitterVisCache.retainedFrames));
+            memset(emu_ami_blitterVisCache.retainedRgbs + oldRetainedCap,
+                   0,
+                   (pixelCount - oldRetainedCap) * sizeof(*emu_ami_blitterVisCache.retainedRgbs));
         }
     }
 
@@ -1111,6 +1154,12 @@ emu_ami_renderBlitterVisOverlay(e9ui_context_t *ctx, SDL_Rect *dst)
         emu_ami_blitterVisCache.retainedBlitIds &&
         emu_ami_blitterVisCache.retainedCap >= pixelCount) {
         memset(emu_ami_blitterVisCache.retainedBlitIds, 0, pixelCount * sizeof(*emu_ami_blitterVisCache.retainedBlitIds));
+        if (emu_ami_blitterVisCache.retainedFrames) {
+            memset(emu_ami_blitterVisCache.retainedFrames, 0, pixelCount * sizeof(*emu_ami_blitterVisCache.retainedFrames));
+        }
+        if (emu_ami_blitterVisCache.retainedRgbs) {
+            memset(emu_ami_blitterVisCache.retainedRgbs, 0, pixelCount * sizeof(*emu_ami_blitterVisCache.retainedRgbs));
+        }
         if (emu_ami_blitterVisCache.blitFrameIds && emu_ami_blitterVisCache.blitFrameCap) {
             memset(emu_ami_blitterVisCache.blitFrameIds, 0, emu_ami_blitterVisCache.blitFrameCap * sizeof(*emu_ami_blitterVisCache.blitFrameIds));
         }
@@ -1120,7 +1169,11 @@ emu_ami_renderBlitterVisOverlay(e9ui_context_t *ctx, SDL_Rect *dst)
     int hasVisiblePixels = 0;
     if (overlayMode &&
         emu_ami_blitterVisCache.retainedBlitIds &&
+        emu_ami_blitterVisCache.retainedFrames &&
+        emu_ami_blitterVisCache.retainedRgbs &&
         emu_ami_blitterVisCache.retainedCap >= pixelCount) {
+        uint32_t lastScatterBlitId = 0u;
+        uint32_t lastScatterRgb = 0u;
         for (size_t i = 0; i < fetchedCount; i++) {
             uint32_t x = emu_ami_blitterVisCache.points[i].x;
             uint32_t y = emu_ami_blitterVisCache.points[i].y;
@@ -1131,9 +1184,17 @@ emu_ami_renderBlitterVisOverlay(e9ui_context_t *ctx, SDL_Rect *dst)
             if (!blitId) {
                 continue;
             }
+            uint32_t rgb = lastScatterRgb;
+            if (blitId != lastScatterBlitId) {
+                rgb = emu_ami_blitterVisColorFromId(blitId) & 0x00ffffffu;
+                lastScatterBlitId = blitId;
+                lastScatterRgb = rgb;
+            }
             size_t pixelIndex = (size_t)y * (size_t)srcWidth + (size_t)x;
+            /* Overlay decay reads retainedFrames/retainedRgbs directly; avoid blitFrame hash-table updates here (hot path). */
             emu_ami_blitterVisCache.retainedBlitIds[pixelIndex] = blitId;
-            (void)emu_ami_blitterVisSetBlitFrame(&emu_ami_blitterVisCache, blitId, frameCounter);
+            emu_ami_blitterVisCache.retainedFrames[pixelIndex] = frameCounter;
+            emu_ami_blitterVisCache.retainedRgbs[pixelIndex] = rgb;
         }
 
         for (size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
@@ -1142,25 +1203,23 @@ emu_ami_renderBlitterVisOverlay(e9ui_context_t *ctx, SDL_Rect *dst)
                 emu_ami_blitterVisCache.pixels[pixelIndex] = 0u;
                 continue;
             }
-            uint32_t blitFrame = 0u;
-            if (!emu_ami_blitterVisGetBlitFrame(&emu_ami_blitterVisCache, blitId, &blitFrame)) {
-                emu_ami_blitterVisCache.pixels[pixelIndex] = 0u;
-                emu_ami_blitterVisCache.retainedBlitIds[pixelIndex] = 0u;
-                continue;
-            }
+            uint32_t blitFrame = emu_ami_blitterVisCache.retainedFrames[pixelIndex];
             uint32_t age = frameCounter - blitFrame;
             if (decayFrames > 0u && age < decayFrames) {
-                uint32_t color = emu_ami_blitterVisColorFromId(blitId);
-                uint32_t rgb = color & 0x00ffffffu;
+                uint32_t rgb = emu_ami_blitterVisCache.retainedRgbs[pixelIndex];
                 uint8_t alpha = emu_ami_blitterVisAlphaForAge(age, decayFrames);
                 emu_ami_blitterVisCache.pixels[pixelIndex] = ((uint32_t)alpha << 24) | rgb;
                 hasVisiblePixels = 1;
             } else {
                 emu_ami_blitterVisCache.pixels[pixelIndex] = 0u;
                 emu_ami_blitterVisCache.retainedBlitIds[pixelIndex] = 0u;
+                emu_ami_blitterVisCache.retainedFrames[pixelIndex] = 0u;
+                emu_ami_blitterVisCache.retainedRgbs[pixelIndex] = 0u;
             }
         }
     } else {
+        uint32_t lastScatterBlitId = 0u;
+        uint32_t lastScatterColor = 0u;
         memset(emu_ami_blitterVisCache.pixels, 0, pixelCount * sizeof(*emu_ami_blitterVisCache.pixels));
         for (size_t i = 0; i < fetchedCount; i++) {
             uint32_t x = emu_ami_blitterVisCache.points[i].x;
@@ -1168,12 +1227,17 @@ emu_ami_renderBlitterVisOverlay(e9ui_context_t *ctx, SDL_Rect *dst)
             if (x >= srcWidth || y >= srcHeight) {
                 continue;
             }
-            emu_ami_blitterVisCache.pixels[(size_t)y * (size_t)srcWidth + (size_t)x] =
-                emu_ami_blitterVisColorFromId(emu_ami_blitterVisCache.points[i].blitId);
+            uint32_t blitId = emu_ami_blitterVisCache.points[i].blitId;
+            uint32_t color = lastScatterColor;
+            if (blitId != lastScatterBlitId) {
+                color = emu_ami_blitterVisColorFromId(blitId);
+                lastScatterBlitId = blitId;
+                lastScatterColor = color;
+            }
+            emu_ami_blitterVisCache.pixels[(size_t)y * (size_t)srcWidth + (size_t)x] = color;
             hasVisiblePixels = 1;
         }
     }
-
     SDL_UpdateTexture(emu_ami_blitterVisCache.texture,
                       NULL,
                       emu_ami_blitterVisCache.pixels,
@@ -1327,6 +1391,8 @@ emu_ami_cycleDebugDma(e9ui_context_t *ctx, void *user)
     case 0: *debugDma = 2; break;
     case 2: *debugDma = 3; break;
     case 3: *debugDma = 4; break;
+    case 4: *debugDma = (int)E9K_DEBUG_AMI_DMA_DEBUG_MODE_COLLECT_ONLY; break;
+    case (int)E9K_DEBUG_AMI_DMA_DEBUG_MODE_COLLECT_ONLY: *debugDma = 0; break;
     default: *debugDma = 0; break;
     }
 }

@@ -25,7 +25,6 @@
 #include "system_badge.h"
 #include "rom_config.h"
 #include "e9ui_scroll.h"
-#include "state_buffer.h"
 
 //static
 //TODO    
@@ -84,9 +83,227 @@ settings_focusFirstVisibleTextbox(e9ui_context_t *ctx)
     }
 }
 
+static void
+settings_enableTextboxEnterNavigation(e9ui_component_t *comp)
+{
+    if (!comp) {
+        return;
+    }
+    if (comp->name && strcmp(comp->name, "e9ui_textbox") == 0) {
+        e9ui_textbox_setEnterMovesToNextTextbox(comp, 1);
+    }
+    e9ui_child_iterator iter;
+    if (!e9ui_child_iterateChildren(comp, &iter)) {
+        return;
+    }
+    for (e9ui_child_iterator *it = e9ui_child_interateNext(&iter);
+         it;
+         it = e9ui_child_interateNext(&iter)) {
+        if (!it->child) {
+            continue;
+        }
+        settings_enableTextboxEnterNavigation(it->child);
+    }
+}
+
 static int settings_pendingRebuild = 0;
 int settings_coreOptionsDirty = 0;
 static int settings_coreOptionsRestartDirty = 0;
+
+#define SETTINGS_ROM_RECENTS_MAX 16
+
+static const char settings_romRecentClearLabel[] = "<CLEAR RECENTS>";
+static const char settings_romRecentClearValue[] = "__e9k_clear_recents__";
+
+typedef struct settings_romrecent_list
+{
+    char entries[SETTINGS_ROM_RECENTS_MAX][PATH_MAX];
+    int count;
+} settings_romrecent_list_t;
+
+static settings_romrecent_list_t settings_romRecents[TARGET_MEGADRIVE + 1];
+
+static int
+settings_romRecentsTargetIndexForIface(const target_iface_t *system)
+{
+    if (!system) {
+        return -1;
+    }
+    if (system->coreIndex < TARGET_AMIGA || system->coreIndex > TARGET_MEGADRIVE) {
+        return -1;
+    }
+    return system->coreIndex;
+}
+
+static int
+settings_romRecentsCurrentTargetIndex(void)
+{
+    target_iface_t *selectedTarget = debugger.settingsEdit.target ? debugger.settingsEdit.target : target;
+    return settings_romRecentsTargetIndexForIface(selectedTarget);
+}
+
+static const char *
+settings_romRecentsTargetKeyName(int targetIndex)
+{
+    if (targetIndex == TARGET_AMIGA) {
+        return "amiga";
+    }
+    if (targetIndex == TARGET_NEOGEO) {
+        return "neogeo";
+    }
+    if (targetIndex == TARGET_MEGADRIVE) {
+        return "megadrive";
+    }
+    return NULL;
+}
+
+static int
+settings_romRecentsTargetIndexFromKey(const char *name)
+{
+    if (!name) {
+        return -1;
+    }
+    if (strcmp(name, "amiga") == 0) {
+        return TARGET_AMIGA;
+    }
+    if (strcmp(name, "neogeo") == 0) {
+        return TARGET_NEOGEO;
+    }
+    if (strcmp(name, "megadrive") == 0) {
+        return TARGET_MEGADRIVE;
+    }
+    return -1;
+}
+
+static settings_romrecent_list_t *
+settings_romRecentsListForTargetIndex(int targetIndex)
+{
+    if (targetIndex < TARGET_AMIGA || targetIndex > TARGET_MEGADRIVE) {
+        return NULL;
+    }
+    return &settings_romRecents[targetIndex];
+}
+
+static void
+settings_romRecentsClearTarget(int targetIndex)
+{
+    settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
+    if (!list) {
+        return;
+    }
+    memset(list, 0, sizeof(*list));
+}
+
+static void
+settings_romRecentsAddTargetPath(int targetIndex, const char *path)
+{
+    settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
+    if (!list || !path || !*path) {
+        return;
+    }
+
+    int existingIndex = -1;
+    for (int i = 0; i < list->count; ++i) {
+        if (strcmp(list->entries[i], path) == 0) {
+            existingIndex = i;
+            break;
+        }
+    }
+
+    if (existingIndex == 0) {
+        return;
+    }
+
+    if (existingIndex > 0) {
+        char keep[PATH_MAX];
+        settings_config_setPath(keep, sizeof(keep), list->entries[existingIndex]);
+        for (int i = existingIndex; i > 0; --i) {
+            settings_config_setPath(list->entries[i], sizeof(list->entries[i]), list->entries[i - 1]);
+        }
+        settings_config_setPath(list->entries[0], sizeof(list->entries[0]), keep);
+        return;
+    }
+
+    int limit = list->count;
+    if (limit >= SETTINGS_ROM_RECENTS_MAX) {
+        limit = SETTINGS_ROM_RECENTS_MAX - 1;
+    } else {
+        list->count++;
+    }
+
+    for (int i = limit; i > 0; --i) {
+        settings_config_setPath(list->entries[i], sizeof(list->entries[i]), list->entries[i - 1]);
+    }
+    settings_config_setPath(list->entries[0], sizeof(list->entries[0]), path);
+}
+
+static void
+settings_romRecentsSetLoadedEntry(int targetIndex, int index, const char *value)
+{
+    settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
+    if (!list || !value || !*value) {
+        return;
+    }
+    if (index < 0 || index >= SETTINGS_ROM_RECENTS_MAX) {
+        return;
+    }
+    settings_config_setPath(list->entries[index], sizeof(list->entries[index]), value);
+    if (list->count < index + 1) {
+        list->count = index + 1;
+    }
+}
+
+static void
+settings_romRecentsAddFromSettingsSave(target_iface_t *selectedTarget)
+{
+    int targetIndex = settings_romRecentsTargetIndexForIface(selectedTarget);
+    if (targetIndex < 0) {
+        return;
+    }
+
+    const char *romPath = NULL;
+    if (targetIndex == TARGET_AMIGA) {
+        romPath = debugger.settingsEdit.amiga.libretro.romPath;
+    } else if (targetIndex == TARGET_NEOGEO) {
+        romPath = debugger.settingsEdit.neogeo.libretro.romPath;
+    } else if (targetIndex == TARGET_MEGADRIVE) {
+        romPath = debugger.settingsEdit.megadrive.libretro.romPath;
+    }
+
+    settings_romRecentsAddTargetPath(targetIndex, romPath);
+}
+
+static int
+settings_romSelectHandleClearRecents(settings_romselect_state_t *st, const char *text)
+{
+    if (!st || !st->romSelect) {
+        return 0;
+    }
+
+    const char *selectedValue = e9ui_fileSelect_getSelectedValue(st->romSelect);
+    if (!selectedValue ||
+        strcmp(selectedValue, settings_romRecentClearValue) != 0 ||
+        !text ||
+        (strcmp(text, settings_romRecentClearLabel) != 0 &&
+         strcmp(text, settings_romRecentClearValue) != 0)) {
+        return 0;
+    }
+
+    char restorePath[PATH_MAX];
+    settings_config_setPath(restorePath, sizeof(restorePath), st->romPath ? st->romPath : "");
+
+    int targetIndex = settings_romRecentsCurrentTargetIndex();
+    if (targetIndex >= 0) {
+        settings_romRecentsClearTarget(targetIndex);
+    }
+
+    e9ui_fileSelect_setOptions(st->romSelect, NULL, 0);
+    st->suppress = 1;
+    e9ui_fileSelect_setText(st->romSelect, restorePath);
+    st->suppress = 0;
+    settings_romSelectRefreshRecents(st);
+    return 1;
+}
 
 void
 settings_markCoreOptionsDirtyWithRestart(int restartRequired);
@@ -449,6 +666,7 @@ settings_save(void)
     debugger.settingsOk = settings_configIsOk();
     settings_updateButton(debugger.settingsOk);
     settings_applyToolbarMode();
+    settings_romRecentsAddFromSettingsSave(selectedTarget);
     config_saveConfig();
     if (needsRestart) {
         debugger.restartRequested = 1;
@@ -531,6 +749,89 @@ settings_romSelectUpdateAllowEmpty(settings_romselect_state_t *st)
     }
 }
 
+void
+settings_romSelectRefreshRecents(settings_romselect_state_t *st)
+{
+    if (!st || !st->romSelect) {
+        return;
+    }
+
+    int targetIndex = settings_romRecentsCurrentTargetIndex();
+    settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
+    if (!list) {
+        e9ui_fileSelect_setOptions(st->romSelect, NULL, 0);
+        return;
+    }
+
+    e9ui_textbox_option_t options[SETTINGS_ROM_RECENTS_MAX + 1];
+    int optionCount = 0;
+    for (int i = 0; i < list->count && optionCount < SETTINGS_ROM_RECENTS_MAX; ++i) {
+        if (!list->entries[i][0]) {
+            continue;
+        }
+        options[optionCount].value = list->entries[i];
+        options[optionCount].label = list->entries[i];
+        optionCount++;
+    }
+    options[optionCount].value = settings_romRecentClearValue;
+    options[optionCount].label = settings_romRecentClearLabel;
+    optionCount++;
+
+    e9ui_fileSelect_setOptions(st->romSelect, options, optionCount);
+}
+
+static void
+settings_clearActiveRomConfigSelectionState(target_iface_t *selectedTarget)
+{
+    rom_config_clearActiveInputBindings();
+    if (selectedTarget && selectedTarget->romConfigClearActiveCustomOptions) {
+        selectedTarget->romConfigClearActiveCustomOptions();
+    }
+}
+
+static int
+settings_loadActiveRomConfigForSelection(target_iface_t *selectedTarget, const char *saveDir, const char *romPath)
+{
+    char elfPath[PATH_MAX];
+    char sourceDir[PATH_MAX];
+    char toolchainPrefix[PATH_MAX];
+    int hasElf = 0;
+    int hasSource = 0;
+    int hasToolchain = 0;
+
+    if (!selectedTarget) {
+        return 0;
+    }
+    if (!romPath || !*romPath || !saveDir || !*saveDir) {
+        settings_clearActiveRomConfigSelectionState(selectedTarget);
+        return 0;
+    }
+    if (!rom_config_loadSettingsForRom(saveDir, romPath,
+                                       selectedTarget,
+                                       elfPath, sizeof(elfPath),
+                                       sourceDir, sizeof(sourceDir),
+                                       toolchainPrefix, sizeof(toolchainPrefix),
+                                       &hasElf, &hasSource, &hasToolchain)) {
+        settings_clearActiveRomConfigSelectionState(selectedTarget);
+        return 0;
+    }
+    return 1;
+}
+
+void
+settings_syncActiveRomConfigForSelection(void)
+{
+    target_iface_t *selectedTarget = debugger.settingsEdit.target ? debugger.settingsEdit.target : target;
+    const char *saveDir = NULL;
+    const char *romPath = NULL;
+
+    if (!selectedTarget || !selectedTarget->applyRomConfigForSelection) {
+        return;
+    }
+    selectedTarget->applyRomConfigForSelection(NULL, &saveDir, &romPath);
+    (void)settings_loadActiveRomConfigForSelection(selectedTarget, saveDir, romPath);
+}
+
 static void
 settings_applyRomConfigForSelection(settings_romselect_state_t *st)
 {
@@ -547,10 +848,7 @@ settings_applyRomConfigForSelection(settings_romselect_state_t *st)
     selectedTarget->applyRomConfigForSelection(st, &saveDir, &romPath);
     
     if (!romPath || !*romPath || !saveDir || !*saveDir) {
-        rom_config_clearActiveInputBindings();
-        if (selectedTarget && selectedTarget->romConfigClearActiveCustomOptions) {
-            selectedTarget->romConfigClearActiveCustomOptions();
-        }
+        settings_clearActiveRomConfigSelectionState(selectedTarget);
         return;
     }
     char elfPath[PATH_MAX];
@@ -565,6 +863,7 @@ settings_applyRomConfigForSelection(settings_romselect_state_t *st)
                                        sourceDir, sizeof(sourceDir),
                                        toolchainPrefix, sizeof(toolchainPrefix),
                                        &hasElf, &hasSource, &hasToolchain)) {
+        settings_clearActiveRomConfigSelectionState(selectedTarget);
         return;
     }
     selectedTarget->settingsSetConfigPaths(hasElf, elfPath, hasSource, sourceDir, hasToolchain, toolchainPrefix);
@@ -604,6 +903,9 @@ settings_romPathChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char 
         return;
     }
     if (!st->romPath) {
+        return;
+    }
+    if (settings_romSelectHandleClearRecents(st, text)) {
         return;
     }
     settings_config_setPath(st->romPath, PATH_MAX, text);
@@ -695,6 +997,78 @@ settings_audioChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *t
     settings_updateSaveLabel();
 }
 
+void
+settings_persistConfig(FILE *file)
+{
+    if (!file) {
+        return;
+    }
+
+    for (int targetIndex = TARGET_AMIGA; targetIndex <= TARGET_MEGADRIVE; ++targetIndex) {
+        const char *targetName = settings_romRecentsTargetKeyName(targetIndex);
+        settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
+        if (!targetName || !list) {
+            continue;
+        }
+        for (int i = 0; i < list->count; ++i) {
+            if (!list->entries[i][0]) {
+                continue;
+            }
+            fprintf(file, "comp.settings.recent.%s.rom.%d=%s\n", targetName, i, list->entries[i]);
+        }
+    }
+}
+
+int
+settings_loadConfigProperty(const char *prop, const char *value)
+{
+    if (!prop || !value) {
+        return 0;
+    }
+
+    if (strncmp(prop, "recent.", 7) != 0) {
+        return 0;
+    }
+
+    const char *targetName = prop + 7;
+    const char *dot = strchr(targetName, '.');
+    if (!dot) {
+        return 0;
+    }
+
+    char targetBuf[32];
+    size_t targetLen = (size_t)(dot - targetName);
+    if (targetLen == 0 || targetLen >= sizeof(targetBuf)) {
+        return 0;
+    }
+    memcpy(targetBuf, targetName, targetLen);
+    targetBuf[targetLen] = '\0';
+
+    int targetIndex = settings_romRecentsTargetIndexFromKey(targetBuf);
+    if (targetIndex < 0) {
+        return 0;
+    }
+
+    const char *rest = dot + 1;
+    if (strncmp(rest, "rom.", 4) != 0) {
+        return 0;
+    }
+
+    const char *indexText = rest + 4;
+    if (!*indexText) {
+        return 0;
+    }
+    for (const char *p = indexText; *p; ++p) {
+        if (!isdigit((unsigned char)*p)) {
+            return 0;
+        }
+    }
+
+    int index = atoi(indexText);
+    settings_romRecentsSetLoadedEntry(targetIndex, index, value);
+    return 1;
+}
+
 static void
 settings_funChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
 {
@@ -735,9 +1109,7 @@ settings_recordChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected
         return;
     }
     *flag = selected ? 1 : 0;
-    state_buffer_setRollingPaused(*flag ? 0 : 1);
     settings_updateSaveLabel();
-    config_saveConfig();
 }
 
 static void
@@ -1198,6 +1570,7 @@ settings_rebuildModalBody(e9ui_context_t *ctx)
     e9ui_component_t *overlay = settings_buildModalBody(ctx);
     if (overlay) {
         e9ui_modal_setBodyChild(e9ui->settingsModal, overlay, ctx);
+        settings_enableTextboxEnterNavigation(overlay);
         settings_focusFirstVisibleTextbox(ctx);
     }
 }
@@ -1248,6 +1621,7 @@ settings_uiOpen(e9ui_context_t *ctx, void *user)
         e9ui_component_t *overlay = settings_buildModalBody(ctx);
         if (overlay) {
             e9ui_modal_setBodyChild(e9ui->settingsModal, overlay, ctx);
+            settings_enableTextboxEnterNavigation(overlay);
             settings_focusFirstVisibleTextbox(ctx);
         }
     }

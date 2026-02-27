@@ -643,6 +643,10 @@ static int last_bpl1dat_hpos;
 static bool last_bpl1dat_hpos_early;
 static bool harddis_v, harddis_h;
 static uae_u16 dmal_alloc_mask;
+#if E9K_HACK_BLITTER_VIS
+static uint32_t custom_blitterVisMaxSlotsThisFrame;
+static uint32_t custom_blitterVisMaxSlotsLastFrame;
+#endif
 
 #define RGA_PIPELINE_OFFSET_BPL_WRITE 3
 #define RGA_PIPELINE_OFFSET_COPPER 2
@@ -11083,6 +11087,55 @@ bool blitter_cant_access(int hpos)
 	return false;
 }
 
+void
+custom_blitterVisAccumulateLineMaxSlots(void)
+{
+#if E9K_HACK_BLITTER_VIS
+	if (!blitter_getDebugWriteEnabled() || maxhpos <= 0) {
+		return;
+	}
+	uint32_t lineSlots = 0;
+	for (int hpos = 0; hpos < maxhpos; hpos++) {
+		if (!blitter_cant_access(hpos)) {
+			lineSlots++;
+		}
+	}
+	uint64_t total = (uint64_t)custom_blitterVisMaxSlotsThisFrame + (uint64_t)lineSlots;
+	if (total > 0xffffffffu) {
+		total = 0xffffffffu;
+	}
+	custom_blitterVisMaxSlotsThisFrame = (uint32_t)total;
+#endif
+}
+
+void
+custom_blitterVisFrameTick(void)
+{
+#if E9K_HACK_BLITTER_VIS
+	if (!blitter_getDebugWriteEnabled()) {
+		custom_blitterVisMaxSlotsThisFrame = 0;
+		custom_blitterVisMaxSlotsLastFrame = 0;
+		return;
+	}
+	custom_blitterVisMaxSlotsLastFrame = custom_blitterVisMaxSlotsThisFrame;
+	custom_blitterVisMaxSlotsThisFrame = 0;
+#endif
+}
+
+uint32_t
+custom_blitterVisGetMaxWriteBytesLastFrame(void)
+{
+#if E9K_HACK_BLITTER_VIS
+	uint64_t bytes = (uint64_t)custom_blitterVisMaxSlotsLastFrame * 2u;
+	if (bytes > 0xffffffffu) {
+		bytes = 0xffffffffu;
+	}
+	return (uint32_t)bytes;
+#else
+	return 0u;
+#endif
+}
+
 static bool copper_cant_read(int hpos, uae_u16 alloc)
 {
 	if (!is_copper_dma(true)) {
@@ -13907,6 +13960,9 @@ static void hsync_handler_pre(bool onvsync)
 	} else {
 		cycle_line_slot_last = 0;
 	}
+#if E9K_HACK_BLITTER_VIS
+	custom_blitterVisAccumulateLineMaxSlots();
+#endif
 	set_hpos();
 
 	vpos_prev = vpos;

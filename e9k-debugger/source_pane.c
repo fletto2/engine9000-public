@@ -494,7 +494,9 @@ source_pane_parseHex(const char *s, uint32_t *out)
     memcpy(buf, s, len);
     buf[len] = '\0';
     const char *p = buf;
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+    if (*p == '$') {
+        p += 1;
+    } else if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
         p += 2;
     }
     if (!*p) {
@@ -506,7 +508,7 @@ source_pane_parseHex(const char *s, uint32_t *out)
         }
     }
     errno = 0;
-    unsigned long v = strtoul(buf, NULL, 16);
+    unsigned long v = strtoul(p, NULL, 16);
     if (errno != 0) {
         return 0;
     }
@@ -534,7 +536,9 @@ source_pane_parseHex64(const char *s, uint64_t *out)
     memcpy(buf, s, len);
     buf[len] = '\0';
     const char *p = buf;
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+    if (*p == '$') {
+        p += 1;
+    } else if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
         p += 2;
     }
     if (!*p) {
@@ -546,7 +550,7 @@ source_pane_parseHex64(const char *s, uint64_t *out)
         }
     }
     errno = 0;
-    unsigned long long v = strtoull(buf, NULL, 16);
+    unsigned long long v = strtoull(p, NULL, 16);
     if (errno != 0) {
         return 0;
     }
@@ -3490,6 +3494,9 @@ source_pane_searchFind(source_pane_state_t *st, e9ui_component_t *self, e9ui_con
         start = max_start;
     }
     st->scrollLine = start;
+    st->scrollLocked = 1;
+    st->gutterPending = 0;
+    source_pane_syncLockButtonVisual(st);
     return 1;
 }
 
@@ -3512,6 +3519,10 @@ source_pane_searchTextboxKey(e9ui_context_t *ctx, SDL_Keycode key, SDL_Keymod mo
     }
     if (key == SDLK_ESCAPE) {
         source_pane_searchClose(st, ctx);
+        return 1;
+    }
+    if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+        source_pane_searchFind(st, st->ownerPane, ctx, 1, 1);
         return 1;
     }
     if (key == SDLK_UP || key == SDLK_DOWN || key == SDLK_PAGEUP || key == SDLK_PAGEDOWN ||

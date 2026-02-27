@@ -7,9 +7,11 @@
  */
 
 #include <limits.h>
+#include <math.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <SDL.h>
 
 #include "config.h"
@@ -17,9 +19,11 @@
 #include "custom_ui.h"
 #include "debug.h"
 #include "debugger.h"
+#include "emu_ami.h"
 #include "e9ui.h"
 #include "e9ui_scroll.h"
 #include "e9ui_seek_bar.h"
+#include "e9ui_text.h"
 #include "libretro_host.h"
 
 #define CUSTOM_UI_TITLE "ENGINE9000 DEBUGGER - CUSTOM"
@@ -33,10 +37,18 @@
 #define CUSTOM_UI_BLITTER_VIS_MODE_STYLE_MASK (CUSTOM_UI_BLITTER_VIS_MODE_SOLID | CUSTOM_UI_BLITTER_VIS_MODE_PATTERN)
 #define CUSTOM_UI_BLITTER_VIS_DECAY_MAX 64
 #define CUSTOM_UI_COPPER_LINE_MAX 2047
+#define CUSTOM_UI_DMA_RECORD_CPU 2u
+#define CUSTOM_UI_DMA_RECORD_COPPER 3u
+#define CUSTOM_UI_DMA_RECORD_AUDIO 4u
+#define CUSTOM_UI_DMA_RECORD_BLITTER 5u
+#define CUSTOM_UI_DMA_RECORD_BITPLANE 6u
+#define CUSTOM_UI_DMA_RECORD_SPRITE 7u
+#define CUSTOM_UI_DMA_RECORD_DISK 8u
+#define CUSTOM_UI_DMA_RECORD_CONFLICT 9u
+#define CUSTOM_UI_DMA_RECORD_REFRESH 1u
 
 typedef struct custom_ui_state {
     int open;
-    int closeRequested;
     int blitterEnabled;
     int blitterDebugEnabled;
     int suppressBlitterDebugCallbacks;
@@ -44,6 +56,7 @@ typedef struct custom_ui_state {
     int suppressBlitterVisModeCallbacks;
     int blitterVisBlink;
     int blitterVisDecay;
+    int dmaStatsEnabled;
     int copperLimitEnabled;
     int copperLimitStart;
     int copperLimitEnd;
@@ -87,6 +100,35 @@ typedef struct custom_ui_state {
     e9ui_component_t *blitterVisDecayTextbox;
     e9ui_component_t *blitterVisDecaySeekRow;
     e9ui_component_t *blitterVisDecaySeekBar;
+    e9ui_component_t *dmaStatsCheckbox;
+    e9ui_component_t *dmaStatsHintText;
+    e9ui_component_t *dmaStatsHintTextRow;
+    e9ui_component_t *copperStatsChart;
+    e9ui_component_t *copperStatsChartRow;
+    e9ui_component_t *blitterDmaStatsChart;
+    e9ui_component_t *blitterDmaStatsChartRow;
+    e9ui_component_t *cpuDmaStatsChart;
+    e9ui_component_t *cpuDmaStatsChartRow;
+    e9ui_component_t *bitplaneDmaStatsChart;
+    e9ui_component_t *bitplaneDmaStatsChartRow;
+    e9ui_component_t *spriteDmaStatsChart;
+    e9ui_component_t *spriteDmaStatsChartRow;
+    e9ui_component_t *diskDmaStatsChart;
+    e9ui_component_t *diskDmaStatsChartRow;
+    e9ui_component_t *audioDmaStatsChart;
+    e9ui_component_t *audioDmaStatsChartRow;
+    e9ui_component_t *otherDmaStatsChart;
+    e9ui_component_t *otherDmaStatsChartRow;
+    e9ui_component_t *idleDmaStatsChart;
+    e9ui_component_t *idleDmaStatsChartRow;
+    e9ui_component_t *dmaTotalMixChart;
+    e9ui_component_t *dmaTotalMixChartRow;
+    e9ui_component_t *blitterVisStatsChart;
+    int dmaStatsCacheValid;
+    int dmaStatsCacheFrameSelect;
+    int dmaStatsCacheFrameNumber;
+    int dmaDebugAutoEnabled;
+    int dmaDebugAutoPrevValue;
     int blitterVisDecayTextboxHadFocus;
     e9ui_component_t *copperLimitCheckbox;
     e9ui_component_t *copperLimitStartRow;
@@ -130,9 +172,199 @@ typedef struct custom_ui_seek_row_state {
     int rowPadding;
 } custom_ui_seek_row_state_t;
 
+typedef struct custom_ui_inset_row_state {
+    e9ui_component_t *child;
+    int leftInset;
+    int rightInset;
+} custom_ui_inset_row_state_t;
+
+typedef struct custom_ui_dma_stats_header_row_state {
+    e9ui_component_t *checkbox;
+    e9ui_component_t *hintRow;
+    int leftInset;
+    int gap;
+} custom_ui_dma_stats_header_row_state_t;
+
 typedef struct custom_ui_overlay_body_state {
     custom_ui_state_t *ui;
 } custom_ui_overlay_body_state_t;
+
+typedef struct custom_ui_blitter_stats_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasStats;
+    uint32_t wordsFrame;
+    uint32_t maxWordsEstimateFrame;
+    uint32_t blitsFrame;
+} custom_ui_blitter_stats_chart_state_t;
+
+typedef struct custom_ui_copper_stats_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasCopperStats;
+    uint32_t copperSlotsFrame;
+    uint32_t copperSlotsMaxFrame;
+} custom_ui_copper_stats_chart_state_t;
+
+typedef struct custom_ui_blitter_dma_stats_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasBlitterDmaStats;
+    uint32_t blitterSlotsFrame;
+    uint32_t blitterSlotsMaxFrame;
+} custom_ui_blitter_dma_stats_chart_state_t;
+
+typedef struct custom_ui_cpu_dma_stats_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasCpuDmaStats;
+    uint32_t cpuSlotsFrame;
+    uint32_t cpuSlotsMaxFrame;
+} custom_ui_cpu_dma_stats_chart_state_t;
+
+typedef struct custom_ui_bitplane_dma_stats_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasBitplaneDmaStats;
+    uint32_t bitplaneSlotsFrame;
+    uint32_t bitplaneSlotsMaxFrame;
+} custom_ui_bitplane_dma_stats_chart_state_t;
+
+typedef struct custom_ui_sprite_dma_stats_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasSpriteDmaStats;
+    uint32_t spriteSlotsFrame;
+    uint32_t spriteSlotsMaxFrame;
+} custom_ui_sprite_dma_stats_chart_state_t;
+
+typedef struct custom_ui_disk_dma_stats_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasDiskDmaStats;
+    uint32_t diskSlotsFrame;
+    uint32_t diskSlotsMaxFrame;
+} custom_ui_disk_dma_stats_chart_state_t;
+
+typedef struct custom_ui_audio_dma_stats_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasAudioDmaStats;
+    uint32_t audioSlotsFrame;
+    uint32_t audioSlotsMaxFrame;
+} custom_ui_audio_dma_stats_chart_state_t;
+
+typedef struct custom_ui_other_dma_stats_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasOtherDmaStats;
+    uint32_t otherSlotsFrame;
+    uint32_t otherSlotsMaxFrame;
+} custom_ui_other_dma_stats_chart_state_t;
+
+typedef struct custom_ui_idle_dma_stats_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasIdleDmaStats;
+    uint32_t idleSlotsFrame;
+    uint32_t idleSlotsMaxFrame;
+} custom_ui_idle_dma_stats_chart_state_t;
+
+typedef struct custom_ui_dma_total_mix_chart_state {
+    int leftInset;
+    int rightInset;
+    int topPadding;
+    int bottomPadding;
+    int rowGap;
+    int labelWidth;
+    int labelGap;
+    int barHeight;
+    int hasStats;
+    uint32_t totalSlotsFrame;
+    uint32_t totalSlotsMaxFrame;
+    uint32_t cpuSlotsFrame;
+    uint32_t copperSlotsFrame;
+    uint32_t audioSlotsFrame;
+    uint32_t blitterSlotsFrame;
+    uint32_t bitplaneSlotsFrame;
+    uint32_t spriteSlotsFrame;
+    uint32_t diskSlotsFrame;
+    uint32_t otherSlotsFrame;
+    uint32_t idleSlotsFrame;
+} custom_ui_dma_total_mix_chart_state_t;
+
+static const SDL_Color custom_ui_blitterStatsChartLabelColor = { 220, 220, 220, 255 };
+static const SDL_Color custom_ui_blitterStatsChartTextColor = { 232, 236, 240, 255 };
+static const SDL_Color custom_ui_blitterStatsChartTextShadowColor = { 12, 14, 18, 220 };
+static const SDL_Color custom_ui_dmaColorCpu = { 0xa2, 0x53, 0x42, 255 };
+static const SDL_Color custom_ui_dmaColorCopper = { 0xee, 0xee, 0x00, 255 };
+static const SDL_Color custom_ui_dmaColorAudio = { 0xff, 0x00, 0x00, 255 };
+static const SDL_Color custom_ui_dmaColorBlitter = { 0x00, 0x88, 0x88, 255 };
+static const SDL_Color custom_ui_dmaColorBitplane = { 0x00, 0x00, 0xff, 255 };
+static const SDL_Color custom_ui_dmaColorSprite = { 0xff, 0x00, 0xff, 255 };
+static const SDL_Color custom_ui_dmaColorDisk = { 0xff, 0xff, 0xff, 255 };
+static const SDL_Color custom_ui_dmaColorOther = { 0xff, 0xb8, 0x40, 255 };
+static const SDL_Color custom_ui_dmaColorIdle = { 0x5a, 0x5a, 0x5a, 255 };
 
 static custom_ui_state_t custom_ui_state = {
     .blitterEnabled = 1,
@@ -140,6 +372,7 @@ static custom_ui_state_t custom_ui_state = {
     .blitterVisMode = CUSTOM_UI_BLITTER_VIS_MODE_COLLECT,
     .blitterVisBlink = 1,
     .blitterVisDecay = 5,
+    .dmaStatsEnabled = 0,
     .copperLimitEnabled = 0,
     .copperLimitStart = 52,
     .copperLimitEnd = 308,
@@ -176,6 +409,18 @@ custom_ui_parseInt(const char *value, int *out)
 
 static int
 custom_ui_clampCopperLine(int line);
+
+static void
+custom_ui_enableDmaDebugForCopperStats(custom_ui_state_t *ui);
+
+static void
+custom_ui_restoreDmaDebugForCopperStats(custom_ui_state_t *ui);
+
+static void
+custom_ui_syncDmaStatsSuboptions(custom_ui_state_t *ui);
+
+static void
+custom_ui_syncDmaStatsCycleExactHint(custom_ui_state_t *ui);
 
 static e9ui_window_backend_t
 custom_ui_windowBackend(void)
@@ -238,6 +483,2548 @@ custom_ui_syncBlitterVisDecaySeekBar(custom_ui_state_t *ui)
         return;
     }
     e9ui_seek_bar_setPercent(ui->blitterVisDecaySeekBar, custom_ui_blitterVisDecayToPercent(ui->blitterVisDecay));
+}
+
+static void
+custom_ui_blitterStatsChartSetValues(e9ui_component_t *comp,
+                                     int hasStats,
+                                     uint32_t wordsFrame,
+                                     uint32_t maxWordsEstimateFrame,
+                                     uint32_t blitsFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_blitter_stats_chart_state_t *st = (custom_ui_blitter_stats_chart_state_t *)comp->state;
+    st->hasStats = hasStats ? 1 : 0;
+    st->wordsFrame = wordsFrame;
+    st->maxWordsEstimateFrame = maxWordsEstimateFrame;
+    st->blitsFrame = blitsFrame;
+}
+
+static void
+custom_ui_copperStatsChartSetValues(e9ui_component_t *comp,
+                                 int hasCopperStats,
+                                 uint32_t copperSlotsFrame,
+                                 uint32_t copperSlotsMaxFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_copper_stats_chart_state_t *st = (custom_ui_copper_stats_chart_state_t *)comp->state;
+    st->hasCopperStats = hasCopperStats ? 1 : 0;
+    st->copperSlotsFrame = copperSlotsFrame;
+    st->copperSlotsMaxFrame = copperSlotsMaxFrame;
+}
+
+static void
+custom_ui_blitterDmaStatsChartSetValues(e9ui_component_t *comp,
+                                        int hasBlitterDmaStats,
+                                        uint32_t blitterSlotsFrame,
+                                        uint32_t blitterSlotsMaxFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_blitter_dma_stats_chart_state_t *st = (custom_ui_blitter_dma_stats_chart_state_t *)comp->state;
+    st->hasBlitterDmaStats = hasBlitterDmaStats ? 1 : 0;
+    st->blitterSlotsFrame = blitterSlotsFrame;
+    st->blitterSlotsMaxFrame = blitterSlotsMaxFrame;
+}
+
+static void
+custom_ui_cpuDmaStatsChartSetValues(e9ui_component_t *comp,
+                                    int hasCpuDmaStats,
+                                    uint32_t cpuSlotsFrame,
+                                    uint32_t cpuSlotsMaxFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_cpu_dma_stats_chart_state_t *st = (custom_ui_cpu_dma_stats_chart_state_t *)comp->state;
+    st->hasCpuDmaStats = hasCpuDmaStats ? 1 : 0;
+    st->cpuSlotsFrame = cpuSlotsFrame;
+    st->cpuSlotsMaxFrame = cpuSlotsMaxFrame;
+}
+
+static void
+custom_ui_bitplaneDmaStatsChartSetValues(e9ui_component_t *comp,
+                                         int hasBitplaneDmaStats,
+                                         uint32_t bitplaneSlotsFrame,
+                                         uint32_t bitplaneSlotsMaxFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_bitplane_dma_stats_chart_state_t *st = (custom_ui_bitplane_dma_stats_chart_state_t *)comp->state;
+    st->hasBitplaneDmaStats = hasBitplaneDmaStats ? 1 : 0;
+    st->bitplaneSlotsFrame = bitplaneSlotsFrame;
+    st->bitplaneSlotsMaxFrame = bitplaneSlotsMaxFrame;
+}
+
+static void
+custom_ui_spriteDmaStatsChartSetValues(e9ui_component_t *comp,
+                                       int hasSpriteDmaStats,
+                                       uint32_t spriteSlotsFrame,
+                                       uint32_t spriteSlotsMaxFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_sprite_dma_stats_chart_state_t *st = (custom_ui_sprite_dma_stats_chart_state_t *)comp->state;
+    st->hasSpriteDmaStats = hasSpriteDmaStats ? 1 : 0;
+    st->spriteSlotsFrame = spriteSlotsFrame;
+    st->spriteSlotsMaxFrame = spriteSlotsMaxFrame;
+}
+
+static void
+custom_ui_diskDmaStatsChartSetValues(e9ui_component_t *comp,
+                                     int hasDiskDmaStats,
+                                     uint32_t diskSlotsFrame,
+                                     uint32_t diskSlotsMaxFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_disk_dma_stats_chart_state_t *st = (custom_ui_disk_dma_stats_chart_state_t *)comp->state;
+    st->hasDiskDmaStats = hasDiskDmaStats ? 1 : 0;
+    st->diskSlotsFrame = diskSlotsFrame;
+    st->diskSlotsMaxFrame = diskSlotsMaxFrame;
+}
+
+static void
+custom_ui_audioDmaStatsChartSetValues(e9ui_component_t *comp,
+                                      int hasAudioDmaStats,
+                                      uint32_t audioSlotsFrame,
+                                      uint32_t audioSlotsMaxFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_audio_dma_stats_chart_state_t *st = (custom_ui_audio_dma_stats_chart_state_t *)comp->state;
+    st->hasAudioDmaStats = hasAudioDmaStats ? 1 : 0;
+    st->audioSlotsFrame = audioSlotsFrame;
+    st->audioSlotsMaxFrame = audioSlotsMaxFrame;
+}
+
+static void
+custom_ui_otherDmaStatsChartSetValues(e9ui_component_t *comp,
+                                      int hasOtherDmaStats,
+                                      uint32_t otherSlotsFrame,
+                                      uint32_t otherSlotsMaxFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_other_dma_stats_chart_state_t *st = (custom_ui_other_dma_stats_chart_state_t *)comp->state;
+    st->hasOtherDmaStats = hasOtherDmaStats ? 1 : 0;
+    st->otherSlotsFrame = otherSlotsFrame;
+    st->otherSlotsMaxFrame = otherSlotsMaxFrame;
+}
+
+static void
+custom_ui_idleDmaStatsChartSetValues(e9ui_component_t *comp,
+                                     int hasIdleDmaStats,
+                                     uint32_t idleSlotsFrame,
+                                     uint32_t idleSlotsMaxFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_idle_dma_stats_chart_state_t *st = (custom_ui_idle_dma_stats_chart_state_t *)comp->state;
+    st->hasIdleDmaStats = hasIdleDmaStats ? 1 : 0;
+    st->idleSlotsFrame = idleSlotsFrame;
+    st->idleSlotsMaxFrame = idleSlotsMaxFrame;
+}
+
+static void
+custom_ui_dmaTotalMixChartSetValues(e9ui_component_t *comp,
+                                    int hasStats,
+                                    uint32_t totalSlotsFrame,
+                                    uint32_t totalSlotsMaxFrame,
+                                    uint32_t cpuSlotsFrame,
+                                    uint32_t copperSlotsFrame,
+                                    uint32_t audioSlotsFrame,
+                                    uint32_t blitterSlotsFrame,
+                                    uint32_t bitplaneSlotsFrame,
+                                    uint32_t spriteSlotsFrame,
+                                    uint32_t diskSlotsFrame,
+                                    uint32_t otherSlotsFrame,
+                                    uint32_t idleSlotsFrame)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    custom_ui_dma_total_mix_chart_state_t *st = (custom_ui_dma_total_mix_chart_state_t *)comp->state;
+    st->hasStats = hasStats ? 1 : 0;
+    st->totalSlotsFrame = totalSlotsFrame;
+    st->totalSlotsMaxFrame = totalSlotsMaxFrame;
+    st->cpuSlotsFrame = cpuSlotsFrame;
+    st->copperSlotsFrame = copperSlotsFrame;
+    st->audioSlotsFrame = audioSlotsFrame;
+    st->blitterSlotsFrame = blitterSlotsFrame;
+    st->bitplaneSlotsFrame = bitplaneSlotsFrame;
+    st->spriteSlotsFrame = spriteSlotsFrame;
+    st->diskSlotsFrame = diskSlotsFrame;
+    st->otherSlotsFrame = otherSlotsFrame;
+    st->idleSlotsFrame = idleSlotsFrame;
+}
+
+static void
+custom_ui_blitterStatsChartDrawText(e9ui_context_t *ctx,
+                                    TTF_Font *font,
+                                    const char *text,
+                                    SDL_Color color,
+                                    int x,
+                                    int y)
+{
+    TTF_Font *useFont = font ? font : (ctx ? ctx->font : NULL);
+    if (!ctx || !ctx->renderer || !useFont || !text || !*text) {
+        return;
+    }
+    int tw = 0;
+    int th = 0;
+    SDL_Texture *tex = e9ui_text_cache_getText(ctx->renderer, useFont, text, color, &tw, &th);
+    if (!tex) {
+        return;
+    }
+    SDL_Rect dst = { x, y, tw, th };
+    SDL_RenderCopy(ctx->renderer, tex, NULL, &dst);
+}
+
+static int
+custom_ui_statsChartU32ToText(uint32_t value, char *buf, int cap)
+{
+    if (!buf || cap <= 1) {
+        return 0;
+    }
+    char rev[16];
+    int n = 0;
+    uint32_t v = value;
+    do {
+        rev[n++] = (char)('0' + (v % 10u));
+        v /= 10u;
+    } while (v > 0u && n < (int)sizeof(rev));
+    if (n + 1 > cap) {
+        n = cap - 1;
+    }
+    for (int i = 0; i < n; ++i) {
+        buf[i] = rev[n - 1 - i];
+    }
+    buf[n] = '\0';
+    return n;
+}
+
+static void
+custom_ui_statsChartMeasureUint(e9ui_context_t *ctx, TTF_Font *font, uint32_t value, SDL_Color color, int *outW, int *outH)
+{
+    if (outW) {
+        *outW = 0;
+    }
+    if (outH) {
+        *outH = 0;
+    }
+    if (!ctx || !ctx->renderer || !font) {
+        return;
+    }
+    char digits[16];
+    int n = custom_ui_statsChartU32ToText(value, digits, (int)sizeof(digits));
+    int w = 0;
+    int h = 0;
+    for (int i = 0; i < n; ++i) {
+        char ch[2] = { digits[i], '\0' };
+        int cw = 0;
+        int chh = 0;
+        SDL_Texture *tex = e9ui_text_cache_getText(ctx->renderer, font, ch, color, &cw, &chh);
+        if (!tex) {
+            continue;
+        }
+        w += cw;
+        if (chh > h) {
+            h = chh;
+        }
+    }
+    if (outW) {
+        *outW = w;
+    }
+    if (outH) {
+        *outH = h;
+    }
+}
+
+static void
+custom_ui_statsChartDrawUint(e9ui_context_t *ctx, TTF_Font *font, uint32_t value, SDL_Color color, int x, int y)
+{
+    if (!ctx || !ctx->renderer || !font) {
+        return;
+    }
+    char digits[16];
+    int n = custom_ui_statsChartU32ToText(value, digits, (int)sizeof(digits));
+    int penX = x;
+    for (int i = 0; i < n; ++i) {
+        char ch[2] = { digits[i], '\0' };
+        int cw = 0;
+        int chh = 0;
+        SDL_Texture *tex = e9ui_text_cache_getText(ctx->renderer, font, ch, color, &cw, &chh);
+        if (!tex) {
+            continue;
+        }
+        SDL_Rect dst = { penX, y, cw, chh };
+        SDL_RenderCopy(ctx->renderer, tex, NULL, &dst);
+        penX += cw;
+    }
+}
+
+static void
+custom_ui_statsChartMeasureText(e9ui_context_t *ctx, TTF_Font *font, const char *text, SDL_Color color, int *outW, int *outH)
+{
+    if (outW) {
+        *outW = 0;
+    }
+    if (outH) {
+        *outH = 0;
+    }
+    if (!ctx || !ctx->renderer || !font || !text || !*text) {
+        return;
+    }
+    int tw = 0;
+    int th = 0;
+    SDL_Texture *tex = e9ui_text_cache_getText(ctx->renderer, font, text, color, &tw, &th);
+    if (!tex) {
+        return;
+    }
+    if (outW) {
+        *outW = tw;
+    }
+    if (outH) {
+        *outH = th;
+    }
+}
+
+static void
+custom_ui_statsChartDrawValueUsedSuffix(e9ui_context_t *ctx,
+                                        TTF_Font *font,
+                                        uint32_t valueUsed,
+                                        const char *valueSuffix,
+                                        SDL_Color color,
+                                        int x,
+                                        int y)
+{
+    int usedW = 0;
+    int usedH = 0;
+    int spaceW = 0;
+    int spaceH = 0;
+    int suffixW = 0;
+    int suffixH = 0;
+    custom_ui_statsChartMeasureUint(ctx, font, valueUsed, color, &usedW, &usedH);
+    custom_ui_statsChartMeasureText(ctx, font, " ", color, &spaceW, &spaceH);
+    custom_ui_statsChartMeasureText(ctx, font, valueSuffix, color, &suffixW, &suffixH);
+    int lineH = usedH;
+    if (spaceH > lineH) {
+        lineH = spaceH;
+    }
+    if (suffixH > lineH) {
+        lineH = suffixH;
+    }
+    int penX = x;
+    int usedY = y + (lineH - usedH) / 2;
+    int spaceY = y + (lineH - spaceH) / 2;
+    int suffixY = y + (lineH - suffixH) / 2;
+    custom_ui_statsChartDrawUint(ctx, font, valueUsed, color, penX, usedY);
+    penX += usedW;
+    custom_ui_blitterStatsChartDrawText(ctx, font, " ", color, penX, spaceY);
+    penX += spaceW;
+    custom_ui_blitterStatsChartDrawText(ctx, font, valueSuffix, color, penX, suffixY);
+}
+
+static void
+custom_ui_blitterStatsChartHueToRgb(float h, Uint8 *r, Uint8 *g, Uint8 *b)
+{
+    if (h < 0.0f) {
+        h -= (int)h;
+    }
+    if (h >= 1.0f) {
+        h -= (int)h;
+    }
+    float i = floorf(h * 6.0f);
+    float f = h * 6.0f - i;
+    float q = 1.0f - f;
+    int ii = ((int)i) % 6;
+    float rr = 0.0f;
+    float gg = 0.0f;
+    float bb = 0.0f;
+    switch (ii) {
+    case 0: rr = 1.0f; gg = f; bb = 0.0f; break;
+    case 1: rr = q; gg = 1.0f; bb = 0.0f; break;
+    case 2: rr = 0.0f; gg = 1.0f; bb = f; break;
+    case 3: rr = 0.0f; gg = q; bb = 1.0f; break;
+    case 4: rr = f; gg = 0.0f; bb = 1.0f; break;
+    case 5: rr = 1.0f; gg = 0.0f; bb = q; break;
+    }
+    *r = (Uint8)(rr * 255.0f);
+    *g = (Uint8)(gg * 255.0f);
+    *b = (Uint8)(bb * 255.0f);
+}
+
+static void
+custom_ui_blitterStatsChartFillGradient(e9ui_context_t *ctx,
+                                        const SDL_Rect *rect,
+                                        int gradientX,
+                                        int gradientW)
+{
+    if (!ctx || !ctx->renderer || !rect || rect->w <= 0 || rect->h <= 0) {
+        return;
+    }
+    if (gradientW <= 0) {
+        gradientW = rect->w;
+    }
+    int denom = gradientW > 1 ? (gradientW - 1) : 1;
+    for (int dx = 0; dx < rect->w; ++dx) {
+        int gx = (rect->x + dx) - gradientX;
+        if (gx < 0) {
+            gx = 0;
+        }
+        if (gx >= gradientW) {
+            gx = gradientW - 1;
+        }
+        float t = (float)gx / (float)denom;
+        float h = (1.0f / 3.0f) * (1.0f - t);
+        Uint8 rr = 0;
+        Uint8 gg = 0;
+        Uint8 bb = 0;
+        custom_ui_blitterStatsChartHueToRgb(h, &rr, &gg, &bb);
+        SDL_SetRenderDrawColor(ctx->renderer, rr, gg, bb, 255);
+        SDL_RenderDrawLine(ctx->renderer,
+                           rect->x + dx,
+                           rect->y,
+                           rect->x + dx,
+                           rect->y + rect->h - 1);
+    }
+}
+
+static int
+custom_ui_textboxLikeHeight(e9ui_context_t *ctx)
+{
+    TTF_Font *font = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : (ctx ? ctx->font : NULL);
+    int lineHeight = font ? TTF_FontHeight(font) : 16;
+    if (lineHeight <= 0) {
+        lineHeight = 16;
+    }
+    return lineHeight + 12;
+}
+
+static int
+custom_ui_blitterStatsChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_blitter_stats_chart_state_t *st = (custom_ui_blitter_stats_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int rowGap = e9ui_scale_px(ctx, st->rowGap);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + rowGap + rowH + bottomPad;
+}
+
+static void
+custom_ui_blitterStatsChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_statsChartRenderBarRow(e9ui_context_t *ctx,
+                                 int contentX,
+                                 int barX,
+                                 int barW,
+                                 int barHeight,
+                                 int labelGap,
+                                 int rowY,
+                                 int rowH,
+                                 int fontH,
+                                 const char *labelText,
+                                 int hasData,
+                                 uint32_t valueUsed,
+                                 uint32_t valueMax,
+                                 const char *valueSuffix,
+                                 int useGradientFill,
+                                 SDL_Color solidFillColor,
+                                 int useTextShadow,
+                                 int useTextClip)
+{
+    SDL_Color labelColor = custom_ui_blitterStatsChartLabelColor;
+    SDL_Color textColor = custom_ui_blitterStatsChartTextColor;
+    SDL_Color textShadow = custom_ui_blitterStatsChartTextShadowColor;
+    int rowLabelY = rowY + (rowH - fontH) / 2;
+    int rowBarY = rowY + (rowH - barHeight) / 2;
+
+    {
+        TTF_Font *labelFont = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : ctx->font;
+        int labelTextW = 0;
+        if (labelFont) {
+            TTF_SizeText(labelFont, labelText, &labelTextW, NULL);
+        }
+        int labelX = barX - labelGap - labelTextW;
+        if (labelX < contentX) {
+            labelX = contentX;
+        }
+        custom_ui_blitterStatsChartDrawText(ctx, labelFont, labelText, labelColor, labelX, rowLabelY);
+    }
+
+    SDL_Rect trackRect = { barX, rowBarY, barW, barHeight };
+    SDL_Rect innerRect = trackRect;
+    if (innerRect.w > 2) {
+        innerRect.x += 1;
+        innerRect.w -= 2;
+    }
+    if (innerRect.h > 2) {
+        innerRect.y += 1;
+        innerRect.h -= 2;
+    }
+
+    SDL_SetRenderDrawColor(ctx->renderer, 34, 40, 46, 255);
+    SDL_RenderFillRect(ctx->renderer, &trackRect);
+    if (innerRect.w > 0 && innerRect.h > 0) {
+        SDL_SetRenderDrawColor(ctx->renderer, 22, 26, 31, 255);
+        SDL_RenderFillRect(ctx->renderer, &innerRect);
+    }
+
+    int fillW = 0;
+    if (hasData && valueMax > 0u && innerRect.w > 0) {
+        uint64_t scaled = (uint64_t)valueUsed * (uint64_t)(uint32_t)innerRect.w;
+        fillW = (int)((scaled + (uint64_t)(valueMax / 2u)) / (uint64_t)valueMax);
+        if (fillW < 0) {
+            fillW = 0;
+        }
+        if (fillW > innerRect.w) {
+            fillW = innerRect.w;
+        }
+    }
+    if (fillW > 0 && innerRect.h > 0) {
+        SDL_Rect fillRect = { innerRect.x, innerRect.y, fillW, innerRect.h };
+        if (useGradientFill) {
+            custom_ui_blitterStatsChartFillGradient(ctx, &fillRect, innerRect.x, innerRect.w);
+        } else {
+            SDL_SetRenderDrawColor(ctx->renderer, solidFillColor.r, solidFillColor.g, solidFillColor.b, 255);
+            SDL_RenderFillRect(ctx->renderer, &fillRect);
+        }
+    }
+
+    SDL_SetRenderDrawColor(ctx->renderer, 64, 72, 82, 255);
+    SDL_RenderDrawRect(ctx->renderer, &trackRect);
+
+    if (ctx->font) {
+        int tw = 0;
+        int th = 0;
+        if (!hasData) {
+            custom_ui_statsChartMeasureText(ctx, ctx->font, "n/a", textColor, &tw, &th);
+        } else {
+            int usedW = 0;
+            int usedH = 0;
+            int spaceW = 0;
+            int spaceH = 0;
+            int suffixW = 0;
+            int suffixH = 0;
+            custom_ui_statsChartMeasureUint(ctx, ctx->font, valueUsed, textColor, &usedW, &usedH);
+            custom_ui_statsChartMeasureText(ctx, ctx->font, " ", textColor, &spaceW, &spaceH);
+            custom_ui_statsChartMeasureText(ctx, ctx->font, valueSuffix, textColor, &suffixW, &suffixH);
+            tw = usedW + spaceW + suffixW;
+            th = usedH;
+            if (spaceH > th) {
+                th = spaceH;
+            }
+            if (suffixH > th) {
+                th = suffixH;
+            }
+        }
+        if (tw > 0 && th > 0) {
+            int tx = barX + (barW - tw) / 2;
+            int ty = rowBarY + (barHeight - th) / 2;
+            if (tx < barX + 2) {
+                tx = barX + 2;
+            }
+            if (ty < rowBarY) {
+                ty = rowBarY;
+            }
+            SDL_bool hadPrevClip = SDL_FALSE;
+            SDL_Rect prevClip;
+            if (useTextClip) {
+                hadPrevClip = SDL_RenderIsClipEnabled(ctx->renderer);
+                if (hadPrevClip) {
+                    SDL_RenderGetClipRect(ctx->renderer, &prevClip);
+                }
+                int clipPad = e9ui_scale_px(ctx, 4);
+                if (clipPad < 1) {
+                    clipPad = 1;
+                }
+                SDL_Rect textClip = { barX + clipPad, rowBarY, barW - clipPad * 2, barHeight };
+                if (textClip.w < 1) {
+                    textClip.x = barX;
+                    textClip.w = barW;
+                }
+                if (textClip.h < 1) {
+                    textClip.y = rowBarY;
+                    textClip.h = barHeight;
+                }
+                SDL_RenderSetClipRect(ctx->renderer, &textClip);
+            }
+            if (!hasData) {
+                if (useTextShadow) {
+                    custom_ui_blitterStatsChartDrawText(ctx, NULL, "n/a", textShadow, tx + 1, ty + 1);
+                }
+                custom_ui_blitterStatsChartDrawText(ctx, NULL, "n/a", textColor, tx, ty);
+            } else {
+                if (useTextShadow) {
+                    custom_ui_statsChartDrawValueUsedSuffix(ctx,
+                                                            ctx->font,
+                                                            valueUsed,
+                                                            valueSuffix,
+                                                            textShadow,
+                                                            tx + 1,
+                                                            ty + 1);
+                }
+                custom_ui_statsChartDrawValueUsedSuffix(ctx,
+                                                        ctx->font,
+                                                        valueUsed,
+                                                        valueSuffix,
+                                                        textColor,
+                                                        tx,
+                                                        ty);
+            }
+            if (useTextClip) {
+                if (hadPrevClip) {
+                    SDL_RenderSetClipRect(ctx->renderer, &prevClip);
+                } else {
+                    SDL_RenderSetClipRect(ctx->renderer, NULL);
+                }
+            }
+        }
+    }
+}
+
+static void
+custom_ui_blitterStatsChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_blitter_stats_chart_state_t *st = (custom_ui_blitter_stats_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int rowGap = e9ui_scale_px(ctx, st->rowGap);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    int rowY = contentY;
+    uint32_t blitsMax = 300u;
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     rowY,
+                                     rowH,
+                                     fontH,
+                                     "B/W",
+                                     st->hasStats,
+                                     st->wordsFrame,
+                                     st->maxWordsEstimateFrame,
+                                     "words/frame",
+                                     1,
+                                     custom_ui_dmaColorBlitter,
+                                     1,
+                                     1);
+    rowY += rowH + rowGap;
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     rowY,
+                                     rowH,
+                                     fontH,
+                                     "Blits",
+                                     st->hasStats,
+                                     st->blitsFrame,
+                                     blitsMax,
+                                     "blits/frame",
+                                     1,
+                                     custom_ui_dmaColorBlitter,
+                                     1,
+                                     1);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_blitterStatsChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_blitterStatsChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_blitter_stats_chart_state_t *st =
+        (custom_ui_blitter_stats_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_blitter_stats_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_blitterStatsChartPreferredHeight;
+    comp->layout = custom_ui_blitterStatsChartLayout;
+    comp->render = custom_ui_blitterStatsChartRender;
+    comp->dtor = custom_ui_blitterStatsChartDtor;
+    return comp;
+}
+
+static int
+custom_ui_copperStatsChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_copper_stats_chart_state_t *st = (custom_ui_copper_stats_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + bottomPad;
+}
+
+static void
+custom_ui_copperStatsChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_copperStatsChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_copper_stats_chart_state_t *st = (custom_ui_copper_stats_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     contentY,
+                                     rowH,
+                                     fontH,
+                                     "Copper",
+                                     st->hasCopperStats,
+                                     st->copperSlotsFrame,
+                                     st->copperSlotsMaxFrame,
+                                     "slots/frame",
+                                     0,
+                                     custom_ui_dmaColorCopper,
+                                     0,
+                                     0);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_copperStatsChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_copperStatsChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_copper_stats_chart_state_t *st =
+        (custom_ui_copper_stats_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_copper_stats_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_copperStatsChartPreferredHeight;
+    comp->layout = custom_ui_copperStatsChartLayout;
+    comp->render = custom_ui_copperStatsChartRender;
+    comp->dtor = custom_ui_copperStatsChartDtor;
+    return comp;
+}
+
+static int
+custom_ui_blitterDmaStatsChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_blitter_dma_stats_chart_state_t *st = (custom_ui_blitter_dma_stats_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + bottomPad;
+}
+
+static void
+custom_ui_blitterDmaStatsChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_blitterDmaStatsChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_blitter_dma_stats_chart_state_t *st = (custom_ui_blitter_dma_stats_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     contentY,
+                                     rowH,
+                                     fontH,
+                                     "Blitter",
+                                     st->hasBlitterDmaStats,
+                                     st->blitterSlotsFrame,
+                                     st->blitterSlotsMaxFrame,
+                                     "slots/frame",
+                                     0,
+                                     custom_ui_dmaColorBlitter,
+                                     0,
+                                     0);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_blitterDmaStatsChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_blitterDmaStatsChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_blitter_dma_stats_chart_state_t *st =
+        (custom_ui_blitter_dma_stats_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_blitter_dma_stats_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_blitterDmaStatsChartPreferredHeight;
+    comp->layout = custom_ui_blitterDmaStatsChartLayout;
+    comp->render = custom_ui_blitterDmaStatsChartRender;
+    comp->dtor = custom_ui_blitterDmaStatsChartDtor;
+    return comp;
+}
+
+static int
+custom_ui_cpuDmaStatsChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_cpu_dma_stats_chart_state_t *st = (custom_ui_cpu_dma_stats_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + bottomPad;
+}
+
+static void
+custom_ui_cpuDmaStatsChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_cpuDmaStatsChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_cpu_dma_stats_chart_state_t *st = (custom_ui_cpu_dma_stats_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     contentY,
+                                     rowH,
+                                     fontH,
+                                     "CPU",
+                                     st->hasCpuDmaStats,
+                                     st->cpuSlotsFrame,
+                                     st->cpuSlotsMaxFrame,
+                                     "slots/frame",
+                                     0,
+                                     custom_ui_dmaColorCpu,
+                                     0,
+                                     0);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_cpuDmaStatsChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_cpuDmaStatsChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_cpu_dma_stats_chart_state_t *st =
+        (custom_ui_cpu_dma_stats_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_cpu_dma_stats_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_cpuDmaStatsChartPreferredHeight;
+    comp->layout = custom_ui_cpuDmaStatsChartLayout;
+    comp->render = custom_ui_cpuDmaStatsChartRender;
+    comp->dtor = custom_ui_cpuDmaStatsChartDtor;
+    return comp;
+}
+
+static int
+custom_ui_bitplaneDmaStatsChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_bitplane_dma_stats_chart_state_t *st = (custom_ui_bitplane_dma_stats_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + bottomPad;
+}
+
+static void
+custom_ui_bitplaneDmaStatsChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_bitplaneDmaStatsChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_bitplane_dma_stats_chart_state_t *st = (custom_ui_bitplane_dma_stats_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     contentY,
+                                     rowH,
+                                     fontH,
+                                     "Bitplane",
+                                     st->hasBitplaneDmaStats,
+                                     st->bitplaneSlotsFrame,
+                                     st->bitplaneSlotsMaxFrame,
+                                     "slots/frame",
+                                     0,
+                                     custom_ui_dmaColorBitplane,
+                                     0,
+                                     0);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_bitplaneDmaStatsChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_bitplaneDmaStatsChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_bitplane_dma_stats_chart_state_t *st =
+        (custom_ui_bitplane_dma_stats_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_bitplane_dma_stats_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_bitplaneDmaStatsChartPreferredHeight;
+    comp->layout = custom_ui_bitplaneDmaStatsChartLayout;
+    comp->render = custom_ui_bitplaneDmaStatsChartRender;
+    comp->dtor = custom_ui_bitplaneDmaStatsChartDtor;
+    return comp;
+}
+
+static int
+custom_ui_spriteDmaStatsChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_sprite_dma_stats_chart_state_t *st = (custom_ui_sprite_dma_stats_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + bottomPad;
+}
+
+static void
+custom_ui_spriteDmaStatsChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_spriteDmaStatsChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_sprite_dma_stats_chart_state_t *st = (custom_ui_sprite_dma_stats_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     contentY,
+                                     rowH,
+                                     fontH,
+                                     "Sprite",
+                                     st->hasSpriteDmaStats,
+                                     st->spriteSlotsFrame,
+                                     st->spriteSlotsMaxFrame,
+                                     "slots/frame",
+                                     0,
+                                     custom_ui_dmaColorSprite,
+                                     0,
+                                     0);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_spriteDmaStatsChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_spriteDmaStatsChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_sprite_dma_stats_chart_state_t *st =
+        (custom_ui_sprite_dma_stats_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_sprite_dma_stats_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_spriteDmaStatsChartPreferredHeight;
+    comp->layout = custom_ui_spriteDmaStatsChartLayout;
+    comp->render = custom_ui_spriteDmaStatsChartRender;
+    comp->dtor = custom_ui_spriteDmaStatsChartDtor;
+    return comp;
+}
+
+static int
+custom_ui_diskDmaStatsChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_disk_dma_stats_chart_state_t *st = (custom_ui_disk_dma_stats_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + bottomPad;
+}
+
+static void
+custom_ui_diskDmaStatsChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_diskDmaStatsChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_disk_dma_stats_chart_state_t *st = (custom_ui_disk_dma_stats_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     contentY,
+                                     rowH,
+                                     fontH,
+                                     "Disk",
+                                     st->hasDiskDmaStats,
+                                     st->diskSlotsFrame,
+                                     st->diskSlotsMaxFrame,
+                                     "slots/frame",
+                                     0,
+                                     custom_ui_dmaColorDisk,
+                                     0,
+                                     0);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_diskDmaStatsChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_diskDmaStatsChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_disk_dma_stats_chart_state_t *st =
+        (custom_ui_disk_dma_stats_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_disk_dma_stats_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_diskDmaStatsChartPreferredHeight;
+    comp->layout = custom_ui_diskDmaStatsChartLayout;
+    comp->render = custom_ui_diskDmaStatsChartRender;
+    comp->dtor = custom_ui_diskDmaStatsChartDtor;
+    return comp;
+}
+
+static int
+custom_ui_audioDmaStatsChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_audio_dma_stats_chart_state_t *st = (custom_ui_audio_dma_stats_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + bottomPad;
+}
+
+static void
+custom_ui_audioDmaStatsChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_audioDmaStatsChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_audio_dma_stats_chart_state_t *st = (custom_ui_audio_dma_stats_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     contentY,
+                                     rowH,
+                                     fontH,
+                                     "Audio",
+                                     st->hasAudioDmaStats,
+                                     st->audioSlotsFrame,
+                                     st->audioSlotsMaxFrame,
+                                     "slots/frame",
+                                     0,
+                                     custom_ui_dmaColorAudio,
+                                     0,
+                                     0);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_audioDmaStatsChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_audioDmaStatsChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_audio_dma_stats_chart_state_t *st =
+        (custom_ui_audio_dma_stats_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_audio_dma_stats_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_audioDmaStatsChartPreferredHeight;
+    comp->layout = custom_ui_audioDmaStatsChartLayout;
+    comp->render = custom_ui_audioDmaStatsChartRender;
+    comp->dtor = custom_ui_audioDmaStatsChartDtor;
+    return comp;
+}
+
+static int
+custom_ui_otherDmaStatsChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_other_dma_stats_chart_state_t *st = (custom_ui_other_dma_stats_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + bottomPad;
+}
+
+static void
+custom_ui_otherDmaStatsChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_otherDmaStatsChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_other_dma_stats_chart_state_t *st = (custom_ui_other_dma_stats_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     contentY,
+                                     rowH,
+                                     fontH,
+                                     "Other",
+                                     st->hasOtherDmaStats,
+                                     st->otherSlotsFrame,
+                                     st->otherSlotsMaxFrame,
+                                     "slots/frame",
+                                     0,
+                                     custom_ui_dmaColorOther,
+                                     0,
+                                     0);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_otherDmaStatsChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_otherDmaStatsChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_other_dma_stats_chart_state_t *st =
+        (custom_ui_other_dma_stats_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_other_dma_stats_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_otherDmaStatsChartPreferredHeight;
+    comp->layout = custom_ui_otherDmaStatsChartLayout;
+    comp->render = custom_ui_otherDmaStatsChartRender;
+    comp->dtor = custom_ui_otherDmaStatsChartDtor;
+    return comp;
+}
+
+static int
+custom_ui_idleDmaStatsChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_idle_dma_stats_chart_state_t *st = (custom_ui_idle_dma_stats_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + bottomPad;
+}
+
+static void
+custom_ui_idleDmaStatsChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_idleDmaStatsChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_idle_dma_stats_chart_state_t *st = (custom_ui_idle_dma_stats_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    custom_ui_statsChartRenderBarRow(ctx,
+                                     contentX,
+                                     barX,
+                                     barW,
+                                     barHeight,
+                                     labelGap,
+                                     contentY,
+                                     rowH,
+                                     fontH,
+                                     "Idle",
+                                     st->hasIdleDmaStats,
+                                     st->idleSlotsFrame,
+                                     st->idleSlotsMaxFrame,
+                                     "slots/frame",
+                                     0,
+                                     custom_ui_dmaColorIdle,
+                                     0,
+                                     0);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_idleDmaStatsChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_idleDmaStatsChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_idle_dma_stats_chart_state_t *st =
+        (custom_ui_idle_dma_stats_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_idle_dma_stats_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_idleDmaStatsChartPreferredHeight;
+    comp->layout = custom_ui_idleDmaStatsChartLayout;
+    comp->render = custom_ui_idleDmaStatsChartRender;
+    comp->dtor = custom_ui_idleDmaStatsChartDtor;
+    return comp;
+}
+
+static int
+custom_ui_dmaTotalMixChartPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)availW;
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_dma_total_mix_chart_state_t *st = (custom_ui_dma_total_mix_chart_state_t *)self->state;
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    int barH = custom_ui_textboxLikeHeight(ctx);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+    int rowH = fontH > barH ? fontH : barH;
+    return topPad + rowH + bottomPad;
+}
+
+static void
+custom_ui_dmaTotalMixChartLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+}
+
+static void
+custom_ui_dmaTotalMixChartRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx || !ctx->renderer) {
+        return;
+    }
+
+    custom_ui_dma_total_mix_chart_state_t *st = (custom_ui_dma_total_mix_chart_state_t *)self->state;
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int topPad = e9ui_scale_px(ctx, st->topPadding);
+    int bottomPad = e9ui_scale_px(ctx, st->bottomPadding);
+    int labelWidth = e9ui_scale_px(ctx, st->labelWidth);
+    int labelGap = e9ui_scale_px(ctx, st->labelGap);
+    int barHeight = custom_ui_textboxLikeHeight(ctx);
+    int fontH = ctx->font ? TTF_FontHeight(ctx->font) : e9ui_scale_px(ctx, 12);
+    if (fontH <= 0) {
+        fontH = 12;
+    }
+
+    int contentX = self->bounds.x + leftInset;
+    int contentY = self->bounds.y + topPad;
+    int contentW = self->bounds.w - leftInset - rightInset;
+    if (contentW < 1) {
+        contentW = 1;
+    }
+
+    int rowH = fontH > barHeight ? fontH : barHeight;
+    int barX = contentX + labelWidth + labelGap;
+    int barW = contentW - labelWidth - labelGap;
+    if (barW < 1) {
+        barW = 1;
+    }
+    {
+        TTF_Font *labelFont = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : ctx->font;
+        int labelTextW = 0;
+        if (labelFont) {
+            TTF_SizeText(labelFont, "Total", &labelTextW, NULL);
+        }
+        int labelX = barX - labelGap - labelTextW;
+        if (labelX < contentX) {
+            labelX = contentX;
+        }
+        custom_ui_blitterStatsChartDrawText(ctx,
+                                            labelFont,
+                                            "Total",
+                                            custom_ui_blitterStatsChartLabelColor,
+                                            labelX,
+                                            contentY + (rowH - fontH) / 2);
+    }
+
+    SDL_Rect trackRect = { barX, contentY + (rowH - barHeight) / 2, barW, barHeight };
+    SDL_Rect innerRect = trackRect;
+    if (innerRect.w > 2) {
+        innerRect.x += 1;
+        innerRect.w -= 2;
+    }
+    if (innerRect.h > 2) {
+        innerRect.y += 1;
+        innerRect.h -= 2;
+    }
+    SDL_SetRenderDrawColor(ctx->renderer, 34, 40, 46, 255);
+    SDL_RenderFillRect(ctx->renderer, &trackRect);
+    if (innerRect.w > 0 && innerRect.h > 0) {
+        SDL_SetRenderDrawColor(ctx->renderer, 22, 26, 31, 255);
+        SDL_RenderFillRect(ctx->renderer, &innerRect);
+    }
+
+    if (st->hasStats && st->totalSlotsMaxFrame > 0u && innerRect.w > 0 && innerRect.h > 0) {
+        const uint32_t values[] = {
+            st->cpuSlotsFrame,
+            st->copperSlotsFrame,
+            st->audioSlotsFrame,
+            st->blitterSlotsFrame,
+            st->bitplaneSlotsFrame,
+            st->spriteSlotsFrame,
+            st->diskSlotsFrame,
+            st->otherSlotsFrame,
+            st->idleSlotsFrame
+        };
+        const SDL_Color colors[] = {
+            custom_ui_dmaColorCpu,
+            custom_ui_dmaColorCopper,
+            custom_ui_dmaColorAudio,
+            custom_ui_dmaColorBlitter,
+            custom_ui_dmaColorBitplane,
+            custom_ui_dmaColorSprite,
+            custom_ui_dmaColorDisk,
+            custom_ui_dmaColorOther,
+            custom_ui_dmaColorIdle
+        };
+        uint64_t accum = 0u;
+        int drawX = innerRect.x;
+        for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+            uint64_t prev = accum;
+            accum += (uint64_t)values[i];
+            if (accum > (uint64_t)st->totalSlotsMaxFrame) {
+                accum = (uint64_t)st->totalSlotsMaxFrame;
+            }
+            int x0 = innerRect.x + (int)((prev * (uint64_t)(uint32_t)innerRect.w) / (uint64_t)st->totalSlotsMaxFrame);
+            int x1 = innerRect.x + (int)((accum * (uint64_t)(uint32_t)innerRect.w) / (uint64_t)st->totalSlotsMaxFrame);
+            if (x1 <= x0) {
+                continue;
+            }
+            SDL_Rect seg = { x0, innerRect.y, x1 - x0, innerRect.h };
+            SDL_SetRenderDrawColor(ctx->renderer, colors[i].r, colors[i].g, colors[i].b, 255);
+            SDL_RenderFillRect(ctx->renderer, &seg);
+            drawX = x1;
+        }
+        if (drawX < innerRect.x + innerRect.w) {
+            SDL_Rect seg = { drawX, innerRect.y, innerRect.x + innerRect.w - drawX, innerRect.h };
+            SDL_SetRenderDrawColor(ctx->renderer, custom_ui_dmaColorIdle.r, custom_ui_dmaColorIdle.g, custom_ui_dmaColorIdle.b, 255);
+            SDL_RenderFillRect(ctx->renderer, &seg);
+        }
+    }
+
+    SDL_SetRenderDrawColor(ctx->renderer, 64, 72, 82, 255);
+    SDL_RenderDrawRect(ctx->renderer, &trackRect);
+    (void)bottomPad;
+}
+
+static void
+custom_ui_dmaTotalMixChartDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_dmaTotalMixChartMake(void)
+{
+    e9ui_component_t *comp = (e9ui_component_t *)alloc_calloc(1, sizeof(*comp));
+    custom_ui_dma_total_mix_chart_state_t *st =
+        (custom_ui_dma_total_mix_chart_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!comp || !st) {
+        if (comp) {
+            alloc_free(comp);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+
+    st->leftInset = 0;
+    st->rightInset = 14;
+    st->topPadding = 2;
+    st->bottomPadding = 2;
+    st->rowGap = 4;
+    st->labelWidth = 78;
+    st->labelGap = 8;
+    st->barHeight = 0;
+
+    comp->name = "custom_ui_dma_total_mix_chart";
+    comp->state = st;
+    comp->preferredHeight = custom_ui_dmaTotalMixChartPreferredHeight;
+    comp->layout = custom_ui_dmaTotalMixChartLayout;
+    comp->render = custom_ui_dmaTotalMixChartRender;
+    comp->dtor = custom_ui_dmaTotalMixChartDtor;
+    return comp;
+}
+
+static void
+custom_ui_enableDmaDebugForCopperStats(custom_ui_state_t *ui)
+{
+    if (!ui || ui->dmaDebugAutoEnabled) {
+        return;
+    }
+    int *debugDma = NULL;
+    if (!libretro_host_debugGetAmigaDebugDmaAddr(&debugDma) || !debugDma) {
+        return;
+    }
+    if (*debugDma == 0) {
+        ui->dmaDebugAutoPrevValue = 0;
+        *debugDma = (int)E9K_DEBUG_AMI_DMA_DEBUG_MODE_COLLECT_ONLY;
+        ui->dmaDebugAutoEnabled = 1;
+    }
+}
+
+static void
+custom_ui_restoreDmaDebugForCopperStats(custom_ui_state_t *ui)
+{
+    if (!ui || !ui->dmaDebugAutoEnabled) {
+        return;
+    }
+    int *debugDma = NULL;
+    if (libretro_host_debugGetAmigaDebugDmaAddr(&debugDma) && debugDma) {
+        if (*debugDma == (int)E9K_DEBUG_AMI_DMA_DEBUG_MODE_COLLECT_ONLY) {
+            *debugDma = ui->dmaDebugAutoPrevValue;
+        }
+    }
+    ui->dmaDebugAutoEnabled = 0;
+}
+
+static void
+custom_ui_updateBlitterStatsChart(custom_ui_state_t *ui)
+{
+    if (!ui) {
+        return;
+    }
+
+    e9k_debug_ami_blitter_vis_stats_t stats;
+    int hasStats = 0;
+    if (emu_ami_getBlitterVisLatestStats(&stats) ||
+        libretro_host_debugAmiReadBlitterVisStats(&stats)) {
+        hasStats = 1;
+    }
+
+    if (ui->blitterVisStatsChart) {
+        custom_ui_blitterStatsChartSetValues(ui->blitterVisStatsChart,
+                                             hasStats,
+                                             hasStats ? stats.writesThisFrame : 0u,
+                                             hasStats ? (stats.writeBytesMaxEstimateFrame / 2u) : 0u,
+                                             hasStats ? stats.blitsThisFrame : 0u);
+    }
+}
+
+static void
+custom_ui_updateCopperStatsChart(custom_ui_state_t *ui)
+{
+    if (!ui) {
+        return;
+    }
+
+    e9k_debug_ami_dma_debug_frame_info_t probedInfo;
+    memset(&probedInfo, 0, sizeof(probedInfo));
+    size_t probedRecordCount = 0u;
+    const e9k_debug_ami_dma_debug_raw_record_t *probedRecords = NULL;
+    int haveProbe = 0;
+    if (ui->dmaStatsEnabled) {
+        probedRecordCount = libretro_host_debugAmiGetDmaDebugFramePtr(
+            E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE,
+            &probedRecords,
+            &probedInfo);
+        if (probedRecordCount > 0u && probedRecords && probedInfo.frameNumber >= 0) {
+            haveProbe = 1;
+            if (ui->dmaStatsCacheValid &&
+                ui->dmaStatsCacheFrameSelect == (int)E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE &&
+                ui->dmaStatsCacheFrameNumber == probedInfo.frameNumber) {
+                return;
+            }
+        }
+    }
+
+    int hasCopperStats = 0;
+    uint32_t copperSlotsFrame = 0u;
+    uint32_t copperSlotsMaxFrame = 0u;
+    int hasBlitterDmaStats = 0;
+    uint32_t blitterSlotsFrame = 0u;
+    uint32_t blitterSlotsMaxFrame = 0u;
+    int hasCpuDmaStats = 0;
+    uint32_t cpuSlotsFrame = 0u;
+    uint32_t cpuSlotsMaxFrame = 0u;
+    int hasBitplaneDmaStats = 0;
+    uint32_t bitplaneSlotsFrame = 0u;
+    uint32_t bitplaneSlotsMaxFrame = 0u;
+    int hasSpriteDmaStats = 0;
+    uint32_t spriteSlotsFrame = 0u;
+    uint32_t spriteSlotsMaxFrame = 0u;
+    int hasDiskDmaStats = 0;
+    uint32_t diskSlotsFrame = 0u;
+    uint32_t diskSlotsMaxFrame = 0u;
+    int hasAudioDmaStats = 0;
+    uint32_t audioSlotsFrame = 0u;
+    uint32_t audioSlotsMaxFrame = 0u;
+    int hasOtherDmaStats = 0;
+    uint32_t otherSlotsFrame = 0u;
+    uint32_t otherSlotsMaxFrame = 0u;
+    int hasIdleDmaStats = 0;
+    uint32_t idleSlotsFrame = 0u;
+    uint32_t idleSlotsMaxFrame = 0u;
+    int hasDmaTotalStats = 0;
+    uint32_t dmaTotalSlotsFrame = 0u;
+    uint32_t dmaTotalSlotsMaxFrame = 0u;
+    uint32_t dmaSlotsAvailableFrame = 0u;
+    if (ui->dmaStatsEnabled) {
+        int *debugDma = NULL;
+        libretro_host_debugGetAmigaDebugDmaAddr(&debugDma);
+        uint32_t dmaFrameSelect = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE;
+        e9k_debug_ami_dma_debug_frame_info_t dmaInfo = probedInfo;
+        size_t dmaRecordCount = probedRecordCount;
+        const e9k_debug_ami_dma_debug_raw_record_t *records = probedRecords;
+        if (!haveProbe) {
+            dmaRecordCount = libretro_host_debugAmiGetDmaDebugFramePtr(
+                dmaFrameSelect,
+                &records,
+                &dmaInfo);
+        }
+        if (dmaRecordCount > 0u && records) {
+            size_t readTotal = dmaRecordCount;
+            e9k_debug_ami_dma_debug_frame_info_t readInfo = dmaInfo;
+            int stride = readInfo.hposCount > 0 ? readInfo.hposCount : dmaInfo.hposCount;
+            if (stride <= 0) {
+                stride = 288;
+            }
+            size_t rowCount = readTotal / (size_t)stride;
+            int xLimit = stride;
+            int yLimit = (int)rowCount - 1;
+            int videoLineCount = 0;
+            if (libretro_host_debugAmiGetVideoLineCount(&videoLineCount) && videoLineCount > 0) {
+                int debugDmaMode = (debugDma && *debugDma > 0) ? *debugDma : 0;
+                int visibleMax = videoLineCount - 1;
+                if (debugDmaMode == (int)E9K_DEBUG_AMI_DMA_DEBUG_MODE_COLLECT_ONLY) {
+                    // Collect-only mode has no overlay scaling.
+                } else if (debugDmaMode >= 4) {
+                    visibleMax /= 2;
+                } else {
+                    visibleMax -= 8;
+                }
+                if (visibleMax < 0) {
+                    visibleMax = 0;
+                }
+                if (yLimit > visibleMax) {
+                    yLimit = visibleMax;
+                }
+            }
+            if (yLimit >= (int)rowCount) {
+                yLimit = (int)rowCount - 1;
+            }
+            if (yLimit < -1) {
+                yLimit = -1;
+            }
+            for (int row = 0; row <= yLimit; ++row) {
+                size_t rowBase = (size_t)row * (size_t)stride;
+                for (int x = 0; x < xLimit; ++x) {
+                    const e9k_debug_ami_dma_debug_raw_record_t *rec = &records[rowBase + (size_t)x];
+                    if (rec->end) {
+                        break;
+                    }
+                    if (rec->reg != 0xffffu) {
+                        switch (rec->type) {
+                        case CUSTOM_UI_DMA_RECORD_COPPER:
+                            if (copperSlotsFrame < UINT32_MAX) {
+                                copperSlotsFrame++;
+                            }
+                            continue;
+                        case CUSTOM_UI_DMA_RECORD_BLITTER:
+                            if (blitterSlotsFrame < UINT32_MAX) {
+                                blitterSlotsFrame++;
+                            }
+                            continue;
+                        case CUSTOM_UI_DMA_RECORD_CPU:
+                            if (cpuSlotsFrame < UINT32_MAX) {
+                                cpuSlotsFrame++;
+                            }
+                            continue;
+                        case CUSTOM_UI_DMA_RECORD_BITPLANE:
+                            if (bitplaneSlotsFrame < UINT32_MAX) {
+                                bitplaneSlotsFrame++;
+                            }
+                            continue;
+                        case CUSTOM_UI_DMA_RECORD_SPRITE:
+                            if (spriteSlotsFrame < UINT32_MAX) {
+                                spriteSlotsFrame++;
+                            }
+                            continue;
+                        case CUSTOM_UI_DMA_RECORD_DISK:
+                            if (diskSlotsFrame < UINT32_MAX) {
+                                diskSlotsFrame++;
+                            }
+                            continue;
+                        case CUSTOM_UI_DMA_RECORD_AUDIO:
+                            if (audioSlotsFrame < UINT32_MAX) {
+                                audioSlotsFrame++;
+                            }
+                            continue;
+                        default:
+                            break;
+                        }
+                    }
+                    if (rec->type == (int16_t)CUSTOM_UI_DMA_RECORD_REFRESH ||
+                        rec->type == (int16_t)CUSTOM_UI_DMA_RECORD_CONFLICT ||
+                        rec->type != 0) {
+                        if (otherSlotsFrame < UINT32_MAX) {
+                            otherSlotsFrame++;
+                        }
+                    } else {
+                        if (idleSlotsFrame < UINT32_MAX) {
+                            idleSlotsFrame++;
+                        }
+                    }
+                }
+            }
+            if (xLimit > 0 && yLimit >= 0) {
+                        uint64_t max64 = (uint64_t)(uint32_t)(yLimit + 1) *
+                                         (uint64_t)((uint32_t)xLimit / 2u);
+                        uint64_t totalAvailable64 = (uint64_t)(uint32_t)(yLimit + 1) *
+                                                    (uint64_t)(uint32_t)xLimit;
+                        if (max64 > 0xffffffffu) {
+                            max64 = 0xffffffffu;
+                        }
+                        if (totalAvailable64 > 0xffffffffu) {
+                            totalAvailable64 = 0xffffffffu;
+                        }
+                        copperSlotsMaxFrame = (uint32_t)max64;
+                        hasCopperStats = 1;
+                        blitterSlotsMaxFrame = (uint32_t)max64;
+                        hasBlitterDmaStats = 1;
+                        cpuSlotsMaxFrame = (uint32_t)max64;
+                        hasCpuDmaStats = 1;
+                        bitplaneSlotsMaxFrame = (uint32_t)max64;
+                        hasBitplaneDmaStats = 1;
+                        spriteSlotsMaxFrame = (uint32_t)max64;
+                        hasSpriteDmaStats = 1;
+                        diskSlotsMaxFrame = (uint32_t)max64;
+                        hasDiskDmaStats = 1;
+                        audioSlotsMaxFrame = (uint32_t)max64;
+                        hasAudioDmaStats = 1;
+                        otherSlotsMaxFrame = (uint32_t)totalAvailable64;
+                        hasOtherDmaStats = 1;
+                        idleSlotsMaxFrame = (uint32_t)totalAvailable64;
+                        hasIdleDmaStats = 1;
+                        dmaSlotsAvailableFrame = (uint32_t)totalAvailable64;
+            }
+            if (!hasCopperStats &&
+                readInfo.hposCount > 0 &&
+                libretro_host_debugAmiGetVideoLineCount(&videoLineCount) &&
+                videoLineCount > 0) {
+                        uint64_t max64 = (uint64_t)(uint32_t)videoLineCount *
+                                         (uint64_t)((uint32_t)readInfo.hposCount / 2u);
+                        uint64_t totalAvailable64 = (uint64_t)(uint32_t)videoLineCount *
+                                                    (uint64_t)(uint32_t)readInfo.hposCount;
+                        if (max64 > 0xffffffffu) {
+                            max64 = 0xffffffffu;
+                        }
+                        if (totalAvailable64 > 0xffffffffu) {
+                            totalAvailable64 = 0xffffffffu;
+                        }
+                        copperSlotsMaxFrame = (uint32_t)max64;
+                        hasCopperStats = 1;
+                        blitterSlotsMaxFrame = (uint32_t)max64;
+                        hasBlitterDmaStats = 1;
+                        cpuSlotsMaxFrame = (uint32_t)max64;
+                        hasCpuDmaStats = 1;
+                        bitplaneSlotsMaxFrame = (uint32_t)max64;
+                        hasBitplaneDmaStats = 1;
+                        spriteSlotsMaxFrame = (uint32_t)max64;
+                        hasSpriteDmaStats = 1;
+                        diskSlotsMaxFrame = (uint32_t)max64;
+                        hasDiskDmaStats = 1;
+                        audioSlotsMaxFrame = (uint32_t)max64;
+                        hasAudioDmaStats = 1;
+                        otherSlotsMaxFrame = (uint32_t)totalAvailable64;
+                        hasOtherDmaStats = 1;
+                        idleSlotsMaxFrame = (uint32_t)totalAvailable64;
+                        hasIdleDmaStats = 1;
+                        dmaSlotsAvailableFrame = (uint32_t)totalAvailable64;
+            }
+        }
+        if (dmaFrameSelect == E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE && dmaInfo.frameNumber >= 0) {
+            ui->dmaStatsCacheValid = 1;
+            ui->dmaStatsCacheFrameSelect = (int)dmaFrameSelect;
+            ui->dmaStatsCacheFrameNumber = dmaInfo.frameNumber;
+        } else {
+            ui->dmaStatsCacheValid = 0;
+            ui->dmaStatsCacheFrameSelect = 0;
+            ui->dmaStatsCacheFrameNumber = -1;
+        }
+    } else {
+        ui->dmaStatsCacheValid = 0;
+        ui->dmaStatsCacheFrameSelect = 0;
+        ui->dmaStatsCacheFrameNumber = -1;
+    }
+    if (hasCopperStats && copperSlotsFrame > copperSlotsMaxFrame) {
+        copperSlotsMaxFrame = copperSlotsFrame;
+    }
+    if (hasBlitterDmaStats && blitterSlotsFrame > blitterSlotsMaxFrame) {
+        blitterSlotsMaxFrame = blitterSlotsFrame;
+    }
+    if (hasCpuDmaStats && cpuSlotsFrame > cpuSlotsMaxFrame) {
+        cpuSlotsMaxFrame = cpuSlotsFrame;
+    }
+    if (hasBitplaneDmaStats && bitplaneSlotsFrame > bitplaneSlotsMaxFrame) {
+        bitplaneSlotsMaxFrame = bitplaneSlotsFrame;
+    }
+    if (hasSpriteDmaStats && spriteSlotsFrame > spriteSlotsMaxFrame) {
+        spriteSlotsMaxFrame = spriteSlotsFrame;
+    }
+    if (hasDiskDmaStats && diskSlotsFrame > diskSlotsMaxFrame) {
+        diskSlotsMaxFrame = diskSlotsFrame;
+    }
+    if (hasAudioDmaStats && audioSlotsFrame > audioSlotsMaxFrame) {
+        audioSlotsMaxFrame = audioSlotsFrame;
+    }
+    if (hasOtherDmaStats && otherSlotsFrame > otherSlotsMaxFrame) {
+        otherSlotsMaxFrame = otherSlotsFrame;
+    }
+    if (hasIdleDmaStats && idleSlotsFrame > idleSlotsMaxFrame) {
+        idleSlotsMaxFrame = idleSlotsFrame;
+    }
+    if (hasCopperStats) {
+        hasDmaTotalStats = 1;
+        dmaTotalSlotsFrame = copperSlotsFrame +
+                             blitterSlotsFrame +
+                             cpuSlotsFrame +
+                             bitplaneSlotsFrame +
+                             spriteSlotsFrame +
+                             diskSlotsFrame +
+                             audioSlotsFrame +
+                             otherSlotsFrame +
+                             idleSlotsFrame;
+        dmaTotalSlotsMaxFrame = dmaSlotsAvailableFrame;
+        if (dmaTotalSlotsFrame > dmaTotalSlotsMaxFrame) {
+            dmaTotalSlotsMaxFrame = dmaTotalSlotsFrame;
+        }
+    }
+
+    if (ui->copperStatsChart) {
+        custom_ui_copperStatsChartSetValues(ui->copperStatsChart,
+                                            hasCopperStats,
+                                            copperSlotsFrame,
+                                            copperSlotsMaxFrame);
+    }
+    if (ui->blitterDmaStatsChart) {
+        custom_ui_blitterDmaStatsChartSetValues(ui->blitterDmaStatsChart,
+                                                hasBlitterDmaStats,
+                                                blitterSlotsFrame,
+                                                blitterSlotsMaxFrame);
+    }
+    if (ui->cpuDmaStatsChart) {
+        custom_ui_cpuDmaStatsChartSetValues(ui->cpuDmaStatsChart,
+                                            hasCpuDmaStats,
+                                            cpuSlotsFrame,
+                                            cpuSlotsMaxFrame);
+    }
+    if (ui->bitplaneDmaStatsChart) {
+        custom_ui_bitplaneDmaStatsChartSetValues(ui->bitplaneDmaStatsChart,
+                                                 hasBitplaneDmaStats,
+                                                 bitplaneSlotsFrame,
+                                                 bitplaneSlotsMaxFrame);
+    }
+    if (ui->spriteDmaStatsChart) {
+        custom_ui_spriteDmaStatsChartSetValues(ui->spriteDmaStatsChart,
+                                               hasSpriteDmaStats,
+                                               spriteSlotsFrame,
+                                               spriteSlotsMaxFrame);
+    }
+    if (ui->diskDmaStatsChart) {
+        custom_ui_diskDmaStatsChartSetValues(ui->diskDmaStatsChart,
+                                             hasDiskDmaStats,
+                                             diskSlotsFrame,
+                                             diskSlotsMaxFrame);
+    }
+    if (ui->audioDmaStatsChart) {
+        custom_ui_audioDmaStatsChartSetValues(ui->audioDmaStatsChart,
+                                              hasAudioDmaStats,
+                                              audioSlotsFrame,
+                                              audioSlotsMaxFrame);
+    }
+    if (ui->otherDmaStatsChart) {
+        custom_ui_otherDmaStatsChartSetValues(ui->otherDmaStatsChart,
+                                              hasOtherDmaStats,
+                                              otherSlotsFrame,
+                                              otherSlotsMaxFrame);
+    }
+    if (ui->idleDmaStatsChart) {
+        custom_ui_idleDmaStatsChartSetValues(ui->idleDmaStatsChart,
+                                             hasIdleDmaStats,
+                                             idleSlotsFrame,
+                                             idleSlotsMaxFrame);
+    }
+    if (ui->dmaTotalMixChart) {
+        custom_ui_dmaTotalMixChartSetValues(ui->dmaTotalMixChart,
+                                            hasDmaTotalStats,
+                                            dmaTotalSlotsFrame,
+                                            dmaTotalSlotsMaxFrame,
+                                            cpuSlotsFrame,
+                                            copperSlotsFrame,
+                                            audioSlotsFrame,
+                                            blitterSlotsFrame,
+                                            bitplaneSlotsFrame,
+                                            spriteSlotsFrame,
+                                            diskSlotsFrame,
+                                            otherSlotsFrame,
+                                            idleSlotsFrame);
+    }
+}
+
+static void
+custom_ui_updateStatsCharts(custom_ui_state_t *ui)
+{
+    custom_ui_updateBlitterStatsChart(ui);
+    custom_ui_updateCopperStatsChart(ui);
 }
 
 static int
@@ -344,6 +3131,258 @@ custom_ui_blitterVisDecaySeekRowMake(e9ui_component_t **outBar)
     if (outBar) {
         *outBar = st->bar;
     }
+    return row;
+}
+
+static int
+custom_ui_insetRowPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_inset_row_state_t *st = (custom_ui_inset_row_state_t *)self->state;
+    if (!st->child || !st->child->preferredHeight) {
+        return 0;
+    }
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    int childAvailW = availW - leftInset - rightInset;
+    if (childAvailW < 0) {
+        childAvailW = 0;
+    }
+    return st->child->preferredHeight(st->child, ctx, childAvailW);
+}
+
+static void
+custom_ui_insetRowLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    if (!self || !self->state || !ctx) {
+        return;
+    }
+    custom_ui_inset_row_state_t *st = (custom_ui_inset_row_state_t *)self->state;
+    self->bounds = bounds;
+    if (!st->child || !st->child->layout) {
+        return;
+    }
+    int leftInset = e9ui_scale_px(ctx, st->leftInset);
+    int rightInset = e9ui_scale_px(ctx, st->rightInset);
+    e9ui_rect_t childBounds = bounds;
+    childBounds.x += leftInset;
+    childBounds.w -= leftInset + rightInset;
+    if (childBounds.w < 1) {
+        childBounds.w = 1;
+    }
+    st->child->layout(st->child, ctx, childBounds);
+}
+
+static void
+custom_ui_insetRowRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx) {
+        return;
+    }
+    custom_ui_inset_row_state_t *st = (custom_ui_inset_row_state_t *)self->state;
+    if (st->child && st->child->render) {
+        st->child->render(st->child, ctx);
+    }
+}
+
+static void
+custom_ui_insetRowDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_insetRowMake(e9ui_component_t *child, int leftInset, int rightInset)
+{
+    if (!child) {
+        return NULL;
+    }
+    e9ui_component_t *row = (e9ui_component_t *)alloc_calloc(1, sizeof(*row));
+    custom_ui_inset_row_state_t *st = (custom_ui_inset_row_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!row || !st) {
+        if (row) {
+            alloc_free(row);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+    st->child = child;
+    st->leftInset = leftInset;
+    st->rightInset = rightInset;
+    row->name = "custom_ui_inset_row";
+    row->state = st;
+    row->preferredHeight = custom_ui_insetRowPreferredHeight;
+    row->layout = custom_ui_insetRowLayout;
+    row->render = custom_ui_insetRowRender;
+    row->dtor = custom_ui_insetRowDtor;
+    e9ui_child_add(row, child, NULL);
+    return row;
+}
+
+static int
+custom_ui_dmaStatsHeaderRowPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    if (!self || !self->state || !ctx) {
+        return 0;
+    }
+    custom_ui_dma_stats_header_row_state_t *st = (custom_ui_dma_stats_header_row_state_t *)self->state;
+    int maxHeight = 0;
+    int innerWidth = availW - st->leftInset;
+    if (innerWidth < 0) {
+        innerWidth = 0;
+    }
+    if (st->checkbox &&
+        !e9ui_getHidden(st->checkbox) &&
+        st->checkbox->preferredHeight) {
+        int h = st->checkbox->preferredHeight(st->checkbox, ctx, innerWidth);
+        if (h > maxHeight) {
+            maxHeight = h;
+        }
+    }
+    if (st->hintRow &&
+        !e9ui_getHidden(st->hintRow) &&
+        st->hintRow->preferredHeight) {
+        int h = st->hintRow->preferredHeight(st->hintRow, ctx, innerWidth);
+        if (h > maxHeight) {
+            maxHeight = h;
+        }
+    }
+    return maxHeight;
+}
+
+static void
+custom_ui_dmaStatsHeaderRowLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    if (!self || !self->state || !ctx) {
+        return;
+    }
+    self->bounds = bounds;
+    custom_ui_dma_stats_header_row_state_t *st = (custom_ui_dma_stats_header_row_state_t *)self->state;
+    int checkboxWidth = 0;
+    int checkboxHeight = 0;
+    if (st->checkbox) {
+        e9ui_checkbox_measure(st->checkbox, ctx, &checkboxWidth, &checkboxHeight);
+    }
+    if (checkboxWidth < 0) {
+        checkboxWidth = 0;
+    }
+    int startX = bounds.x + st->leftInset;
+    if (startX > bounds.x + bounds.w) {
+        startX = bounds.x + bounds.w;
+    }
+    int availableWidth = bounds.w - (startX - bounds.x);
+    if (availableWidth < 0) {
+        availableWidth = 0;
+    }
+    if (checkboxWidth > availableWidth) {
+        checkboxWidth = availableWidth;
+    }
+
+    if (st->checkbox &&
+        !e9ui_getHidden(st->checkbox) &&
+        st->checkbox->layout) {
+        e9ui_rect_t checkboxBounds = {
+            startX,
+            bounds.y,
+            checkboxWidth,
+            bounds.h
+        };
+        st->checkbox->layout(st->checkbox, ctx, checkboxBounds);
+    }
+
+    int hintX = startX + checkboxWidth + st->gap;
+    if (hintX > bounds.x + bounds.w) {
+        hintX = bounds.x + bounds.w;
+    }
+    int hintWidth = bounds.w - (hintX - bounds.x);
+    if (hintWidth < 0) {
+        hintWidth = 0;
+    }
+    if (st->hintRow &&
+        !e9ui_getHidden(st->hintRow) &&
+        st->hintRow->layout) {
+        e9ui_rect_t hintBounds = {
+            hintX,
+            bounds.y,
+            hintWidth,
+            bounds.h
+        };
+        st->hintRow->layout(st->hintRow, ctx, hintBounds);
+    }
+}
+
+static void
+custom_ui_dmaStatsHeaderRowRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    if (!self || !self->state || !ctx) {
+        return;
+    }
+    custom_ui_dma_stats_header_row_state_t *st = (custom_ui_dma_stats_header_row_state_t *)self->state;
+    if (st->checkbox &&
+        !e9ui_getHidden(st->checkbox) &&
+        st->checkbox->render) {
+        st->checkbox->render(st->checkbox, ctx);
+    }
+    if (st->hintRow &&
+        !e9ui_getHidden(st->hintRow) &&
+        st->hintRow->render) {
+        st->hintRow->render(st->hintRow, ctx);
+    }
+}
+
+static void
+custom_ui_dmaStatsHeaderRowDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    if (self->state) {
+        alloc_free(self->state);
+        self->state = NULL;
+    }
+}
+
+static e9ui_component_t *
+custom_ui_dmaStatsHeaderRowMake(e9ui_component_t *checkbox, e9ui_component_t *hintRow, int leftInset, int gap)
+{
+    if (!checkbox || !hintRow) {
+        return NULL;
+    }
+    e9ui_component_t *row = (e9ui_component_t *)alloc_calloc(1, sizeof(*row));
+    custom_ui_dma_stats_header_row_state_t *st = (custom_ui_dma_stats_header_row_state_t *)alloc_calloc(1, sizeof(*st));
+    if (!row || !st) {
+        if (row) {
+            alloc_free(row);
+        }
+        if (st) {
+            alloc_free(st);
+        }
+        return NULL;
+    }
+    st->checkbox = checkbox;
+    st->hintRow = hintRow;
+    st->leftInset = leftInset;
+    st->gap = gap;
+    row->name = "custom_ui_dma_stats_header_row";
+    row->state = st;
+    row->preferredHeight = custom_ui_dmaStatsHeaderRowPreferredHeight;
+    row->layout = custom_ui_dmaStatsHeaderRowLayout;
+    row->render = custom_ui_dmaStatsHeaderRowRender;
+    row->dtor = custom_ui_dmaStatsHeaderRowDtor;
+    e9ui_child_add(row, checkbox, NULL);
+    e9ui_child_add(row, hintRow, NULL);
     return row;
 }
 
@@ -635,6 +3674,58 @@ custom_ui_syncCopperLimitSuboptions(custom_ui_state_t *ui)
 }
 
 static void
+custom_ui_syncDmaStatsSuboptions(custom_ui_state_t *ui)
+{
+    if (!ui) {
+        return;
+    }
+    int disabled = ui->dmaStatsEnabled ? 0 : 1;
+    custom_ui_setComponentDisabled(ui->copperStatsChartRow, disabled);
+    custom_ui_setComponentDisabled(ui->copperStatsChart, disabled);
+    custom_ui_setComponentDisabled(ui->blitterDmaStatsChartRow, disabled);
+    custom_ui_setComponentDisabled(ui->blitterDmaStatsChart, disabled);
+    custom_ui_setComponentDisabled(ui->cpuDmaStatsChartRow, disabled);
+    custom_ui_setComponentDisabled(ui->cpuDmaStatsChart, disabled);
+    custom_ui_setComponentDisabled(ui->bitplaneDmaStatsChartRow, disabled);
+    custom_ui_setComponentDisabled(ui->bitplaneDmaStatsChart, disabled);
+    custom_ui_setComponentDisabled(ui->spriteDmaStatsChartRow, disabled);
+    custom_ui_setComponentDisabled(ui->spriteDmaStatsChart, disabled);
+    custom_ui_setComponentDisabled(ui->diskDmaStatsChartRow, disabled);
+    custom_ui_setComponentDisabled(ui->diskDmaStatsChart, disabled);
+    custom_ui_setComponentDisabled(ui->audioDmaStatsChartRow, disabled);
+    custom_ui_setComponentDisabled(ui->audioDmaStatsChart, disabled);
+    custom_ui_setComponentDisabled(ui->otherDmaStatsChartRow, disabled);
+    custom_ui_setComponentDisabled(ui->otherDmaStatsChart, disabled);
+    custom_ui_setComponentDisabled(ui->idleDmaStatsChartRow, disabled);
+    custom_ui_setComponentDisabled(ui->idleDmaStatsChart, disabled);
+    custom_ui_setComponentDisabled(ui->dmaTotalMixChartRow, disabled);
+    custom_ui_setComponentDisabled(ui->dmaTotalMixChart, disabled);
+    custom_ui_setComponentDisabled(ui->dmaStatsHintTextRow, disabled);
+    custom_ui_setComponentDisabled(ui->dmaStatsHintText, disabled);
+    custom_ui_syncDmaStatsCycleExactHint(ui);
+}
+
+static void
+custom_ui_syncDmaStatsCycleExactHint(custom_ui_state_t *ui)
+{
+    if (!ui || !ui->dmaStatsHintText || !ui->dmaStatsHintTextRow) {
+        return;
+    }
+    int showHint = 0;
+    const char *hostCompat = libretro_host_getCoreOptionValue("puae_cpu_compatibility");
+    int cycleExactConfigured = 0;
+    if (hostCompat &&
+        (strcmp(hostCompat, "memory") == 0 || strcmp(hostCompat, "exact") == 0)) {
+        cycleExactConfigured = 1;
+    }
+    if (ui->dmaStatsEnabled && !cycleExactConfigured) {
+        showHint = 1;
+    }
+    e9ui_setHidden(ui->dmaStatsHintText, showHint ? 0 : 1);
+    e9ui_setHidden(ui->dmaStatsHintTextRow, showHint ? 0 : 1);
+}
+
+static void
 custom_ui_syncBlitterDebugCheckbox(custom_ui_state_t *ui)
 {
     if (!ui) {
@@ -794,6 +3885,25 @@ custom_ui_copperLimitChanged(e9ui_component_t *self, e9ui_context_t *ctx, int se
     ui->copperLimitEnabled = selected ? 1 : 0;
     custom_ui_applyCopperLimitEnabledOption();
     custom_ui_syncCopperLimitSuboptions(ui);
+}
+
+static void
+custom_ui_dmaStatsChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    custom_ui_state_t *ui = (custom_ui_state_t*)user;
+    if (!ui) {
+        return;
+    }
+    ui->dmaStatsEnabled = selected ? 1 : 0;
+    if (ui->dmaStatsEnabled) {
+        custom_ui_enableDmaDebugForCopperStats(ui);
+    } else {
+        custom_ui_restoreDmaDebugForCopperStats(ui);
+    }
+    custom_ui_syncDmaStatsSuboptions(ui);
+    custom_ui_updateStatsCharts(ui);
 }
 
 static void
@@ -1573,7 +4683,12 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
     }
     ui->bplptrLineLimitStartRow = bplptrLineLimitStartRow;
     ui->bplptrLineLimitStartTextbox = bplptrLineLimitStartTextbox;
-    e9ui_stack_addFixed(leftColumn, bplptrLineLimitStartRow);
+    e9ui_component_t *bplptrLineLimitStartInsetRow = custom_ui_insetRowMake(bplptrLineLimitStartRow, 0, 14);
+    if (!bplptrLineLimitStartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_stack_addFixed(leftColumn, bplptrLineLimitStartInsetRow);
     e9ui_stack_addFixed(leftColumn, e9ui_vspacer_make(6));
 
     char bplptrLineLimitEndText[16];
@@ -1595,7 +4710,12 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
     }
     ui->bplptrLineLimitEndRow = bplptrLineLimitEndRow;
     ui->bplptrLineLimitEndTextbox = bplptrLineLimitEndTextbox;
-    e9ui_stack_addFixed(leftColumn, bplptrLineLimitEndRow);
+    e9ui_component_t *bplptrLineLimitEndInsetRow = custom_ui_insetRowMake(bplptrLineLimitEndRow, 0, 14);
+    if (!bplptrLineLimitEndInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_stack_addFixed(leftColumn, bplptrLineLimitEndInsetRow);
     e9ui_stack_addFixed(leftColumn, e9ui_vspacer_make(6));
 
     for (int bplptrIndex = 0; bplptrIndex < CUSTOM_UI_AMIGA_BPLPTR_COUNT; ++bplptrIndex) {
@@ -1680,7 +4800,12 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
     }
     ui->blitterVisDecayRow = blitterVisDecayTextboxRow;
     ui->blitterVisDecayTextbox = blitterVisDecayTextbox;
-    e9ui_stack_addFixed(rightColumn, blitterVisDecayTextboxRow);
+    e9ui_component_t *blitterVisDecayInsetRow = custom_ui_insetRowMake(blitterVisDecayTextboxRow, 0, 14);
+    if (!blitterVisDecayInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_stack_addFixed(rightColumn, blitterVisDecayInsetRow);
     e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(4));
 
     e9ui_component_t *blitterVisDecaySeekBar = NULL;
@@ -1746,6 +4871,20 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
 
     custom_ui_syncBlitterDebugSuboptions(ui);
 
+    e9ui_component_t *blitterVisStatsChart = custom_ui_blitterStatsChartMake();
+    if (!blitterVisStatsChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->blitterVisStatsChart = blitterVisStatsChart;
+    e9ui_component_t *blitterVisStatsChartInsetRow = custom_ui_insetRowMake(blitterVisStatsChart, 16, 0);
+    if (!blitterVisStatsChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_stack_addFixed(rightColumn, blitterVisStatsChartInsetRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(8));
+
     e9ui_component_t *cbCopperLimit = e9ui_checkbox_make("Copper Block",
                                                          ui->copperLimitEnabled,
                                                          custom_ui_copperLimitChanged,
@@ -1778,7 +4917,12 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
     }
     ui->copperLimitStartRow = copperLimitStartRow;
     ui->copperLimitStartTextbox = copperLimitStartTextbox;
-    e9ui_stack_addFixed(rightColumn, copperLimitStartRow);
+    e9ui_component_t *copperLimitStartInsetRow = custom_ui_insetRowMake(copperLimitStartRow, 0, 14);
+    if (!copperLimitStartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_stack_addFixed(rightColumn, copperLimitStartInsetRow);
     e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(6));
 
     char copperLimitEndText[16];
@@ -1800,7 +4944,12 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
     }
     ui->copperLimitEndRow = copperLimitEndRow;
     ui->copperLimitEndTextbox = copperLimitEndTextbox;
-    e9ui_stack_addFixed(rightColumn, copperLimitEndRow);
+    e9ui_component_t *copperLimitEndInsetRow = custom_ui_insetRowMake(copperLimitEndRow, 0, 14);
+    if (!copperLimitEndInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_stack_addFixed(rightColumn, copperLimitEndInsetRow);
     e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(8));
 
     custom_ui_syncCopperLimitSuboptions(ui);
@@ -1838,6 +4987,190 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
 
     e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(8));
 
+    e9ui_component_t *cbDmaStats = e9ui_checkbox_make("DMA Stats",
+                                                      ui->dmaStatsEnabled,
+                                                      custom_ui_dmaStatsChanged,
+                                                      ui);
+    if (!cbDmaStats) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->dmaStatsCheckbox = cbDmaStats;
+
+    e9ui_component_t *dmaStatsHintText = e9ui_text_make("NEEDS CYCLE EXACT!");
+    if (!dmaStatsHintText) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_text_setColor(dmaStatsHintText, (SDL_Color){ 196, 164, 92, 255 });
+    ui->dmaStatsHintText = dmaStatsHintText;
+    e9ui_component_t *dmaStatsHintTextInsetRow = custom_ui_insetRowMake(dmaStatsHintText, 0, 0);
+    if (!dmaStatsHintTextInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->dmaStatsHintTextRow = dmaStatsHintTextInsetRow;
+
+    e9ui_component_t *dmaStatsRow = custom_ui_dmaStatsHeaderRowMake(cbDmaStats, dmaStatsHintTextInsetRow, 12, 8);
+    if (!dmaStatsRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_stack_addFixed(rightColumn, dmaStatsRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(6));
+
+    e9ui_component_t *copperStatsChart = custom_ui_copperStatsChartMake();
+    if (!copperStatsChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->copperStatsChart = copperStatsChart;
+    e9ui_component_t *copperStatsChartInsetRow = custom_ui_insetRowMake(copperStatsChart, 16, 0);
+    if (!copperStatsChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->copperStatsChartRow = copperStatsChartInsetRow;
+    e9ui_stack_addFixed(rightColumn, copperStatsChartInsetRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(4));
+
+    e9ui_component_t *blitterDmaStatsChart = custom_ui_blitterDmaStatsChartMake();
+    if (!blitterDmaStatsChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->blitterDmaStatsChart = blitterDmaStatsChart;
+    e9ui_component_t *blitterDmaStatsChartInsetRow = custom_ui_insetRowMake(blitterDmaStatsChart, 16, 0);
+    if (!blitterDmaStatsChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->blitterDmaStatsChartRow = blitterDmaStatsChartInsetRow;
+    e9ui_stack_addFixed(rightColumn, blitterDmaStatsChartInsetRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(4));
+
+    e9ui_component_t *cpuDmaStatsChart = custom_ui_cpuDmaStatsChartMake();
+    if (!cpuDmaStatsChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->cpuDmaStatsChart = cpuDmaStatsChart;
+    e9ui_component_t *cpuDmaStatsChartInsetRow = custom_ui_insetRowMake(cpuDmaStatsChart, 16, 0);
+    if (!cpuDmaStatsChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->cpuDmaStatsChartRow = cpuDmaStatsChartInsetRow;
+    e9ui_stack_addFixed(rightColumn, cpuDmaStatsChartInsetRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(4));
+
+    e9ui_component_t *bitplaneDmaStatsChart = custom_ui_bitplaneDmaStatsChartMake();
+    if (!bitplaneDmaStatsChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->bitplaneDmaStatsChart = bitplaneDmaStatsChart;
+    e9ui_component_t *bitplaneDmaStatsChartInsetRow = custom_ui_insetRowMake(bitplaneDmaStatsChart, 16, 0);
+    if (!bitplaneDmaStatsChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->bitplaneDmaStatsChartRow = bitplaneDmaStatsChartInsetRow;
+    e9ui_stack_addFixed(rightColumn, bitplaneDmaStatsChartInsetRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(4));
+
+    e9ui_component_t *spriteDmaStatsChart = custom_ui_spriteDmaStatsChartMake();
+    if (!spriteDmaStatsChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->spriteDmaStatsChart = spriteDmaStatsChart;
+    e9ui_component_t *spriteDmaStatsChartInsetRow = custom_ui_insetRowMake(spriteDmaStatsChart, 16, 0);
+    if (!spriteDmaStatsChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->spriteDmaStatsChartRow = spriteDmaStatsChartInsetRow;
+    e9ui_stack_addFixed(rightColumn, spriteDmaStatsChartInsetRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(4));
+
+    e9ui_component_t *diskDmaStatsChart = custom_ui_diskDmaStatsChartMake();
+    if (!diskDmaStatsChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->diskDmaStatsChart = diskDmaStatsChart;
+    e9ui_component_t *diskDmaStatsChartInsetRow = custom_ui_insetRowMake(diskDmaStatsChart, 16, 0);
+    if (!diskDmaStatsChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->diskDmaStatsChartRow = diskDmaStatsChartInsetRow;
+    e9ui_stack_addFixed(rightColumn, diskDmaStatsChartInsetRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(4));
+
+    e9ui_component_t *audioDmaStatsChart = custom_ui_audioDmaStatsChartMake();
+    if (!audioDmaStatsChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->audioDmaStatsChart = audioDmaStatsChart;
+    e9ui_component_t *audioDmaStatsChartInsetRow = custom_ui_insetRowMake(audioDmaStatsChart, 16, 0);
+    if (!audioDmaStatsChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->audioDmaStatsChartRow = audioDmaStatsChartInsetRow;
+    e9ui_stack_addFixed(rightColumn, audioDmaStatsChartInsetRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(4));
+
+    e9ui_component_t *otherDmaStatsChart = custom_ui_otherDmaStatsChartMake();
+    if (!otherDmaStatsChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->otherDmaStatsChart = otherDmaStatsChart;
+    e9ui_component_t *otherDmaStatsChartInsetRow = custom_ui_insetRowMake(otherDmaStatsChart, 16, 0);
+    if (!otherDmaStatsChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->otherDmaStatsChartRow = otherDmaStatsChartInsetRow;
+    e9ui_stack_addFixed(rightColumn, otherDmaStatsChartInsetRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(4));
+
+    e9ui_component_t *idleDmaStatsChart = custom_ui_idleDmaStatsChartMake();
+    if (!idleDmaStatsChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->idleDmaStatsChart = idleDmaStatsChart;
+    e9ui_component_t *idleDmaStatsChartInsetRow = custom_ui_insetRowMake(idleDmaStatsChart, 16, 0);
+    if (!idleDmaStatsChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->idleDmaStatsChartRow = idleDmaStatsChartInsetRow;
+    e9ui_stack_addFixed(rightColumn, idleDmaStatsChartInsetRow);
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(4));
+
+    e9ui_component_t *dmaTotalMixChart = custom_ui_dmaTotalMixChartMake();
+    if (!dmaTotalMixChart) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->dmaTotalMixChart = dmaTotalMixChart;
+    e9ui_component_t *dmaTotalMixChartInsetRow = custom_ui_insetRowMake(dmaTotalMixChart, 16, 0);
+    if (!dmaTotalMixChartInsetRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->dmaTotalMixChartRow = dmaTotalMixChartInsetRow;
+    e9ui_stack_addFixed(rightColumn, dmaTotalMixChartInsetRow);
+
+    e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(8));
+    custom_ui_syncDmaStatsSuboptions(ui);
+
     e9ui_hstack_addFlex(columns, leftColumn);
     e9ui_hstack_addFixed(columns, e9ui_spacer_make(16), 16);
     e9ui_hstack_addFlex(columns, rightColumn);
@@ -1868,6 +5201,8 @@ custom_ui_prepareFrame(custom_ui_state_t *ui, const e9ui_context_t *frameCtx)
     custom_ui_tickBlitterVisDecayTextbox(ui);
     custom_ui_tickCopperLimitTextboxes(ui);
     custom_ui_tickBplptrLineLimitTextboxes(ui);
+    custom_ui_updateStatsCharts(ui);
+    custom_ui_syncDmaStatsCycleExactHint(ui);
 }
 
 static int
@@ -1942,7 +5277,7 @@ custom_ui_overlayWindowCloseRequested(e9ui_window_t *window, void *user)
     if (!ui) {
         return;
     }
-    ui->closeRequested = 1;
+    custom_ui_shutdown();
 }
 
 int
@@ -1957,7 +5292,6 @@ custom_ui_init(void)
     if (!ui->windowHost) {
         return 0;
     }
-    ui->closeRequested = 0;
     ui->warnedMissingOption = 0;
     ui->suppressBlitterDebugCallbacks = 0;
     ui->suppressBlitterVisModeCallbacks = 0;
@@ -1991,6 +5325,32 @@ custom_ui_init(void)
     ui->blitterVisDecayTextbox = NULL;
     ui->blitterVisDecaySeekRow = NULL;
     ui->blitterVisDecaySeekBar = NULL;
+    ui->dmaStatsCheckbox = NULL;
+    ui->dmaStatsHintText = NULL;
+    ui->dmaStatsHintTextRow = NULL;
+    ui->copperStatsChart = NULL;
+    ui->copperStatsChartRow = NULL;
+    ui->blitterDmaStatsChart = NULL;
+    ui->blitterDmaStatsChartRow = NULL;
+    ui->cpuDmaStatsChart = NULL;
+    ui->cpuDmaStatsChartRow = NULL;
+    ui->bitplaneDmaStatsChart = NULL;
+    ui->bitplaneDmaStatsChartRow = NULL;
+    ui->spriteDmaStatsChart = NULL;
+    ui->spriteDmaStatsChartRow = NULL;
+    ui->diskDmaStatsChart = NULL;
+    ui->diskDmaStatsChartRow = NULL;
+    ui->audioDmaStatsChart = NULL;
+    ui->audioDmaStatsChartRow = NULL;
+    ui->otherDmaStatsChart = NULL;
+    ui->otherDmaStatsChartRow = NULL;
+    ui->idleDmaStatsChart = NULL;
+    ui->idleDmaStatsChartRow = NULL;
+    ui->dmaTotalMixChart = NULL;
+    ui->dmaTotalMixChartRow = NULL;
+    ui->blitterVisStatsChart = NULL;
+    ui->dmaDebugAutoEnabled = 0;
+    ui->dmaDebugAutoPrevValue = 0;
     ui->blitterVisDecayTextboxHadFocus = 0;
     for (int spriteIndex = 0; spriteIndex < CUSTOM_UI_AMIGA_SPRITE_COUNT; ++spriteIndex) {
         ui->spriteCheckboxes[spriteIndex] = NULL;
@@ -2047,6 +5407,9 @@ custom_ui_init(void)
     }
 
     custom_ui_applyAllOptions();
+    if (ui->dmaStatsEnabled) {
+        custom_ui_enableDmaDebugForCopperStats(ui);
+    }
     ui->open = 1;
     return 1;
 }
@@ -2055,6 +5418,7 @@ void
 custom_ui_shutdown(void)
 {
     custom_ui_state_t *ui = &custom_ui_state;
+    custom_ui_restoreDmaDebugForCopperStats(ui);
     if (!ui->open) {
         return;
     }
@@ -2065,7 +5429,6 @@ custom_ui_shutdown(void)
     ui->root = NULL;
     ui->fullscreen = NULL;
     ui->open = 0;
-    ui->closeRequested = 0;
     ui->warnedMissingOption = 0;
     ui->pendingRemove = NULL;
     memset(&ui->ctx, 0, sizeof(ui->ctx));
@@ -2224,10 +5587,6 @@ custom_ui_render(void)
 {
     custom_ui_state_t *ui = &custom_ui_state;
     if (!ui->open || !ui->root) {
-        return;
-    }
-    if (ui->closeRequested) {
-        custom_ui_shutdown();
         return;
     }
     if (e9ui_windowCaptureRectChanged(ui->windowHost,

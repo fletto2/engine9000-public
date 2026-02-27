@@ -35,7 +35,7 @@ SANITIZER_LIBS += -fsanitize=address,undefined
 CFLAGS += 
 endif
 CFLAGS += $(DEBUG_FLAGS) -Wall -Wextra -std=c99 -MMD -MP -Werror -pthread
-CFLAGS += -O2 #-flto
+CFLAGS += -O2 -flto
 ifeq ($(UNAME_S),Linux)
 CFLAGS += -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 endif

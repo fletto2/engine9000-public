@@ -81,6 +81,13 @@ typedef struct e9k_hotkey_registry {
     int next_id;
 } e9k_hotkey_registry_t;
 
+typedef void (*e9ui_defer_fn_t)(e9ui_context_t *ctx, void *user);
+
+typedef struct e9ui_defer_entry {
+    e9ui_defer_fn_t fn;
+    void *user;
+} e9ui_defer_entry_t;
+
 typedef struct e9k_layout_config {
     float splitSrcConsole;
     float splitUpper;
@@ -146,6 +153,9 @@ typedef struct {
   e9ui_component_t *helpModal; 
   e9ui_component_t *prompt; 
   e9ui_component_t *pendingRemove; 
+  e9ui_defer_entry_t *deferred;
+  int deferredCount;
+  int deferredCap;
   e9ui_component_t *sourceBox; 
   e9ui_component_t *fullscreen;
   e9ui_component_t *overlayRoot;
@@ -196,6 +206,9 @@ e9ui_renderFrameNoLayoutNoPresentNoClear(void);
 
 int
 e9ui_processEvents(void);
+
+int
+e9ui_defer(e9ui_context_t *ctx, e9ui_defer_fn_t fn, void *user);
 
 e9ui_component_t *
 e9ui_focusTraversalRoot(e9ui_context_t *ctx, e9ui_component_t *current);

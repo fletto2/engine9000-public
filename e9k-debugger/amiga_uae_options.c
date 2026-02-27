@@ -8,7 +8,6 @@
 
 #include "amiga_uae_options.h"
 
-#include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>

@@ -355,7 +355,17 @@ e9ui_checkbox_measure(e9ui_component_t *checkbox, e9ui_context_t *ctx, int *outW
     int textW = 0;
     int textH = 0;
     if (font && st->label && st->label[0]) {
-        TTF_SizeText(font, st->label, &textW, &textH);
+        if (ctx->renderer) {
+            SDL_Color measureColor = {255, 255, 255, 255};
+            (void)e9ui_text_cache_getText(ctx->renderer,
+                                          font,
+                                          st->label,
+                                          measureColor,
+                                          &textW,
+                                          &textH);
+        } else {
+            TTF_SizeText(font, st->label, &textW, &textH);
+        }
     }
 
     int lineHeight = font ? TTF_FontHeight(font) : 16;

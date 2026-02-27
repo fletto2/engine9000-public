@@ -212,6 +212,17 @@ libretro_host_debugAmiReadBlitterVisPoints(e9k_debug_ami_blitter_vis_point_t *ou
 bool
 libretro_host_debugAmiReadBlitterVisStats(e9k_debug_ami_blitter_vis_stats_t *out);
 
+size_t
+libretro_host_debugAmiReadDmaDebugFrame(uint32_t frameSelect,
+                                        e9k_debug_ami_dma_debug_record_t *out,
+                                        size_t cap,
+                                        e9k_debug_ami_dma_debug_frame_info_t *outInfo);
+
+size_t
+libretro_host_debugAmiGetDmaDebugFramePtr(uint32_t frameSelect,
+                                          const e9k_debug_ami_dma_debug_raw_record_t **outRecords,
+                                          e9k_debug_ami_dma_debug_frame_info_t *outInfo);
+
 bool
 libretro_host_debugAmiGetVideoLineCount(int *out_line_count);
 

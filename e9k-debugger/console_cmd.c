@@ -66,14 +66,14 @@ static const console_cmd_entry_t console_cmd[] = {
     { "diff", NULL, "diff <fromFrame> <toFrame> [size=8|16|32]", "Show RAM addresses that differ between two recorded frames.", console_cmd_diff, NULL },    
     { "loop", NULL, "loop <from> <to>\nloop\nloop clear", "Loop between two recorded frame numbers (decimal).", console_cmd_loop, NULL },
     { "print", "p", "print <expr> [size=8|16|32]\nprint addr <expr>", "Print an expression using DWARF + symbol info. Use size=8|16|32 to force a memory read size, or 'print addr <expr>' to show the resolved runtime address.", console_cmd_print, console_cmd_completePrint },   
-    { "protect", NULL, "protect\nprotect clear\nprotect del <addr> [size=8|16|32]\nprotect <addr> block [size=8|16|32]\nprotect <addr> set=0x... [size=8|16|32]", "Protect addresses by blocking writes or forcing a value (core-side).", console_cmd_protect, NULL },    
+    { "protect", NULL, "protect\nprotect clear\nprotect del <addr> [size=8|16|32]\nprotect <addr> block [size=8|16|32]\nprotect <addr> set=0x...|$... [size=8|16|32]", "Protect addresses by blocking writes or forcing a value (core-side).", console_cmd_protect, NULL },    
     { "next", "n", "next", "Step over the next line.", console_cmd_next, NULL },    
     { "finish", "f", "finish", "Step out of the current function.", console_cmd_finish, NULL },
     { "step", "s", "step", "Step to next source line.", console_cmd_step, NULL },
     { "stepi", "i", "stepi", "Step one instruction.", console_cmd_stepi, NULL },
-    { "train", NULL, "train <from> <to> [size=8|16|32]\ntrain ignore\ntrain clear", "Train by breaking on a value transition (from/to accept decimal or 0x...).", console_cmd_train, NULL },    
+    { "train", NULL, "train <from> <to> [size=8|16|32]\ntrain ignore\ntrain clear", "Train by breaking on a value transition (from/to accept decimal or 0x... or $...).", console_cmd_train, NULL },    
     { "transition", NULL, "transition <slide|explode|doom|flip|rbar|random|cycle|none>", "Set the transition mode for startup and fullscreen.", console_cmd_transition, console_cmd_completeTransition },
-    { "watch", "wa", "watch [addr|symbol] [r|w|rw] [size=8|16|32] [mask=0x...] [val=0x...] [old=0x...] [diff=0x...]\nwatch del <idx> \nwatch clear", "Set or list watchpoints.", console_cmd_watch, NULL },    
+    { "watch", "wa", "watch [addr|symbol] [r|w|rw] [size=8|16|32] [mask=0x...|$...] [val=0x...|$...] [old=0x...|$...] [diff=0x...|$...]\nwatch del <idx> \nwatch clear", "Set or list watchpoints.", console_cmd_watch, NULL },    
     { "write", NULL, "write <dest> <value>", "Write a hex value to an address or symbol.", console_cmd_write, console_cmd_completeWrite },
 
 };
@@ -156,7 +156,9 @@ console_cmd_parseHex(const char *s, uint32_t *out)
         return 0;
     }
     const char *p = s;
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+    if (*p == '$') {
+        p += 1;
+    } else if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
         p += 2;
     }
     if (!*p) {
@@ -168,7 +170,7 @@ console_cmd_parseHex(const char *s, uint32_t *out)
         }
     }
     errno = 0;
-    unsigned long v = strtoul(s, NULL, 16);
+    unsigned long v = strtoul(p, NULL, 16);
     if (errno != 0) {
         return 0;
     }
@@ -188,10 +190,14 @@ console_cmd_parseHexStrict(const char *s, uint64_t *out, int *outDigits)
     if (!s || !*s || !out || !outDigits) {
         return 0;
     }
-    if (s[0] != '0' || (s[1] != 'x' && s[1] != 'X')) {
+    const char *p = s;
+    if (*p == '$') {
+        p += 1;
+    } else if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+    } else {
         return 0;
     }
-    const char *p = s + 2;
     if (!*p) {
         return 0;
     }
@@ -204,7 +210,7 @@ console_cmd_parseHexStrict(const char *s, uint64_t *out, int *outDigits)
         ++p;
     }
     errno = 0;
-    unsigned long long v = strtoull(s, NULL, 16);
+    unsigned long long v = strtoull(p, NULL, 16);
     if (errno != 0) {
         return 0;
     }
@@ -247,8 +253,14 @@ console_cmd_parseU32Auto(const char *s, uint32_t *out)
     }
     errno = 0;
     char *end = NULL;
-    unsigned long long v = strtoull(s, &end, 0);
-    if (errno != 0 || !end || end == s || *end != '\0') {
+    const char *p = s;
+    int base = 0;
+    if (*p == '$') {
+        p += 1;
+        base = 16;
+    }
+    unsigned long long v = strtoull(p, &end, base);
+    if (errno != 0 || !end || end == p || *end != '\0') {
         return 0;
     }
     if (v > 0xffffffffULL) {
@@ -709,7 +721,7 @@ console_cmd_base(int argc, char **argv)
     }
     uint32_t addr = 0;
     if (!console_cmd_parseU32Auto(argv[argIndex], &addr)) {
-        debug_error("base: invalid address '%s' (use decimal or 0x...)", argv[argIndex]);
+        debug_error("base: invalid address '%s' (use decimal or 0x... or $...)", argv[argIndex]);
         return 0;
     }
     if (section == BASE_MAP_SECTION_TEXT) {
@@ -934,7 +946,7 @@ console_cmd_watch(int argc, char **argv)
         if (strncasecmp(tok, "mask=", 5) == 0) {
             uint32_t v = 0;
             if (!console_cmd_parseU32Strict(tok + 5, &v)) {
-                debug_error("watch: invalid mask '%s' (expected 0x...)", tok + 5);
+                debug_error("watch: invalid mask '%s' (expected 0x... or $...)", tok + 5);
                 return 0;
             }
             op_mask |= E9K_WATCH_OP_ADDR_COMPARE_MASK;
@@ -944,7 +956,7 @@ console_cmd_watch(int argc, char **argv)
         if (strncasecmp(tok, "val=", 4) == 0) {
             uint32_t v = 0;
             if (!console_cmd_parseU32Strict(tok + 4, &v)) {
-                debug_error("watch: invalid val '%s' (expected 0x...)", tok + 4);
+                debug_error("watch: invalid val '%s' (expected 0x... or $...)", tok + 4);
                 return 0;
             }
             op_mask |= E9K_WATCH_OP_VALUE_EQ;
@@ -954,7 +966,7 @@ console_cmd_watch(int argc, char **argv)
         if (strncasecmp(tok, "value=", 6) == 0) {
             uint32_t v = 0;
             if (!console_cmd_parseU32Strict(tok + 6, &v)) {
-                debug_error("watch: invalid value '%s' (expected 0x...)", tok + 6);
+                debug_error("watch: invalid value '%s' (expected 0x... or $...)", tok + 6);
                 return 0;
             }
             op_mask |= E9K_WATCH_OP_VALUE_EQ;
@@ -964,7 +976,7 @@ console_cmd_watch(int argc, char **argv)
         if (strncasecmp(tok, "old=", 4) == 0) {
             uint32_t v = 0;
             if (!console_cmd_parseU32Strict(tok + 4, &v)) {
-                debug_error("watch: invalid old '%s' (expected 0x...)", tok + 4);
+                debug_error("watch: invalid old '%s' (expected 0x... or $...)", tok + 4);
                 return 0;
             }
             op_mask |= E9K_WATCH_OP_OLD_VALUE_EQ;
@@ -974,7 +986,7 @@ console_cmd_watch(int argc, char **argv)
         if (strncasecmp(tok, "diff=", 5) == 0) {
             uint32_t v = 0;
             if (!console_cmd_parseU32Strict(tok + 5, &v)) {
-                debug_error("watch: invalid diff '%s' (expected 0x...)", tok + 5);
+                debug_error("watch: invalid diff '%s' (expected 0x... or $...)", tok + 5);
                 return 0;
             }
             op_mask |= E9K_WATCH_OP_VALUE_NEQ_OLD;
@@ -984,7 +996,7 @@ console_cmd_watch(int argc, char **argv)
         if (strncasecmp(tok, "neq=", 4) == 0) {
             uint32_t v = 0;
             if (!console_cmd_parseU32Strict(tok + 4, &v)) {
-                debug_error("watch: invalid neq '%s' (expected 0x...)", tok + 4);
+                debug_error("watch: invalid neq '%s' (expected 0x... or $...)", tok + 4);
                 return 0;
             }
             op_mask |= E9K_WATCH_OP_VALUE_NEQ_OLD;
@@ -1045,11 +1057,11 @@ console_cmd_train(int argc, char **argv)
     uint32_t from = 0;
     uint32_t to = 0;
     if (!console_cmd_parseU32Auto(argv[1], &from)) {
-        debug_error("train: invalid from '%s' (expected decimal or 0x...)", argv[1]);
+        debug_error("train: invalid from '%s' (expected decimal or 0x... or $...)", argv[1]);
         return 0;
     }
     if (!console_cmd_parseU32Auto(argv[2], &to)) {
-        debug_error("train: invalid to '%s' (expected decimal or 0x...)", argv[2]);
+        debug_error("train: invalid to '%s' (expected decimal or 0x... or $...)", argv[2]);
         return 0;
     }
 
@@ -1216,7 +1228,7 @@ console_cmd_protect(int argc, char **argv)
         }
         if (strncasecmp(tok, "set=", 4) == 0) {
             if (!console_cmd_parseU32Strict(tok + 4, &set_value)) {
-                debug_error("protect: invalid set value '%s' (expected 0x...)", tok + 4);
+                debug_error("protect: invalid set value '%s' (expected 0x... or $...)", tok + 4);
                 return 0;
             }
             mode_set = 1;
@@ -1224,7 +1236,7 @@ console_cmd_protect(int argc, char **argv)
         }
         if (strncasecmp(tok, "value=", 6) == 0) {
             if (!console_cmd_parseU32Strict(tok + 6, &set_value)) {
-                debug_error("protect: invalid value '%s' (expected 0x...)", tok + 6);
+                debug_error("protect: invalid value '%s' (expected 0x... or $...)", tok + 6);
                 return 0;
             }
             mode_set = 1;
@@ -1248,7 +1260,7 @@ console_cmd_protect(int argc, char **argv)
         return 0;
     }
     if (!mode_set && !mode_block) {
-        debug_printf("Usage: protect <addr> block [size=8|16|32]\nprotect <addr> set=0x... [size=8|16|32]\n");
+        debug_printf("Usage: protect <addr> block [size=8|16|32]\nprotect <addr> set=0x...|$... [size=8|16|32]\n");
         return 0;
     }
 
@@ -1358,7 +1370,7 @@ console_cmd_write(int argc, char **argv)
     uint64_t value = 0;
     int value_digits = 0;
     if (!console_cmd_parseHexStrict(value_str, &value, &value_digits)) {
-        debug_error("write: value must be hex (0x...)");
+        debug_error("write: value must be hex (0x... or $...)");
         return 0;
     }
     size_t value_size = console_cmd_sizeFromHexDigits(value_digits);
@@ -1366,11 +1378,11 @@ console_cmd_write(int argc, char **argv)
         debug_error("write: value too wide (max 32-bit hex)");
         return 0;
     }
-    if (dest && dest[0] == '0' && (dest[1] == 'x' || dest[1] == 'X')) {
+    if (dest && ((dest[0] == '$') || (dest[0] == '0' && (dest[1] == 'x' || dest[1] == 'X')))) {
         uint64_t addr64 = 0;
         int addr_digits = 0;
         if (!console_cmd_parseHexStrict(dest, &addr64, &addr_digits)) {
-            debug_error("write: address must be hex (0x...)");
+            debug_error("write: address must be hex (0x... or $...)");
             return 0;
         }
         if (addr64 > 0xffffffffu) {
@@ -1527,10 +1539,17 @@ console_cmd_print(int argc, char **argv)
             }
         }
 
+        const char *numberStart = p;
+        int numberBase = 0;
+        if (*numberStart == '$') {
+            numberBase = 16;
+            ++numberStart;
+        }
+
         errno = 0;
         char *end = NULL;
-        unsigned long long number = strtoull(p, &end, 0);
-        if (errno == 0 && end && end != p) {
+        unsigned long long number = strtoull(numberStart, &end, numberBase);
+        if (errno == 0 && end && end != numberStart) {
             const char *q = end;
             while (*q && isspace((unsigned char)*q)) {
                 ++q;

@@ -81,6 +81,31 @@ static char ui_tipReset[128];
 static char ui_tipRestart[128];
 
 static void
+ui_recordRefreshTooltip(void);
+
+static void
+ui_recordRefreshButton(void);
+
+static void
+ui_validateToolbarButtonRef(e9ui_component_t **slot)
+{
+    if (!slot || !*slot) {
+        return;
+    }
+    if (!e9ui || !e9ui->toolbar) {
+        *slot = NULL;
+        return;
+    }
+    for (list_t *ptr = e9ui->toolbar->children; ptr; ptr = ptr->next) {
+        e9ui_component_child_t *container = (e9ui_component_child_t *)ptr->data;
+        if (container && container->component == *slot) {
+            return;
+        }
+    }
+    *slot = NULL;
+}
+
+static void
 ui_setActionTooltip(e9ui_component_t *btn, const char *baseLabel, const char *actionId, char *buf, size_t bufCap)
 {
     if (!btn || !buf || bufCap == 0 || !baseLabel) {
@@ -112,7 +137,7 @@ ui_refreshHotkeyTooltips(void)
     ui_setActionTooltip(ui_btnSaveState, "Save state", "save_state", ui_tipSaveState, sizeof(ui_tipSaveState));
     ui_setActionTooltip(ui_btnRestoreState, "Restore state", "restore_state", ui_tipRestoreState, sizeof(ui_tipRestoreState));
     ui_setActionTooltip(ui_btnAudio, "Audio", "audio_toggle", ui_tipAudio, sizeof(ui_tipAudio));
-    ui_setActionTooltip(ui_btnRecord, "Recording", "rolling_save_toggle", ui_tipRecord, sizeof(ui_tipRecord));
+    ui_recordRefreshTooltip();
     ui_setActionTooltip(ui_btnSettings, "Settings", "settings", ui_tipSettings, sizeof(ui_tipSettings));
     ui_setActionTooltip(ui_btnReset, "Reset core", "reset_core", ui_tipReset, sizeof(ui_tipReset));
     ui_setActionTooltip(ui_btnRestart, "Restart", "restart", ui_tipRestart, sizeof(ui_tipRestart));
@@ -128,6 +153,26 @@ ui_basename(const char *path)
     const char *back = strrchr(path, '\\');
     const char *best = slash > back ? slash : back;
     return best ? best + 1 : path;
+}
+
+void
+ui_updateWindowTitle(void)
+{
+    if (!e9ui || !e9ui->ctx.window) {
+        return;
+    }
+
+    const char *romPath = debugger.libretro.romPath;
+    const char *base = ui_basename(romPath);
+    char title[PATH_MAX + 64];
+
+    if (base && *base) {
+        snprintf(title, sizeof(title), "ENGINE9000 DEBUGGER/PROFILER 68K - %s", base);
+    } else {
+        snprintf(title, sizeof(title), "ENGINE9000 DEBUGGER/PROFILER 68K");
+    }
+    title[sizeof(title) - 1] = '\0';
+    SDL_SetWindowTitle(e9ui->ctx.window, title);
 }
 
 static void
@@ -344,6 +389,12 @@ ui_refreshSpeedButton(void)
     ui_speedButtonRefresh();
 }
 
+void
+ui_refreshRecordButton(void)
+{
+    ui_recordRefreshButton();
+}
+
 static void
 ui_reset(e9ui_context_t *ctx, void *user)
 {
@@ -374,8 +425,17 @@ ui_audioRefreshButton(void)
 }
 
 static void
+ui_recordRefreshTooltip(void)
+{
+    ui_validateToolbarButtonRef(&ui_btnRecord);
+    const char *label = state_buffer_isRollingPaused() ? "Recording paused" : "Recording";
+    ui_setActionTooltip(ui_btnRecord, label, "rolling_save_toggle", ui_tipRecord, sizeof(ui_tipRecord));
+}
+
+static void
 ui_recordRefreshButton(void)
 {
+    ui_validateToolbarButtonRef(&ui_btnRecord);
     if (!ui_btnRecord) {
         return;
     }
@@ -385,6 +445,7 @@ ui_recordRefreshButton(void)
     } else {
         e9ui_button_setTheme(ui_btnRecord, e9ui_theme_button_preset_red());
     }
+    ui_recordRefreshTooltip();
 }
 
 void
@@ -392,10 +453,7 @@ ui_toggleRollingSavePauseResume(void)
 {
     int paused = state_buffer_isRollingPaused() ? 0 : 1;
     state_buffer_setRollingPaused(paused);
-    debugger.config.recordEnabled = paused ? 0 : 1;
-    debugger.settingsEdit.recordEnabled = debugger.config.recordEnabled;
     ui_recordRefreshButton();
-    config_saveConfig();
     e9ui_showTransientMessage(paused ? "ROLLING SAVE PAUSED" : "ROLLING SAVE RESUMED");
 }
 
@@ -721,8 +779,8 @@ ui_build(void)
     e9ui_component_t *btn_record = e9ui_button_make("", ui_recordToggle, NULL);
     hotkeys_registerButtonActionHotkey(btn_record, &e9ui->ctx, "rolling_save_toggle");
     ui_btnRecord = btn_record;
-    ui_recordRefreshButton();
     e9ui_header_flow_add(toolbar, btn_record);
+    ui_recordRefreshButton();
 
     e9ui_component_t *btn_reset = e9ui_button_make("", ui_reset, NULL);
     hotkeys_registerButtonActionHotkey(btn_reset, &e9ui->ctx, "reset_core");
@@ -834,7 +892,8 @@ ui_build(void)
     e9ui_stack_addFixed(comp_stack, comp_status_bar);
     e9ui->root = comp_stack;
     // After tree is built and IDs are assigned, load persisted component state
-    if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+    if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE ||
+        debugger.smokeTestMode == SMOKE_TEST_MODE_REMAKE) {
         e9ui_component_t *geoBox = e9ui_findById(e9ui->root, "libretro_box");
         if (geoBox) {
             e9ui->fullscreen = geoBox;

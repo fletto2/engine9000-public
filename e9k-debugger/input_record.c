@@ -528,6 +528,15 @@ input_record_isPlayback(void)
 }
 
 int
+input_record_isPlaybackComplete(void)
+{
+    if (input_record_mode != 2) {
+        return 0;
+    }
+    return input_record_eventIndexCore >= input_record_eventCount;
+}
+
+int
 input_record_isInjecting(void)
 {
     return input_record_injecting ? 1 : 0;

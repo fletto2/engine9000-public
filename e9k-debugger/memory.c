@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include <errno.h>
 #include <limits.h>
 
 #include "memory.h"
@@ -70,6 +71,51 @@ memory_findNextMatch(memory_view_state_t *st, const memory_search_pattern_t *pat
 static int
 memory_findPrevMatch(memory_view_state_t *st, const memory_search_pattern_t *pattern,
                      uint32_t startAddr, uint32_t *outAddr, int *outLen);
+
+static int
+memory_parseU64SmartHex(const char *text, unsigned long long *outValue, char **outEnd)
+{
+    if (outValue) {
+        *outValue = 0;
+    }
+    if (outEnd) {
+        *outEnd = NULL;
+    }
+    if (!text || !outValue) {
+        return 0;
+    }
+    const char *p = text;
+    while (*p && isspace((unsigned char)*p)) {
+        ++p;
+    }
+    int base = 0;
+    const char *parseStart = p;
+    if (*parseStart == '$') {
+        ++parseStart;
+        base = 16;
+    } else if (!(parseStart[0] == '0' && (parseStart[1] == 'x' || parseStart[1] == 'X'))) {
+        for (const char *q = parseStart; *q; ++q) {
+            if (isspace((unsigned char)*q)) {
+                break;
+            }
+            if (((*q >= 'a') && (*q <= 'f')) || ((*q >= 'A') && (*q <= 'F'))) {
+                base = 16;
+                break;
+            }
+        }
+    }
+    errno = 0;
+    char *end = NULL;
+    unsigned long long value = strtoull(parseStart, &end, base);
+    if (outEnd) {
+        *outEnd = end;
+    }
+    if (!end || end == parseStart || errno != 0) {
+        return 0;
+    }
+    *outValue = value;
+    return 1;
+}
 
 static int
 memory_getAddressLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
@@ -187,8 +233,8 @@ memory_parseAddress(memory_view_state_t *st, unsigned int *out_addr)
         return 0;
     }
     char *end = NULL;
-    unsigned long long val = strtoull(t, &end, 0);
-    if (!end || end == t) {
+    unsigned long long val = 0;
+    if (!memory_parseU64SmartHex(t, &val, &end)) {
         memory_setError(st, "Invalid address: \"%s\"", t);
         return 0;
     }

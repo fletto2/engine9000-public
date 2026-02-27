@@ -72,7 +72,6 @@ typedef struct memory_track_ranges {
 
 struct memory_track_ui {
     int open;
-    int closeRequested;
     int alwaysOnTopState;
     int mainWindowFocused;
     int memoryTrackWindowFocused;
@@ -828,21 +827,22 @@ memory_track_ui_parseU32Strict(const char *s, uint32_t *out)
     if (!s || !*s || !out) {
         return 0;
     }
-    if (s[0] != '0' || (s[1] != 'x' && s[1] != 'X')) {
-        return 0;
+    const char *p = s;
+    if (*p == '$') {
+        ++p;
+    } else if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
     }
-    const char *p = s + 2;
     if (!*p) {
         return 0;
     }
-    while (*p) {
-        if (!isxdigit((unsigned char)*p)) {
+    for (const char *q = p; *q; ++q) {
+        if (!isxdigit((unsigned char)*q)) {
             return 0;
         }
-        ++p;
     }
     errno = 0;
-    unsigned long long v = strtoull(s, NULL, 16);
+    unsigned long long v = strtoull(p, NULL, 16);
     if (errno != 0 || v > 0xffffffffULL) {
         return 0;
     }
@@ -913,7 +913,7 @@ memory_track_ui_protectApply(e9ui_context_t *ctx, void *user)
         }
         uint32_t value = 0;
         if (!memory_track_ui_parseU32Strict(text, &value)) {
-            debug_error("protect: invalid set value '%s' (expected 0x...)", text ? text : "");
+            debug_error("protect: invalid set value '%s' (expected hex: 0x..., $..., or bare hex)", text ? text : "");
             return;
         }
         ok = protect_addSet(addr, value, size_bits);
@@ -1541,7 +1541,9 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
                 p++;
             }
             if (p[0] != '\0') {
-                if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+                if (p[0] == '$') {
+                    p += 1;
+                } else if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
                     p += 2;
                 }
                 char *end = NULL;
@@ -2705,6 +2707,25 @@ memory_track_ui_overlayBodyDtor(e9ui_component_t *self, e9ui_context_t *ctx)
 }
 
 static void
+memory_track_ui_deferredShutdown(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    (void)user;
+    memory_track_ui_shutdown();
+}
+
+static void
+memory_track_ui_requestClose(memory_track_ui_t *ui, e9ui_context_t *ctx)
+{
+    if (!ui) {
+        return;
+    }
+    (void)e9ui_defer(ctx ? ctx : (e9ui ? &e9ui->ctx : &ui->ctx),
+                     memory_track_ui_deferredShutdown,
+                     ui);
+}
+
+static void
 memory_track_ui_overlayBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
 {
     if (!self || !ctx || !self->state) {
@@ -2736,7 +2757,7 @@ memory_track_ui_overlayBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
     if (ui->needsRebuild) {
         memory_track_ui_rebuildRoot(ui);
         if (!ui->root) {
-            ui->closeRequested = 1;
+            memory_track_ui_requestClose(ui, ctx);
             return;
         }
     }
@@ -2791,7 +2812,7 @@ memory_track_ui_overlayWindowCloseRequested(e9ui_window_t *window, void *user)
     if (!ui) {
         return;
     }
-    ui->closeRequested = 1;
+    memory_track_ui_shutdown();
 }
 
 int
@@ -2805,7 +2826,6 @@ memory_track_ui_init(void)
     if (!ui->windowHost) {
         return 0;
     }
-    ui->closeRequested = 0;
     ui->needsRefresh = 1;
     ui->accessSize = 2;
     ui->requireAllColumns = 1;
@@ -2957,7 +2977,6 @@ memory_track_ui_shutdown(void)
     ui->cachedFrameCap = 0;
     ui->cachedBuildFrameNo = 0;
     ui->open = 0;
-    ui->closeRequested = 0;
     ui->alwaysOnTopState = 0;
     ui->mainWindowFocused = 0;
     ui->memoryTrackWindowFocused = 0;
@@ -3002,10 +3021,6 @@ memory_track_ui_render(void)
 {
     memory_track_ui_t *ui = &memory_track_ui_state;
     if (!ui->open) {
-        return;
-    }
-    if (ui->closeRequested) {
-        memory_track_ui_shutdown();
         return;
     }
     if (e9ui_windowCaptureRectChanged(ui->windowHost,

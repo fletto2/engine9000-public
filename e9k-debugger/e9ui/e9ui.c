@@ -70,6 +70,27 @@ static TTF_Font *e9ui_fpsFont = NULL;
 static int e9ui_fpsFontSize = 0;
 
 static void
+e9ui_runDeferred(e9ui_context_t *ctx)
+{
+    if (!e9ui || !e9ui->deferred || e9ui->deferredCount <= 0) {
+        return;
+    }
+    while (e9ui->deferred && e9ui->deferredCount > 0) {
+        e9ui_defer_entry_t *entries = e9ui->deferred;
+        int count = e9ui->deferredCount;
+        e9ui->deferred = NULL;
+        e9ui->deferredCount = 0;
+        e9ui->deferredCap = 0;
+        for (int i = 0; i < count; ++i) {
+            if (entries[i].fn) {
+                entries[i].fn(ctx, entries[i].user);
+            }
+        }
+        alloc_free(entries);
+    }
+}
+
+static void
 e9ui_updateState(e9ui_component_t *comp, e9ui_context_t *ctx);
 
 static void
@@ -98,6 +119,29 @@ void
 e9ui_setFpsEnabled(int enabled)
 {
     e9ui_fpsEnabled = enabled ? 1 : 0;
+}
+
+int
+e9ui_defer(e9ui_context_t *ctx, e9ui_defer_fn_t fn, void *user)
+{
+    (void)ctx;
+    if (!e9ui || !fn) {
+        return 0;
+    }
+    if (e9ui->deferredCount >= e9ui->deferredCap) {
+        int nextCap = e9ui->deferredCap ? e9ui->deferredCap * 2 : 8;
+        e9ui_defer_entry_t *next = (e9ui_defer_entry_t *)alloc_realloc(
+            e9ui->deferred, (size_t)nextCap * sizeof(*next));
+        if (!next) {
+            return 0;
+        }
+        e9ui->deferred = next;
+        e9ui->deferredCap = nextCap;
+    }
+    e9ui->deferred[e9ui->deferredCount].fn = fn;
+    e9ui->deferred[e9ui->deferredCount].user = user;
+    e9ui->deferredCount++;
+    return 1;
 }
 
 static int
@@ -276,6 +320,88 @@ e9ui_sceneProcessEvent(const e9ui_event_t *ev)
         return 1;
     }
     return 0;
+}
+
+static int
+e9ui_eventIsPointer(const e9ui_event_t *ev)
+{
+    if (!ev) {
+        return 0;
+    }
+    return ev->type == SDL_MOUSEMOTION ||
+           ev->type == SDL_MOUSEBUTTONDOWN ||
+           ev->type == SDL_MOUSEBUTTONUP ||
+           ev->type == SDL_MOUSEWHEEL;
+}
+
+static int
+e9ui_componentTreeContainsPointer(const e9ui_component_t *root, const void *target)
+{
+    if (!root || !target) {
+        return 0;
+    }
+    if ((const void *)root == target) {
+        return 1;
+    }
+    for (list_t *ptr = root->children; ptr; ptr = ptr->next) {
+        e9ui_component_child_t *container = (e9ui_component_child_t *)ptr->data;
+        if (!container || !container->component) {
+            continue;
+        }
+        if ((const void *)container->component == target) {
+            return 1;
+        }
+        if (e9ui_componentTreeContainsPointer(container->component, target)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+e9ui_captureOwnerIsLive(const e9ui_context_t *ctx, const void *owner)
+{
+    if (!ctx || !owner || !e9ui) {
+        return 0;
+    }
+    if (e9ui_componentTreeContainsPointer(e9ui->overlayRoot, owner)) {
+        return 1;
+    }
+    if (e9ui_componentTreeContainsPointer(e9ui_activeContentRoot(), owner)) {
+        return 1;
+    }
+    if (e9ui_componentTreeContainsPointer(e9ui->root, owner)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
+e9ui_dispatchCapturedPointerEvent(e9ui_context_t *ctx, const e9ui_event_t *ev)
+{
+    if (!ctx || !ev) {
+        return 0;
+    }
+    if (!e9ui_eventIsPointer(ev) || !ctx->cursorCaptureOwner) {
+        return 0;
+    }
+    void *ownerPtr = ctx->cursorCaptureOwner;
+    if (!e9ui_captureOwnerIsLive(ctx, ownerPtr)) {
+        ctx->cursorCaptureOwner = NULL;
+        ctx->cursorCapture = NULL;
+        return 1;
+    }
+    e9ui_component_t *owner = (e9ui_component_t *)ownerPtr;
+    if (!owner || !owner->handleEvent) {
+        ctx->cursorCaptureOwner = NULL;
+        ctx->cursorCapture = NULL;
+        return 1;
+    }
+    (void)owner->handleEvent(owner, ctx, ev);
+    if (ev->type == SDL_MOUSEBUTTONUP) {
+        (void)e9ui_text_select_handleEvent(ctx, ev);
+    }
+    return 1;
 }
 
 static void
@@ -2201,6 +2327,7 @@ e9ui_processEvents(void)
     ui_test_mode_t mode = ui_test_getMode();
     int compareMode = (mode == UI_TEST_MODE_COMPARE || mode == UI_TEST_MODE_REMAKE) ? 1 : 0;
     while (1) {
+        e9ui_runDeferred(&e9ui->ctx);
         int hasEvent = 0;
         if (compareMode) {
 	  hasEvent = input_record_pollUiEvent(&ev);
@@ -2273,7 +2400,10 @@ e9ui_processEvents(void)
         e9ui->ctx.cursorOverride = 0;
         e9ui->ctx.focusRoot = e9ui->root;
         e9ui->ctx.focusFullscreen = e9ui->fullscreen;
-        if (ev.type == SDL_QUIT) return 1;
+        if (ev.type == SDL_QUIT) {
+            e9ui_runDeferred(&e9ui->ctx);
+            return 1;
+        }
         else if (ev.type == SDL_MOUSEMOTION) {
             if (!mainWindowId || ev.motion.windowID != mainWindowId) {
                 continue;
@@ -2302,6 +2432,9 @@ e9ui_processEvents(void)
             e9ui->ctx.mouseY = scaledY;
             e9ui->mouseX = scaledX;
             e9ui->mouseY = scaledY;
+            if (e9ui_dispatchCapturedPointerEvent(&e9ui->ctx, &ev)) {
+                continue;
+            }
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
             }
@@ -2324,6 +2457,9 @@ e9ui_processEvents(void)
             e9ui->ctx.mouseY = scaledY;
             e9ui->mouseX = scaledX;
             e9ui->mouseY = scaledY;
+            if (e9ui_dispatchCapturedPointerEvent(&e9ui->ctx, &ev)) {
+                continue;
+            }
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
             }
@@ -2351,6 +2487,9 @@ e9ui_processEvents(void)
             e9ui->ctx.mouseY = scaledY;
             e9ui->mouseX = scaledX;
             e9ui->mouseY = scaledY;
+            if (e9ui_dispatchCapturedPointerEvent(&e9ui->ctx, &ev)) {
+                continue;
+            }
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
             }
@@ -2470,6 +2609,7 @@ e9ui_processEvents(void)
 	  }
         }
     }
+    e9ui_runDeferred(&e9ui->ctx);
     return 0;
 }
 
@@ -2498,6 +2638,12 @@ e9ui_shutdown(void)
   e9ui_split_stack_resetCursors();
   e9ui_box_resetCursors();
   hotkeys_shutdown();
+  if (e9ui->deferred) {
+    alloc_free(e9ui->deferred);
+    e9ui->deferred = NULL;
+  }
+  e9ui->deferredCount = 0;
+  e9ui->deferredCap = 0;
   
   if (e9ui->ctx.font) {
     TTF_CloseFont(e9ui->ctx.font);
@@ -2507,6 +2653,8 @@ e9ui_shutdown(void)
   e9ui_theme_unloadFonts();
   e9ui_text_cache_clear();
   e9ui_text_select_shutdown();
+  e9ui_window_resetOverlayResources();
+  e9ui_modal_resetResources();
 
   e9ui_childDestroy(e9ui->overlayRoot, &e9ui->ctx);
   e9ui->overlayRoot = NULL;

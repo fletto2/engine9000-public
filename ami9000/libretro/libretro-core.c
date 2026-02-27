@@ -2570,7 +2570,7 @@ static void retro_set_core_options()
             { "mouse", "Mouse (Port 2)" },
             { NULL, NULL },
          },
-         "Joystick"
+         "mouse"
       },
       {
          "puae_joyport_order",

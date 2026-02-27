@@ -202,6 +202,7 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
         romState->sourceSelect = fsSource;
         romState->toolchainSelect = ltToolchain;
         settings_romSelectUpdateAllowEmpty(romState);
+        settings_romSelectRefreshRecents(romState);
     }
 
     // System row: [MVS] [AES] [SKIP BIOS LOGO]

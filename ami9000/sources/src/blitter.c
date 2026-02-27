@@ -130,6 +130,9 @@ static uint32_t blitter_debugPatternRngState = 0x1a2b3c4du;
 static uae_u16 *blitter_debugPatterns = NULL;
 static uint32_t *blitter_debugBlitIds = NULL;
 static uint32_t blitter_debugWritesThisFrame = 0;
+static uint32_t blitter_debugBlitsThisFrame = 0;
+static uint32_t blitter_debugWritesLastFrame = 0;
+static uint32_t blitter_debugBlitsLastFrame = 0;
 static uint32_t blitter_debugFetchQueriesThisFrame = 0;
 static uint32_t blitter_debugFetchHitsThisFrame = 0;
 static uae_u16 blitter_debugCurrentBlitPattern = 0xffffu;
@@ -547,6 +550,9 @@ blitter_debugFreeStorage(void)
 	blitter_debugCurrentBlitId = 1u;
 	blitter_debugNextBlitId = 1u;
 	blitter_debugWritesThisFrame = 0;
+	blitter_debugBlitsThisFrame = 0;
+	blitter_debugWritesLastFrame = 0;
+	blitter_debugBlitsLastFrame = 0;
 	blitter_debugFetchQueriesThisFrame = 0;
 	blitter_debugFetchHitsThisFrame = 0;
 }
@@ -591,6 +597,9 @@ blitter_debugEnsureStorage(void)
 	blitter_debugCurrentBlitId = 1u;
 	blitter_debugNextBlitId = 1u;
 	blitter_debugWritesThisFrame = 0;
+	blitter_debugBlitsThisFrame = 0;
+	blitter_debugWritesLastFrame = 0;
+	blitter_debugBlitsLastFrame = 0;
 	blitter_debugFetchQueriesThisFrame = 0;
 	blitter_debugFetchHitsThisFrame = 0;
 	return 1;
@@ -641,9 +650,6 @@ blitter_debugClearWrites(void)
 	blitter_debugCurrentBlitPattern = 0xffffu;
 	blitter_debugCurrentBlitId = 1u;
 	blitter_debugNextBlitId = 1u;
-	blitter_debugWritesThisFrame = 0;
-	blitter_debugFetchQueriesThisFrame = 0;
-	blitter_debugFetchHitsThisFrame = 0;
 }
 
 static uae_u16
@@ -782,9 +788,39 @@ blitter_getDebugActiveCount(void)
 }
 
 uint32_t
+blitter_getDebugBlitsThisFrame(void)
+{
+	return blitter_debugBlitsThisFrame;
+}
+
+uint32_t
+blitter_getDebugBlitsLastFrame(void)
+{
+	return blitter_debugBlitsLastFrame;
+}
+
+uint32_t
 blitter_getDebugWritesThisFrame(void)
 {
 	return blitter_debugWritesThisFrame;
+}
+
+uint32_t
+blitter_getDebugWritesLastFrame(void)
+{
+	return blitter_debugWritesLastFrame;
+}
+
+uint32_t
+blitter_getDebugWriteBytesThisFrame(void)
+{
+	return blitter_debugWritesThisFrame * 2u;
+}
+
+uint32_t
+blitter_getDebugWriteBytesLastFrame(void)
+{
+	return blitter_debugWritesLastFrame * 2u;
 }
 
 uint32_t
@@ -814,8 +850,11 @@ blitter_getDebugFetchHitsThisFrame(void)
 void
 blitter_debugFrameTick(void)
 {
+	blitter_debugBlitsLastFrame = blitter_debugBlitsThisFrame;
+	blitter_debugWritesLastFrame = blitter_debugWritesThisFrame;
 	blitter_debugFrameCounter++;
 	blitter_debugWritesThisFrame = 0;
+	blitter_debugBlitsThisFrame = 0;
 	blitter_debugFetchQueriesThisFrame = 0;
 	blitter_debugFetchHitsThisFrame = 0;
 	if (blitter_debugVisBlink) {
@@ -2509,6 +2548,7 @@ void do_blitter(int hpos, int copper, uaecptr pc)
 	blitter_start_init();
 #if E9K_HACK_BLITTER_VIS
 	if (blitter_debugWriteEnabled) {
+		blitter_debugBlitsThisFrame++;
 		blitter_debugCurrentBlitPattern = blitter_debugNextPatternValue();
 		blitter_debugCurrentBlitId = blitter_debugNextBlitIdValue();
 	}

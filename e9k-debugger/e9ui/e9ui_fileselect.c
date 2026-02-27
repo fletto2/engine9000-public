@@ -7,6 +7,7 @@
  */
 
 #include "e9ui.h"
+#include <stdio.h>
 #include <sys/stat.h>
 #include "debugger.h"
 
@@ -114,13 +115,21 @@ e9ui_fileselect_textChanged(e9ui_context_t *ctx, void *user)
     e9ui_fileselect_notifyChange(ctx, st);
 }
 
-static int
-e9ui_fileselect_getInitialDir(const e9ui_fileselect_state_t *st, char *out, size_t cap)
+static void
+e9ui_fileselect_optionSelected(e9ui_context_t *ctx, e9ui_component_t *comp, const char *value, void *user)
 {
-    if (!st || !out || cap == 0) {
-        return 0;
+    (void)comp;
+    (void)value;
+    e9ui_fileselect_state_t *st = (e9ui_fileselect_state_t*)user;
+    if (!st) {
+        return;
     }
-    const char *path = st->textbox ? e9ui_textbox_getText(st->textbox) : NULL;
+    e9ui_fileselect_notifyChange(ctx, st);
+}
+
+static int
+e9ui_fileselect_pathIsDir(const char *path)
+{
     if (!path || !*path) {
         return 0;
     }
@@ -128,15 +137,13 @@ e9ui_fileselect_getInitialDir(const e9ui_fileselect_state_t *st, char *out, size
     if (stat(path, &sb) != 0) {
         return 0;
     }
-    if (st->mode == E9UI_FILESELECT_FOLDER) {
-        if (S_ISDIR(sb.st_mode)) {
-            strncpy(out, path, cap - 1);
-            out[cap - 1] = '\0';
-            return 1;
-        }
-        return 0;
-    }
-    if (!S_ISREG(sb.st_mode)) {
+    return S_ISDIR(sb.st_mode) ? 1 : 0;
+}
+
+static int
+e9ui_fileselect_copyParentPath(const char *path, char *out, size_t cap)
+{
+    if (!path || !*path || !out || cap == 0) {
         return 0;
     }
     const char *slash = strrchr(path, '/');
@@ -147,17 +154,105 @@ e9ui_fileselect_getInitialDir(const e9ui_fileselect_state_t *st, char *out, size
     }
     size_t len = (size_t)(sep - path);
     if (len == 0) {
+        if (cap < 2) {
+            return 0;
+        }
         out[0] = '/';
         out[1] = '\0';
         return 1;
     }
-    if (len + 2 > cap) {
-        len = cap - 2;
+    if (len >= cap) {
+        len = cap - 1;
     }
     memcpy(out, path, len);
-    out[len] = '/';
-    out[len + 1] = '\0';
+    out[len] = '\0';
     return 1;
+}
+
+static int
+e9ui_fileselect_trimToParentPath(char *path)
+{
+    if (!path || !*path) {
+        return 0;
+    }
+    size_t len = strlen(path);
+    while (len > 1 && (path[len - 1] == '/' || path[len - 1] == '\\')) {
+        path[len - 1] = '\0';
+        len--;
+    }
+
+    const char *slash = strrchr(path, '/');
+    const char *back = strrchr(path, '\\');
+    const char *sep = slash > back ? slash : back;
+    if (!sep) {
+        path[0] = '\0';
+        return 0;
+    }
+    if (sep == path) {
+        path[1] = '\0';
+        return 1;
+    }
+    size_t keepLen = (size_t)(sep - path);
+    path[keepLen] = '\0';
+    return 1;
+}
+
+static int
+e9ui_fileselect_getInitialDir(const e9ui_fileselect_state_t *st, char *out, size_t cap)
+{
+    if (!st || !out || cap == 0) {
+        return 0;
+    }
+    const char *path = st->textbox ? e9ui_textbox_getText(st->textbox) : NULL;
+    if ((!path || !*path) && st->textbox) {
+        path = e9ui_textbox_getSelectedValue(st->textbox);
+    }
+    if (!path || !*path) {
+        return 0;
+    }
+    printf("[fileselect] getInitialDir label='%s' mode=%d source='%s'\n",
+           st->label ? st->label : "",
+           (int)st->mode,
+           path);
+    char candidate[PATH_MAX];
+    candidate[0] = '\0';
+
+    struct stat sb;
+    int haveStat = (stat(path, &sb) == 0) ? 1 : 0;
+    if (st->mode == E9UI_FILESELECT_FOLDER) {
+        if (haveStat && S_ISDIR(sb.st_mode)) {
+            strncpy(out, path, cap - 1);
+            out[cap - 1] = '\0';
+            printf("[fileselect] getInitialDir start='%s'\n", out);
+            return 1;
+        }
+        strncpy(candidate, path, sizeof(candidate) - 1);
+        candidate[sizeof(candidate) - 1] = '\0';
+    } else {
+        if (haveStat && S_ISDIR(sb.st_mode)) {
+            strncpy(out, path, cap - 1);
+            out[cap - 1] = '\0';
+            printf("[fileselect] getInitialDir start='%s'\n", out);
+            return 1;
+        }
+        if (!e9ui_fileselect_copyParentPath(path, candidate, sizeof(candidate))) {
+            return 0;
+        }
+    }
+
+    while (candidate[0]) {
+        if (e9ui_fileselect_pathIsDir(candidate)) {
+            strncpy(out, candidate, cap - 1);
+            out[cap - 1] = '\0';
+            printf("[fileselect] getInitialDir start='%s'\n", out);
+            return 1;
+        }
+        if (!e9ui_fileselect_trimToParentPath(candidate)) {
+            break;
+        }
+    }
+    printf("[fileselect] getInitialDir no start dir for source='%s'\n", path);
+    return 0;
 }
 
 static void
@@ -177,6 +272,10 @@ e9ui_fileselect_openDialog(e9ui_context_t *ctx, void *user)
     } else if (debugger_platform_getCurrentDir(initial, sizeof(initial))) {
         start = initial;
     }
+    printf("[fileselect] openDialog label='%s' mode=%d start='%s'\n",
+           st->label ? st->label : "",
+           (int)st->mode,
+           start ? start : "");
     if (st->mode == E9UI_FILESELECT_FOLDER) {
         result = debugger_platform_selectFolderDialog(title, start);
     } else {
@@ -187,6 +286,7 @@ e9ui_fileselect_openDialog(e9ui_context_t *ctx, void *user)
                                                   NULL,
                                                   0);
     }
+    printf("[fileselect] openDialog result='%s'\n", result ? result : "");
     if (result && *result) {
         e9ui_textbox_setText(st->textbox, result);
         e9ui_fileselect_notifyChange(ctx, st);
@@ -225,12 +325,16 @@ e9ui_fileselect_newFileDialog(e9ui_context_t *ctx, void *user)
             }
         }
     }
+    printf("[fileselect] newFileDialog label='%s' start='%s'\n",
+           st->label ? st->label : "",
+           start ? start : "");
 
     result = debugger_platform_saveFileDialog(title,
                                               start,
                                               st->extensionCount,
                                               (const char * const *)st->extensions,
                                               NULL);
+    printf("[fileselect] newFileDialog result='%s'\n", result ? result : "");
     if (result && *result) {
         e9ui_textbox_setText(st->textbox, result);
         e9ui_fileselect_notifyChange(ctx, st);
@@ -443,6 +547,7 @@ e9ui_fileSelect_make(const char *label, int labelWidth_px, int totalWidth_px,
         e9ui_textbox_setCompletionMode(st->textbox,
                                        (mode == E9UI_FILESELECT_FOLDER) ? e9ui_textbox_completion_folder
                                                                         : e9ui_textbox_completion_filename);
+        e9ui_textbox_setOnOptionSelected(st->textbox, e9ui_fileselect_optionSelected, st);
     }
     c->name = "e9ui_fileSelect";
     c->state = st;
@@ -525,6 +630,32 @@ e9ui_fileSelect_setOnChange(e9ui_component_t *comp, e9ui_fileselect_change_cb_t 
     e9ui_fileselect_state_t *st = (e9ui_fileselect_state_t*)comp->state;
     st->onChange = cb;
     st->onChangeUser = user;
+}
+
+void
+e9ui_fileSelect_setOptions(e9ui_component_t *comp, const e9ui_textbox_option_t *options, int optionCount)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    e9ui_fileselect_state_t *st = (e9ui_fileselect_state_t*)comp->state;
+    if (!st || !st->textbox) {
+        return;
+    }
+    e9ui_textbox_setOptions(st->textbox, options, optionCount);
+}
+
+const char *
+e9ui_fileSelect_getSelectedValue(const e9ui_component_t *comp)
+{
+    if (!comp || !comp->state) {
+        return NULL;
+    }
+    const e9ui_fileselect_state_t *st = (const e9ui_fileselect_state_t*)comp->state;
+    if (!st || !st->textbox) {
+        return NULL;
+    }
+    return e9ui_textbox_getSelectedValue(st->textbox);
 }
 
 void

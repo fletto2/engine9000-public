@@ -95,6 +95,8 @@ typedef void (*e9k_debug_ami_set_blitter_debug_fn_t)(int enabled);
 typedef int (*e9k_debug_ami_get_blitter_debug_fn_t)(void);
 typedef size_t (*e9k_debug_ami_blitter_vis_read_points_fn_t)(e9k_debug_ami_blitter_vis_point_t *out, size_t cap, uint32_t *out_width, uint32_t *out_height);
 typedef size_t (*e9k_debug_ami_blitter_vis_read_stats_fn_t)(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap);
+typedef size_t (*e9k_debug_ami_dma_debug_read_frame_fn_t)(uint32_t frameSelect, e9k_debug_ami_dma_debug_record_t *out, size_t cap, e9k_debug_ami_dma_debug_frame_info_t *outInfo, size_t infoCap);
+typedef size_t (*e9k_debug_ami_dma_debug_get_frame_ptr_fn_t)(uint32_t frameSelect, const e9k_debug_ami_dma_debug_raw_record_t **outRecords, e9k_debug_ami_dma_debug_frame_info_t *outInfo, size_t infoCap);
 typedef int (*e9k_debug_ami_get_video_line_count_fn_t)(void);
 typedef int (*e9k_debug_ami_video_line_to_core_line_fn_t)(int videoLine);
 typedef int (*e9k_debug_ami_core_line_to_video_line_fn_t)(int coreLine);
@@ -219,6 +221,8 @@ typedef struct  {
     e9k_debug_ami_get_blitter_debug_fn_t debugAmiGetBlitterDebug;
     e9k_debug_ami_blitter_vis_read_points_fn_t debugAmiBlitterVisReadPoints;
     e9k_debug_ami_blitter_vis_read_stats_fn_t debugAmiBlitterVisReadStats;
+    e9k_debug_ami_dma_debug_read_frame_fn_t debugAmiDmaDebugReadFrame;
+    e9k_debug_ami_dma_debug_get_frame_ptr_fn_t debugAmiDmaDebugGetFramePtr;
     e9k_debug_ami_get_video_line_count_fn_t debugAmiGetVideoLineCount;
     e9k_debug_ami_video_line_to_core_line_fn_t debugAmiVideoLineToCoreLine;
     e9k_debug_ami_core_line_to_video_line_fn_t debugAmiCoreLineToVideoLine;
@@ -2147,6 +2151,57 @@ libretro_host_debugAmiReadBlitterVisStats(e9k_debug_ami_blitter_vis_stats_t *out
         return false;
     }
     return libretro_host.debugAmiBlitterVisReadStats(out, sizeof(*out)) == sizeof(*out);
+}
+
+size_t
+libretro_host_debugAmiReadDmaDebugFrame(uint32_t frameSelect,
+                                        e9k_debug_ami_dma_debug_record_t *out,
+                                        size_t cap,
+                                        e9k_debug_ami_dma_debug_frame_info_t *outInfo)
+{
+    if (outInfo) {
+        memset(outInfo, 0, sizeof(*outInfo));
+        outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
+        outInfo->frameSelect = frameSelect;
+    }
+    if (!libretro_host.debugAmiDmaDebugReadFrame) {
+        libretro_host.debugAmiDmaDebugReadFrame = (e9k_debug_ami_dma_debug_read_frame_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_dma_debug_read_frame");
+    }
+    if (!libretro_host.debugAmiDmaDebugReadFrame) {
+        return 0u;
+    }
+    return libretro_host.debugAmiDmaDebugReadFrame(frameSelect,
+                                                   out,
+                                                   cap,
+                                                   outInfo,
+                                                   outInfo ? sizeof(*outInfo) : 0u);
+}
+
+size_t
+libretro_host_debugAmiGetDmaDebugFramePtr(uint32_t frameSelect,
+                                          const e9k_debug_ami_dma_debug_raw_record_t **outRecords,
+                                          e9k_debug_ami_dma_debug_frame_info_t *outInfo)
+{
+    if (outRecords) {
+        *outRecords = NULL;
+    }
+    if (outInfo) {
+        memset(outInfo, 0, sizeof(*outInfo));
+        outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
+        outInfo->frameSelect = frameSelect;
+    }
+    if (!libretro_host.debugAmiDmaDebugGetFramePtr) {
+        libretro_host.debugAmiDmaDebugGetFramePtr = (e9k_debug_ami_dma_debug_get_frame_ptr_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_dma_debug_get_frame_ptr");
+    }
+    if (!libretro_host.debugAmiDmaDebugGetFramePtr) {
+        return 0u;
+    }
+    return libretro_host.debugAmiDmaDebugGetFramePtr(frameSelect,
+                                                     outRecords,
+                                                     outInfo,
+                                                     outInfo ? sizeof(*outInfo) : 0u);
 }
 
 bool

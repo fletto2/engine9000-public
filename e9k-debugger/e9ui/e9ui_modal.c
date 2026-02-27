@@ -18,19 +18,51 @@ typedef struct modal_state {
     void *onCloseUser;
 } e9ui_modal_state_t;
 
+static SDL_Texture *e9ui_modal_closeIcon = NULL;
+static int e9ui_modal_closeIconW = 0;
+static int e9ui_modal_closeIconH = 0;
+
+static int
+e9ui_modal_isForeground(const e9ui_component_t *self)
+{
+    if (!self || !e9ui) {
+        return 0;
+    }
+    e9ui_component_t *hostRoot = e9ui_getOverlayHost();
+    if (!hostRoot) {
+        hostRoot = e9ui->root;
+    }
+    if (!hostRoot || !hostRoot->children) {
+        return 0;
+    }
+    list_t *last = list_last(hostRoot->children);
+    if (!last || !last->data) {
+        return 0;
+    }
+    e9ui_component_child_t *container = (e9ui_component_child_t *)last->data;
+    return (container && container->component == self) ? 1 : 0;
+}
+
+static Uint8
+e9ui_modal_lighten(Uint8 value, Uint8 amount)
+{
+    int out = (int)value + (int)amount;
+    if (out > 255) {
+        out = 255;
+    }
+    return (Uint8)out;
+}
+
 static SDL_Texture *
 e9ui_modal_getCloseIcon(SDL_Renderer *renderer, int *out_w, int *out_h)
 {
-    static SDL_Texture *icon = NULL;
-    static int icon_w = 0;
-    static int icon_h = 0;
     if (!renderer) {
         return NULL;
     }
-    if (icon) {
-        if (out_w) *out_w = icon_w;
-        if (out_h) *out_h = icon_h;
-        return icon;
+    if (e9ui_modal_closeIcon) {
+        if (out_w) *out_w = e9ui_modal_closeIconW;
+        if (out_h) *out_h = e9ui_modal_closeIconH;
+        return e9ui_modal_closeIcon;
     }
     char path[PATH_MAX];
     if (!file_getAssetPath("assets/icons/close.png", path, sizeof(path))) {
@@ -41,13 +73,24 @@ e9ui_modal_getCloseIcon(SDL_Renderer *renderer, int *out_w, int *out_h)
         debug_error("modal: failed to load close icon %s: %s", path, IMG_GetError());
         return NULL;
     }
-    icon = SDL_CreateTextureFromSurface(renderer, s);
-    icon_w = s->w;
-    icon_h = s->h;
+    e9ui_modal_closeIcon = SDL_CreateTextureFromSurface(renderer, s);
+    e9ui_modal_closeIconW = s->w;
+    e9ui_modal_closeIconH = s->h;
     SDL_FreeSurface(s);
-    if (out_w) *out_w = icon_w;
-    if (out_h) *out_h = icon_h;
-    return icon;
+    if (out_w) *out_w = e9ui_modal_closeIconW;
+    if (out_h) *out_h = e9ui_modal_closeIconH;
+    return e9ui_modal_closeIcon;
+}
+
+void
+e9ui_modal_resetResources(void)
+{
+    if (e9ui_modal_closeIcon) {
+        SDL_DestroyTexture(e9ui_modal_closeIcon);
+        e9ui_modal_closeIcon = NULL;
+    }
+    e9ui_modal_closeIconW = 0;
+    e9ui_modal_closeIconH = 0;
 }
 
 static e9ui_component_t *
@@ -107,10 +150,20 @@ e9ui_modal_preferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int avai
 }
 
 static void
-e9ui_modal_drawTitlebar(e9ui_modal_state_t *st, e9ui_context_t *ctx, SDL_Rect rect)
+e9ui_modal_drawTitlebar(e9ui_component_t *self, e9ui_modal_state_t *st, e9ui_context_t *ctx, SDL_Rect rect)
 {
     const e9k_theme_titlebar_t *theme = &e9ui->theme.titlebar;
-    SDL_SetRenderDrawColor(ctx->renderer, theme->background.r, theme->background.g, theme->background.b, theme->background.a);
+    SDL_Color titleBackground = theme->background;
+    if (e9ui_modal_isForeground(self)) {
+        titleBackground.r = e9ui_modal_lighten(titleBackground.r, 10);
+        titleBackground.g = e9ui_modal_lighten(titleBackground.g, 10);
+        titleBackground.b = e9ui_modal_lighten(titleBackground.b, 10);
+    }
+    SDL_SetRenderDrawColor(ctx->renderer,
+                           titleBackground.r,
+                           titleBackground.g,
+                           titleBackground.b,
+                           titleBackground.a);
     SDL_RenderFillRect(ctx->renderer, &rect);
 
     int padX = e9ui_scale_px(ctx, 8);
@@ -161,16 +214,19 @@ e9ui_modal_render(e9ui_component_t *self, e9ui_context_t *ctx)
     if (!st) {
         return;
     }
-    SDL_SetRenderDrawColor(ctx->renderer, 24, 24, 24, 255);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
     SDL_Rect bg = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
     SDL_RenderFillRect(ctx->renderer, &bg);
 
     SDL_Rect titleRect = { self->bounds.x, self->bounds.y, self->bounds.w, e9ui_modal_titlebarHeight(ctx) };
-    e9ui_modal_drawTitlebar(st, ctx, titleRect);
+    e9ui_modal_drawTitlebar(self, st, ctx, titleRect);
 
     if (st->body && st->body->render) {
         st->body->render(st->body, ctx);
     }
+
+    SDL_SetRenderDrawColor(ctx->renderer, 70, 70, 70, 255);
+    SDL_RenderDrawRect(ctx->renderer, &bg);
 }
 
 static int

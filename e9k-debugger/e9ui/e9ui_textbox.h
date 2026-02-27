@@ -14,6 +14,7 @@
 typedef void (*e9ui_textbox_submit_cb_t)(e9ui_context_t *ctx, void *user);
 typedef void (*e9ui_textbox_change_cb_t)(e9ui_context_t *ctx, void *user);
 typedef int (*e9ui_textbox_key_cb_t)(e9ui_context_t *ctx, SDL_Keycode key, SDL_Keymod mods, void *user);
+typedef int (*e9ui_textbox_shortcut_match_cb_t)(const SDL_KeyboardEvent *kev, const char *shortcutId, void *user);
 
 typedef enum e9ui_textbox_completion_mode {
     e9ui_textbox_completion_none = 0,
@@ -47,6 +48,9 @@ e9ui_textbox_setCursor(e9ui_component_t *comp, int cursor);
 
 void
 e9ui_textbox_setKeyHandler(e9ui_component_t *comp, e9ui_textbox_key_cb_t cb, void *user);
+
+void
+e9ui_textbox_setShortcutMatcher(e9ui_textbox_shortcut_match_cb_t cb, void *user);
 
 void *
 e9ui_textbox_getUser(const e9ui_component_t *comp);
@@ -104,6 +108,9 @@ e9ui_textbox_setCompletionMode(e9ui_component_t *comp, e9ui_textbox_completion_m
 
 e9ui_textbox_completion_mode_t
 e9ui_textbox_getCompletionMode(const e9ui_component_t *comp);
+
+void
+e9ui_textbox_setEnterMovesToNextTextbox(e9ui_component_t *comp, int enabled);
 
 int
 e9ui_textbox_selectOverlayHandleEvent(e9ui_context_t *ctx, const e9ui_event_t *ev);

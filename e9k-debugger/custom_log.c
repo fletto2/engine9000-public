@@ -88,7 +88,6 @@ typedef struct custom_log_scroll_model {
 
 struct custom_log_state {
     int open;
-    int closeRequested;
     int warnedMissingOption;
     e9ui_window_t *windowHost;
     SDL_Window *window;
@@ -995,7 +994,6 @@ custom_log_init(void)
     }
     memset(&ui->ctx, 0, sizeof(ui->ctx));
     ui->ctx.font = e9ui->ctx.font;
-    ui->closeRequested = 0;
     ui->warnedMissingOption = 0;
     ui->scrollRow = 0;
     ui->filterRoot = NULL;
@@ -1095,7 +1093,6 @@ custom_log_shutdown(void)
     }
 
     ui->open = 0;
-    ui->closeRequested = 0;
     ui->warnedMissingOption = 0;
     ui->scrollRow = 0;
     ui->entryCount = 0;
@@ -1632,7 +1629,7 @@ custom_log_overlayWindowCloseRequested(e9ui_window_t *window, void *user)
     if (!ui) {
         return;
     }
-    ui->closeRequested = 1;
+    custom_log_shutdown();
 }
 
 void
@@ -1640,10 +1637,6 @@ custom_log_render(void)
 {
     custom_log_state_t *ui = &custom_log_state;
     if (!ui->open) {
-        return;
-    }
-    if (ui->closeRequested) {
-        custom_log_shutdown();
         return;
     }
     if (e9ui_windowCaptureRectChanged(ui->windowHost,

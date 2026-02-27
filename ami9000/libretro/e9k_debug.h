@@ -97,6 +97,19 @@ e9k_debug_ami_blitter_vis_read_points(e9k_debug_ami_blitter_vis_point_t *out, si
 size_t
 e9k_debug_ami_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap);
 
+size_t
+e9k_debug_ami_dma_debug_read_frame(uint32_t frameSelect,
+                                   e9k_debug_ami_dma_debug_record_t *out,
+                                   size_t cap,
+                                   e9k_debug_ami_dma_debug_frame_info_t *outInfo,
+                                   size_t infoCap);
+
+size_t
+e9k_debug_ami_dma_debug_get_frame_ptr(uint32_t frameSelect,
+                                      const e9k_debug_ami_dma_debug_raw_record_t **outRecords,
+                                      e9k_debug_ami_dma_debug_frame_info_t *outInfo,
+                                      size_t infoCap);
+
 int
 e9k_debug_ami_get_video_line_count(void);
 
