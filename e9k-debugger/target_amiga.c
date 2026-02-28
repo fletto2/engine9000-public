@@ -90,6 +90,43 @@ target_amiga_normalizeMouseCaptureOverrideValue(const char *value)
 static char target_amiga_activeRomMouseCaptureOverride[16];
 static int target_amiga_hasActiveRomMouseCaptureOverride = 0;
 static char target_amiga_activeRomFloppyRecents[2][TARGET_AMIGA_FLOPPY_RECENTS_MAX][PATH_MAX];
+static int target_amiga_settingsMediaInitiallyEmpty = 0;
+static int target_amiga_settingsMediaNeedsRestart = 0;
+
+static int
+target_amiga_pathHasValue(const char *path)
+{
+    return (path && *path) ? 1 : 0;
+}
+
+static int
+target_amiga_anyMediaConfigured(const char *df0, const char *df1, const char *hd0)
+{
+    return target_amiga_pathHasValue(df0) ||
+        target_amiga_pathHasValue(df1) ||
+        target_amiga_pathHasValue(hd0);
+}
+
+static void
+target_amiga_captureSettingsMediaBaseline(void)
+{
+    const char *df0 = amiga_uaeGetFloppyPath(0);
+    const char *df1 = amiga_uaeGetFloppyPath(1);
+    const char *hd0 = amiga_uaeGetHardDriveFolderPath();
+    target_amiga_settingsMediaInitiallyEmpty = target_amiga_anyMediaConfigured(df0, df1, hd0) ? 0 : 1;
+    target_amiga_settingsMediaNeedsRestart = 0;
+}
+
+static void
+target_amiga_updateSettingsMediaRestartRequirement(void)
+{
+    const char *df0 = amiga_uaeGetFloppyPath(0);
+    const char *df1 = amiga_uaeGetFloppyPath(1);
+    const char *hd0 = amiga_uaeGetHardDriveFolderPath();
+    target_amiga_settingsMediaNeedsRestart =
+        (target_amiga_settingsMediaInitiallyEmpty && target_amiga_anyMediaConfigured(df0, df1, hd0)) ? 1 : 0;
+    settings_updateSaveLabel();
+}
 
 static const char *
 target_amiga_getActiveMouseCaptureOverride(void)
@@ -554,10 +591,6 @@ target_amiga_needsRestart(void)
     int  configChanged = target_amiga_restartNeededForAmiga(&debugger.config.amiga, &debugger.settingsEdit.amiga);
     if (amiga_uaeHasRestartRequiredDirty()) {
       configChanged = 1;
-    } else if (amiga_uaeHasFloppyDirty()) {
-      if (target == target_amiga() && libretro_host_isRunning()) {
-        configChanged = 1;
-      }
     }
     if (settings_coreOptionsNeedsRestart()) {
       if (target == target_amiga() && libretro_host_isRunning()) {
@@ -567,7 +600,7 @@ target_amiga_needsRestart(void)
     int okBefore = target_amiga_configIsOkForAmiga(&debugger.config.amiga);
     int okAfter = target_amiga_configIsOkForAmiga(&debugger.settingsEdit.amiga);
 
-    return configChanged ||  (!okBefore && okAfter);
+    return configChanged || target_amiga_settingsMediaNeedsRestart || (!okBefore && okAfter);
 }
 
 static int
@@ -667,6 +700,7 @@ static void
 target_amiga_settingsRomPathChanged(settings_romselect_state_t* st)  
 {
   amiga_uaeLoadUaeOptions(st ? st->romPath : NULL);
+  target_amiga_captureSettingsMediaBaseline();
   target_amiga_romselect_extra_t *extra = st ? (target_amiga_romselect_extra_t *)st->targetUser : NULL;
   target_amiga_refreshFloppyRecentsDropdowns(extra);
   if (extra && extra->df0Select) {
@@ -707,6 +741,7 @@ target_amiga_settingsLoadOptions(e9k_system_config_t * st)
 {
   (void)st;
   amiga_uaeLoadUaeOptions(debugger.settingsEdit.amiga.libretro.romPath);
+  target_amiga_captureSettingsMediaBaseline();
 }
 
 
@@ -1049,7 +1084,7 @@ target_amiga_settingsFloppyChanged(e9ui_context_t *ctx, e9ui_component_t *comp, 
             amiga_uaeClearFloppyDirty(drive);
         }
     }
-    settings_updateSaveLabel();
+    target_amiga_updateSettingsMediaRestartRequirement();
 }
 
 static void
@@ -1059,7 +1094,7 @@ target_amiga_settingsHardDriveFolderChanged(e9ui_context_t *ctx, e9ui_component_
     (void)comp;
     (void)user;
     amiga_uaeSetHardDriveFolderPath(text ? text : "");
-    settings_updateSaveLabel();
+    target_amiga_updateSettingsMediaRestartRequirement();
 }
 
 static int

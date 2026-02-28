@@ -41,6 +41,45 @@ debugger_platform_configExists(const char *path)
     return 1;
 }
 
+static int
+debugger_platform_pathIsDirectory(const char *path)
+{
+    if (!path || !*path) {
+        return 0;
+    }
+    DWORD attr = GetFileAttributesA(path);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        return 0;
+    }
+    return (attr & FILE_ATTRIBUTE_DIRECTORY) != 0 ? 1 : 0;
+}
+
+static const char *
+debugger_platform_dialogDefaultPath(const char *path, char *out, size_t cap)
+{
+    size_t len = 0;
+    if (!path || !*path) {
+        return path;
+    }
+    if (!out || cap < 4) {
+        return path;
+    }
+    if (!debugger_platform_pathIsDirectory(path)) {
+        return path;
+    }
+    len = strlen(path);
+    if (path[len - 1] == '/' || path[len - 1] == '\\') {
+        return path;
+    }
+    if (len + 2 > cap) {
+        return path;
+    }
+    memcpy(out, path, len);
+    out[len++] = '\\';
+    out[len] = '\0';
+    return out;
+}
+
 static uint64_t
 debugger_platform_hashPath(const char *path)
 {
@@ -392,8 +431,11 @@ debugger_platform_openFileDialog(const char *title,
                                  const char *singleFilterDescription,
                                  int allowMultipleSelects)
 {
+    char dialogPath[PATH_MAX];
     return tinyfd_openFileDialog(title,
-                                 defaultPathAndFile,
+                                 debugger_platform_dialogDefaultPath(defaultPathAndFile,
+                                                                     dialogPath,
+                                                                     sizeof(dialogPath)),
                                  numOfFilterPatterns,
                                  filterPatterns,
                                  singleFilterDescription,
@@ -407,8 +449,11 @@ debugger_platform_saveFileDialog(const char *title,
                                  const char * const *filterPatterns,
                                  const char *singleFilterDescription)
 {
+    char dialogPath[PATH_MAX];
     return tinyfd_saveFileDialog(title,
-                                 defaultPathAndFile,
+                                 debugger_platform_dialogDefaultPath(defaultPathAndFile,
+                                                                     dialogPath,
+                                                                     sizeof(dialogPath)),
                                  numOfFilterPatterns,
                                  filterPatterns,
                                  singleFilterDescription);
