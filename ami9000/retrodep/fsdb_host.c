@@ -83,18 +83,19 @@ int my_existstype(const char *name, int mode)
 
 	const char *utf8 = local_to_utf8_string_alloc(name);
 
-	if (path_is_valid(utf8))
+	if (utf8 && path_is_valid(utf8))
 	{
+		int isDir = path_is_directory(utf8) ? 1 : 0;
 		switch (mode)
 		{
 			case 0: /* Dir */
-				ret = path_is_directory(utf8) ? 1 : 0;
+				ret = isDir ? 1 : 0;
 				break;
 			case 1: /* File */
-				ret = path_is_directory(utf8) ? 0 : 1;
+				ret = isDir ? 0 : 1;
 				break;
 			case 2: /* Dir/File */
-				ret = path_is_directory(utf8) ? 2 : 1;
+				ret = isDir ? 2 : 1;
 				break;
 		}
 	}
@@ -117,8 +118,17 @@ int my_getvolumeinfo(const char *root)
 	struct stat sonuc;
 	int ret = 0;
 
+#ifdef __WIN32__
+	if (!my_existsdir(root)) {
+		return -1;
+	}
+	ret |= MYVOLUMEINFO_STREAMS;
+	return ret;
+#endif
+
 #ifdef USE_LIBRETRO_VFS
-	if (stat(utf8_to_local_string_alloc(root), &sonuc) == -1)
+	const char *localRoot = utf8_to_local_string_alloc(root);
+	if (stat(localRoot, &sonuc) == -1)
 #else
 	if (stat(root, &sonuc) == -1)
 #endif

@@ -177,12 +177,14 @@ amiga_uaeParseFilesystem2Dh0Folder(const char *value, char *out, size_t cap)
         path++;
         const char *end = strrchr(path, quote);
         if (end && end > path) {
-            size_t len = (size_t)(end - path);
-            if (len >= cap) {
-                len = cap - 1;
+            size_t outPos = 0;
+            for (const char *p = path; p < end && outPos + 1 < cap; ++p) {
+                if (*p == '\\' && (p + 1) < end) {
+                    p++;
+                }
+                out[outPos++] = *p;
             }
-            memcpy(out, path, len);
-            out[len] = '\0';
+            out[outPos] = '\0';
             return 1;
         }
     }
@@ -196,6 +198,24 @@ amiga_uaeFilesystem2IsDh0Line(const char *value)
 {
     char tmp[8];
     return amiga_uaeParseFilesystem2Dh0Folder(value, tmp, sizeof(tmp)) ? 1 : 0;
+}
+
+static void
+amiga_uaeWriteQuotedFilesystemPath(FILE *out, const char *path)
+{
+    if (!out) {
+        return;
+    }
+    fputc('"', out);
+    if (path) {
+        for (const char *p = path; *p; ++p) {
+            if (*p == '\\') {
+                fputc('\\', out);
+            }
+            fputc(*p, out);
+        }
+    }
+    fputc('"', out);
 }
 
 static int
@@ -587,7 +607,9 @@ amiga_uaeWriteUaeOptionsToFile(const char *uaePath)
                 folder[len + 1] = '\0';
             }
         }
-        fprintf(out, "filesystem2=rw,DH0:Work:%s,0\n", folder);
+        fputs("filesystem2=rw,DH0:Work:", out);
+        amiga_uaeWriteQuotedFilesystemPath(out, folder);
+        fputs(",0\n", out);
     }
 
     if (amiga_uae_entryCount > 1) {

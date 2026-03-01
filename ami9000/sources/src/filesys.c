@@ -3388,14 +3388,14 @@ static uae_u32 REGPARAM2 startup_handler(TrapContext *ctx)
 			trap_put_long(ctx, pkt + dp_Res2, ERROR_DEVICE_NOT_MOUNTED);
 			return 0;
 		}
-	} else {
-		ed = my_existsdir (uinfo->rootdir);
-		ef = my_existsfile (uinfo->rootdir);
-		if (!uinfo->wasisempty && !ef && !ed) {
-			write_log (_T("Failed attempt to mount device '%s' (%s)\n"), uinfo->devname, uinfo->rootdir);
-			trap_put_long(ctx, pkt + dp_Res1, DOS_FALSE);
-			trap_put_long(ctx, pkt + dp_Res2, ERROR_DEVICE_NOT_MOUNTED);
-			return 0;
+		} else {
+			ed = my_existsdir (uinfo->rootdir);
+			ef = my_existsfile (uinfo->rootdir);
+			if (!uinfo->wasisempty && !ef && !ed) {
+				write_log (_T("Failed attempt to mount device '%s' (%s)\n"), uinfo->devname, uinfo->rootdir);
+				trap_put_long(ctx, pkt + dp_Res1, DOS_FALSE);
+				trap_put_long(ctx, pkt + dp_Res2, ERROR_DEVICE_NOT_MOUNTED);
+				return 0;
 		}
 	}
 
