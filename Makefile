@@ -19,6 +19,7 @@ all:
 	$(MAKE) mega9000
 	$(MAKE) $(JOBS) -C e9k-debugger
 	$(MAKE) $(JOBS) -C tools/amiga/adf9000
+	$(MAKE) $(JOBS) -C tools/amiga/hdf9000
 	$(MAKE) $(JOBS) -C tools/amiga/v-hunk
 
 w64:
@@ -27,6 +28,7 @@ w64:
 	$(MAKE) mega9000-w64
 	$(MAKE) $(JOBS) -C e9k-debugger w64
 	$(MAKE) $(JOBS) -C tools/amiga/adf9000 w64 CC=$(MINGW_CC)
+	$(MAKE) $(JOBS) -C tools/amiga/hdf9000 w64 CC=$(MINGW_CC)
 	$(MAKE) $(JOBS) -C tools/amiga/v-hunk w64 CC=$(MINGW_CC)
 
 release-w64: w64
@@ -40,6 +42,7 @@ clean:
 	$(MAKE) mega9000-clean
 	$(MAKE) $(JOBS) -C e9k-debugger clean
 	$(MAKE) $(JOBS) -C tools/amiga/adf9000 clean
+	$(MAKE) $(JOBS) -C tools/amiga/hdf9000 clean
 	$(MAKE) $(JOBS) -C tools/amiga/v-hunk clean
 
 test:

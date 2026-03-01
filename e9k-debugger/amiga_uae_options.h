@@ -47,6 +47,12 @@ amiga_uaeGetHardDriveFolderPath(void);
 void
 amiga_uaeSetHardDriveFolderPath(const char *path);
 
+const char *
+amiga_uaeGetHardDriveHdfPath(void);
+
+void
+amiga_uaeSetHardDriveHdfPath(const char *path);
+
 bool
 amiga_uaeWriteUaeOptionsToFile(const char *uaePath);
 
