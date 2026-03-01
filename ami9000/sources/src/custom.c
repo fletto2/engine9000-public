@@ -2954,17 +2954,20 @@ static uae_u16 fetch16(uaecptr p, int nr, int pixelStart)
 	if (aga_mode) {
 		// AGA always does 32-bit fetches, this is needed
 		// to emulate 64 pixel wide sprite side-effects.
-#if E9K_HACK_BLITTER_VIS
+	#if E9K_HACK_BLITTER_VIS
 		int prevSite = custom_blitterVisMarkSite;
 		custom_blitterVisMarkSite = CUSTOM_BLITTER_VIS_MARK_SITE_FETCH;
-		uae_u32 vv = custom_getRenderLong(p & ~3, -1, 0);
-		if (pixelStart >= 0) {
-			(void)custom_getRenderWord(p, pixelStart, 16);
+		uae_u32 vv;
+		if ((blitter_getDebugVisMode() & CUSTOM_BLITTER_VIS_MODE_COLLECT) != 0) {
+			vv = chipmem_lget_indirect(p & ~3);
+		} else {
+			vv = custom_getRenderLong(p & ~3, -1, 0);
 		}
+		(void)custom_getRenderWord(p, pixelStart, 16);
 		custom_blitterVisMarkSite = prevSite;
-#else
+	#else
 		uae_u32 vv = chipmem_lget_indirect(p & ~3);
-#endif
+	#endif
 		if (p & 2) {
 			v = (uae_u16)vv;
 			if (nr >= 0) {
@@ -4885,7 +4888,7 @@ custom_getRenderWord(uaecptr addr, int pixelStart, int pixelCount)
 	int collectMode = (blitter_getDebugVisMode() & CUSTOM_BLITTER_VIS_MODE_COLLECT) != 0;
 	int styleMode = (blitter_getDebugVisMode() & CUSTOM_BLITTER_VIS_MODE_STYLE_MASK) != 0;
 	if (blitter_getDebugVideoFetchInfo(addr, &value, &blitId, &useOverride)) {
-		if ((collectMode || styleMode) && blitId && pixelStart >= 0 && pixelCount > 0) {
+		if ((collectMode || styleMode) && blitId && pixelCount > 0) {
 			custom_blitterVisLogFetchMinDrop(addr, pixelStart, pixelCount, blitId);
 			drawing_blitterVisMarkSourceRange(next_lineno, pixelStart, pixelCount, blitId);
 		}

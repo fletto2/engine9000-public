@@ -44,6 +44,8 @@ static const TCHAR *csmode[] = { _T("ocs"), _T("ecs_agnus"), _T("ecs_denise"), _
 #define utf8_to_local_string_alloc strdup
 #endif
 
+#define E9K_DEBUG_EXPORT RETRO_API
+
 bool libretro_runloop_active = false;
 bool libretro_frame_end = false;
 unsigned short int retro_bmp[RETRO_BMP_SIZE] = {0};
@@ -4910,7 +4912,7 @@ e9k_debug_ami_sync_floppy_dc_slot(int drive, const char *path)
    }
 }
 
-bool
+E9K_DEBUG_EXPORT bool
 e9k_debug_ami_set_floppy_path(int drive, const char *path)
 {
    if (!libretro_runloop_active)

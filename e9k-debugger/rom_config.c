@@ -907,6 +907,40 @@ rom_config_parseFile(const char *path, rom_config_data_t *outData)
 }
 
 static void
+rom_config_writeJsonString(FILE *f, const char *text)
+{
+    if (!f) {
+        return;
+    }
+
+    fputc('"', f);
+    if (text) {
+        for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
+            unsigned char c = *p;
+            if (c == '"' || c == '\\') {
+                fputc('\\', f);
+                fputc((int)c, f);
+            } else if (c == '\b') {
+                fputs("\\b", f);
+            } else if (c == '\f') {
+                fputs("\\f", f);
+            } else if (c == '\n') {
+                fputs("\\n", f);
+            } else if (c == '\r') {
+                fputs("\\r", f);
+            } else if (c == '\t') {
+                fputs("\\t", f);
+            } else if (c < 0x20) {
+                fprintf(f, "\\u%04X", (unsigned)c);
+            } else {
+                fputc((int)c, f);
+            }
+        }
+    }
+    fputc('"', f);
+}
+
+static void
 rom_config_writeJsonFile(const char *path, const char *romPath, const rom_config_data_t *data)
 {
     if (!path || !*path || !romPath || !*romPath || !data) {
@@ -927,14 +961,23 @@ rom_config_writeJsonFile(const char *path, const char *romPath, const rom_config
 
     fprintf(f, "{\n");
     fprintf(f, "  \"rom_checksum\": %llu,\n", (unsigned long long)data->romChecksum);
-    fprintf(f, "  \"rom_filename\": \"%s\",\n", jsonName);
-    fprintf(f, "  \"breakpoint_addr_mode\": \"%s\",\n",
-            data->breakpointsTextRelative ? "text_relative" : "absolute");
+    fprintf(f, "  \"rom_filename\": ");
+    rom_config_writeJsonString(f, jsonName);
+    fprintf(f, ",\n");
+    fprintf(f, "  \"breakpoint_addr_mode\": ");
+    rom_config_writeJsonString(f, data->breakpointsTextRelative ? "text_relative" : "absolute");
+    fprintf(f, ",\n");
 
     fprintf(f, "  \"config\": {\n");
-    fprintf(f, "    \"elf\": \"%s\",\n", data->hasElf ? data->elfPath : "");
-    fprintf(f, "    \"source\": \"%s\",\n", data->hasSource ? data->sourceDir : "");
-    fprintf(f, "    \"toolchain_prefix\": \"%s\"\n", data->hasToolchain ? data->toolchainPrefix : "");
+    fprintf(f, "    \"elf\": ");
+    rom_config_writeJsonString(f, data->hasElf ? data->elfPath : "");
+    fprintf(f, ",\n");
+    fprintf(f, "    \"source\": ");
+    rom_config_writeJsonString(f, data->hasSource ? data->sourceDir : "");
+    fprintf(f, ",\n");
+    fprintf(f, "    \"toolchain_prefix\": ");
+    rom_config_writeJsonString(f, data->hasToolchain ? data->toolchainPrefix : "");
+    fprintf(f, "\n");
     fprintf(f, "  },\n");
 
     fprintf(f, "  \"input_bindings\": {\n");
@@ -951,7 +994,10 @@ rom_config_writeJsonFile(const char *path, const char *romPath, const rom_config
             if (wroteAny) {
                 fprintf(f, ",\n");
             }
-            fprintf(f, "    \"%s\": \"%s\"", entry->key, entry->value);
+            fprintf(f, "    ");
+            rom_config_writeJsonString(f, entry->key);
+            fprintf(f, ": ");
+            rom_config_writeJsonString(f, entry->value);
             wroteAny = 1;
         }
         if (wroteAny) {
@@ -970,7 +1016,10 @@ rom_config_writeJsonFile(const char *path, const char *romPath, const rom_config
             if (wroteAny) {
                 fprintf(f, ",\n");
             }
-            fprintf(f, "    \"%s\": \"%s\"", entry->key, entry->value);
+            fprintf(f, "    ");
+            rom_config_writeJsonString(f, entry->key);
+            fprintf(f, ": ");
+            rom_config_writeJsonString(f, entry->value);
             wroteAny = 1;
         }
         if (wroteAny) {
