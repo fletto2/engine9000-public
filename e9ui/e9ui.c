@@ -20,35 +20,27 @@
 #include <math.h>
 
 #include "e9ui.h"
-#include "debugger.h"
-#include "ui.h"
 #include "config.h"
 #include "hotkeys.h"
 #include "help.h"
-#include "core_options.h"
 #include "file.h"
-#include "debug_font.h"
 #include "e9ui_theme.h"
 #include "ui_test.h"
-#include "state_buffer.h"
 #include "debug.h"
-#include "smoke_test.h"
-#include "sprite_debug.h"
-#include "mega_sprite_debug.h"
-#include "libretro_host.h"
-#include "libretro.h"
 #include "e9ui_text_cache.h"
 #include "e9ui_theme_defaults.h"
-#include "transition.h"
-#include "crt.h"
-#include "gl_composite.h"
-#include "input_record.h"
-#include "shader_ui.h"
-#include "custom_log.h"
-#include "custom_ui.h"
-#include "memory_track_ui.h"
-#include "prompt.h"
 
+#ifdef E9UI_ENABLE_GAMEPAD
+#include "debugger.h"
+#include "libretro_host.h"
+#include "libretro.h"
+#endif
+
+#ifdef E9UI_ENABLE_DEBUG_FONT
+#include "debug_font.h"
+#endif
+
+#ifdef E9UI_ENABLE_GAMEPAD
 static SDL_GameController *e9ui_controller = NULL;
 static SDL_JoystickID e9ui_controllerId = -1;
 static int e9ui_controllerLeft = 0;
@@ -56,6 +48,7 @@ static int e9ui_controllerRight = 0;
 static int e9ui_controllerUp = 0;
 static int e9ui_controllerDown = 0;
 static const int e9ui_controllerDeadzone = 8000;
+#endif
 static uint32_t e9ui_fullscreenHintStart = 0;
 static TTF_Font *e9ui_fullscreenHintFont = NULL;
 static int e9ui_fullscreenHintSize = 0;
@@ -99,12 +92,14 @@ e9ui_updateAutoHide(e9ui_component_t *comp, e9ui_context_t *ctx);
 static void
 e9ui_updateFullscreenHintMessage(void)
 {
+#ifdef E9UI_ENABLE_DEBUG_FONT
     char binding[64];
     if (hotkeys_formatActionBindingDisplay("fullscreen", binding, sizeof(binding)) && binding[0]) {
         snprintf(e9ui_fullscreenMessage, sizeof(e9ui_fullscreenMessage),
                  "PRESS %s TO EXIT FULLSCREEN", binding);
         return;
     }
+#endif
     snprintf(e9ui_fullscreenMessage, sizeof(e9ui_fullscreenMessage),
              "PRESS FULLSCREEN HOTKEY TO EXIT FULLSCREEN");
 }
@@ -119,6 +114,221 @@ void
 e9ui_setFpsEnabled(int enabled)
 {
     e9ui_fpsEnabled = enabled ? 1 : 0;
+}
+
+uint32_t
+e9ui_getTicks(e9ui_context_t *ctx)
+{
+    if (ctx && ctx->getTicks) {
+        return ctx->getTicks(ctx);
+    }
+    return SDL_GetTicks();
+}
+
+void
+e9ui_setRefreshHz(e9ui_context_t *ctx, int refreshHz)
+{
+    if (!ctx || !ctx->setRefreshHz || refreshHz <= 0) {
+        return;
+    }
+    ctx->setRefreshHz(ctx, refreshHz);
+}
+
+const char *
+e9ui_getWindowIconAssetPath(e9ui_context_t *ctx)
+{
+    if (!ctx || !ctx->getWindowIconAssetPath) {
+        return NULL;
+    }
+    return ctx->getWindowIconAssetPath(ctx);
+}
+
+uint64_t
+e9ui_getNextUiFrameId(e9ui_context_t *ctx)
+{
+    if (!ctx || !ctx->getNextUiFrameId) {
+        return 0;
+    }
+    return ctx->getNextUiFrameId(ctx);
+}
+
+void
+e9ui_commitUiFrameId(e9ui_context_t *ctx, uint64_t frameId)
+{
+    if (!ctx || !ctx->commitUiFrameId) {
+        return;
+    }
+    ctx->commitUiFrameId(ctx, frameId);
+}
+
+int
+e9ui_captureUiFrame(e9ui_context_t *ctx, uint64_t frameId, SDL_Renderer *renderer)
+{
+    if (!ctx || !ctx->captureUiFrame) {
+        return 0;
+    }
+    return ctx->captureUiFrame(ctx, frameId, renderer);
+}
+
+int
+e9ui_transformTextboxSelection(e9ui_context_t *ctx,
+                               const char *actionId,
+                               const char *input,
+                               char *out,
+                               size_t outCap)
+{
+    if (!ctx || !ctx->transformTextboxSelection || !actionId || !input || !out || outCap == 0) {
+        return 0;
+    }
+    return ctx->transformTextboxSelection(ctx, actionId, input, out, outCap);
+}
+
+int
+e9ui_shouldPresentFrame(e9ui_context_t *ctx)
+{
+    if (!ctx || !ctx->shouldPresentFrame) {
+        return 1;
+    }
+    return ctx->shouldPresentFrame(ctx);
+}
+
+int
+e9ui_pollInjectedUiEvent(e9ui_context_t *ctx, uint64_t frameId, SDL_Event *eventValue)
+{
+    if (!ctx || !ctx->pollInjectedUiEvent) {
+        return 0;
+    }
+    return ctx->pollInjectedUiEvent(ctx, frameId, eventValue);
+}
+
+void
+e9ui_recordUiEvent(e9ui_context_t *ctx, uint64_t frameId, const SDL_Event *eventValue)
+{
+    if (!ctx || !ctx->recordUiEvent || !eventValue) {
+        return;
+    }
+    ctx->recordUiEvent(ctx, frameId, eventValue);
+}
+
+int
+e9ui_runFullscreenTransition(e9ui_context_t *ctx,
+                             int entering,
+                             e9ui_component_t *from,
+                             e9ui_component_t *to,
+                             int width,
+                             int height)
+{
+    if (!ctx || !ctx->runFullscreenTransition) {
+        return 0;
+    }
+    return ctx->runFullscreenTransition(ctx, entering, from, to, width, height);
+}
+
+int
+e9ui_routeAuxWindowEvent(e9ui_context_t *ctx, SDL_Event *eventValue, uint32_t mainWindowId)
+{
+    if (!ctx || !ctx->routeAuxWindowEvent || !eventValue) {
+        return 0;
+    }
+    return ctx->routeAuxWindowEvent(ctx, eventValue, mainWindowId);
+}
+
+int
+e9ui_ownsAuxWindowId(e9ui_context_t *ctx, uint32_t windowId)
+{
+    if (!ctx || !ctx->ownsAuxWindowId || !windowId) {
+        return 0;
+    }
+    return ctx->ownsAuxWindowId(ctx, windowId);
+}
+
+void
+e9ui_handleAuxWindowEvent(e9ui_context_t *ctx, const SDL_Event *eventValue)
+{
+    if (!ctx || !ctx->handleAuxWindowEvent || !eventValue) {
+        return;
+    }
+    ctx->handleAuxWindowEvent(ctx, eventValue);
+}
+
+void
+e9ui_setMainWindowFocused(e9ui_context_t *ctx, int focused)
+{
+    if (!ctx || !ctx->setMainWindowFocused) {
+        return;
+    }
+    ctx->setMainWindowFocused(ctx, focused);
+}
+
+int
+e9ui_normalizeMouseWheelY(e9ui_context_t *ctx, int value)
+{
+    if (!ctx || !ctx->normalizeMouseWheelY) {
+        return value;
+    }
+    return ctx->normalizeMouseWheelY(ctx, value);
+}
+
+int
+e9ui_handleGlobalKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
+{
+    if (!ctx || !ctx->handleGlobalKeydown || !kev) {
+        return 0;
+    }
+    return ctx->handleGlobalKeydown(ctx, kev);
+}
+
+void
+e9ui_shutdownHostUi(e9ui_context_t *ctx)
+{
+    if (!ctx || !ctx->shutdownHostUi) {
+        return;
+    }
+    ctx->shutdownHostUi(ctx);
+}
+
+void
+e9ui_prepareMainWindow(e9ui_context_t *ctx,
+                       int cliOverrideWindowSize,
+                       int startHidden,
+                       int *wantX,
+                       int *wantY,
+                       int *wantW,
+                       int *wantH,
+                       Uint32 *winFlags)
+{
+    if (!ctx || !ctx->prepareMainWindow) {
+        (void)cliOverrideWindowSize;
+        (void)startHidden;
+        return;
+    }
+    ctx->prepareMainWindow(ctx, cliOverrideWindowSize, startHidden, wantX, wantY, wantW, wantH, winFlags);
+}
+
+int
+e9ui_shouldUseVsync(e9ui_context_t *ctx)
+{
+    if (!ctx || !ctx->shouldUseVsync) {
+        return 1;
+    }
+    return ctx->shouldUseVsync(ctx);
+}
+
+void
+e9ui_finalizeMainWindow(e9ui_context_t *ctx,
+                        SDL_Window *window,
+                        SDL_Renderer *renderer,
+                        int wantW,
+                        int wantH)
+{
+    if (!ctx || !ctx->finalizeMainWindow) {
+        (void)window;
+        (void)renderer;
+        (void)wantW;
+        (void)wantH;
+        return;
+    }
+    ctx->finalizeMainWindow(ctx, window, renderer, wantW, wantH);
 }
 
 int
@@ -433,9 +643,7 @@ e9ui_updateRefreshRate(SDL_Window *win)
 {
     int displayIndex = SDL_GetWindowDisplayIndex(win);
     int refresh = e9ui_getDisplayRefreshRate(displayIndex);
-    if (refresh > 0) {
-        debugger.uiRefreshHz = refresh;
-    }
+    e9ui_setRefreshHz(&e9ui->ctx, refresh);
 }
 
 static void
@@ -444,7 +652,10 @@ e9ui_applyWindowIcon(SDL_Window *win)
   if (!win) {
     return;
   }
-  const char *icon_asset = debugger_platform_windowIconAssetPath();
+  const char *icon_asset = e9ui_getWindowIconAssetPath(&e9ui->ctx);
+  if (!icon_asset || !icon_asset[0]) {
+    return;
+  }
   char path[PATH_MAX];
   if (!file_getAssetPath(icon_asset, path, sizeof(path))) {
     return;
@@ -524,12 +735,22 @@ e9ui_drawFocusRingRect(e9ui_context_t *ctx, SDL_Rect rect, int padPx)
 }
 
 static void
+e9ui_renderMissingFontNotice(void)
+{
+#ifdef E9UI_ENABLE_DEBUG_FONT
+  SDL_SetRenderDrawColor(e9ui->ctx.renderer, 220, 190, 190, 255);
+  debug_font_drawText(e9ui->ctx.renderer, 12, 12, "MISSING FONT - EXPECTED", 2);
+  debug_font_drawText(e9ui->ctx.renderer, 12, 28, "assets/RobotoMono-Regular.ttf", 2);
+#endif
+}
+
+static void
 e9ui_renderTransientMessage(e9ui_context_t *ctx, int w, int h)
 {
   if (!ctx || !ctx->renderer || !e9ui_transientMessage) {
     return;
   }
-  uint32_t now = debugger_uiTicks();
+  uint32_t now = e9ui_getTicks(ctx);
   uint32_t elapsed = now - e9ui_fullscreenHintStart;
   if (elapsed >= 1000) {
     return;
@@ -592,7 +813,7 @@ e9ui_renderFpsOverlay(e9ui_context_t *ctx, int w, int h)
   if (!ctx || !ctx->renderer || !e9ui_fpsEnabled || !e9ui->fullscreen) {
     return;
   }
-  uint32_t now = debugger_uiTicks();
+  uint32_t now = e9ui_getTicks(ctx);
   if (e9ui_fpsLastTick == 0) {
     e9ui_fpsLastTick = now;
   }
@@ -658,6 +879,7 @@ e9ui_renderFpsOverlay(e9ui_context_t *ctx, int w, int h)
   SDL_RenderCopy(ctx->renderer, tex, NULL, &dst);
 }
 
+#ifdef E9UI_ENABLE_GAMEPAD
 static void
 e9ui_controllerClose(void)
 {
@@ -748,6 +970,7 @@ e9ui_controllerHandleAxis(SDL_GameControllerAxis axis, int value)
     e9ui_controllerSetDir(port, RETRO_DEVICE_ID_JOYPAD_DOWN, &e9ui_controllerDown, down);
   }
 }
+#endif
 
 
 static void    
@@ -1795,27 +2018,13 @@ e9ui_setFullscreenComponent(e9ui_component_t *comp)
         int h = 0;
         SDL_GetRendererOutputSize(e9ui->ctx.renderer, &w, &h);
         if (!e9ui_loadingLayout) {
-            e9k_transition_mode_t mode = transition_pickFullscreenMode(1);
-            if (mode != e9k_transition_none) {
-                e9ui->transition.inTransition = 1;
-                if (mode == e9k_transition_slide) {
-                    transition_slide_runTo(prev, comp, w, h);
-                } else if (mode == e9k_transition_explode) {
-                    transition_explode_runTo(prev, comp, w, h);
-                } else if (mode == e9k_transition_doom) {
-                    transition_doom_runTo(prev, comp, w, h);
-                } else if (mode == e9k_transition_flip) {
-                    transition_flip_runTo(prev, comp, w, h);
-                } else if (mode == e9k_transition_rbar) {
-                    transition_rbar_runTo(prev, comp, w, h);
-                }
-            }
+            (void)e9ui_runFullscreenTransition(&e9ui->ctx, 1, prev, comp, w, h);
         }
     }
     e9ui->fullscreen = comp;
     if (comp) {
         e9ui_updateFullscreenHintMessage();
-        e9ui_fullscreenHintStart = debugger_uiTicks();
+        e9ui_fullscreenHintStart = e9ui_getTicks(&e9ui->ctx);
         e9ui_transientMessage = e9ui_fullscreenMessage;
     }
 }
@@ -1833,21 +2042,7 @@ e9ui_clearFullscreenComponent(void)
         int w = 0;
         int h = 0;
         SDL_GetRendererOutputSize(e9ui->ctx.renderer, &w, &h);
-        e9k_transition_mode_t mode = transition_pickFullscreenMode(0);
-        if (mode != e9k_transition_none) {
-            e9ui->transition.inTransition = 1;
-            if (mode == e9k_transition_slide) {
-                transition_slide_run(prev, e9ui->root, w, h);
-            } else if (mode == e9k_transition_explode) {
-                transition_explode_run(prev, e9ui->root, w, h);
-            } else if (mode == e9k_transition_doom) {
-                transition_doom_runTo(prev, e9ui->root, w, h);
-            } else if (mode == e9k_transition_flip) {
-                transition_flip_run(prev, e9ui->root, w, h);
-            } else if (mode == e9k_transition_rbar) {
-                transition_rbar_run(prev, e9ui->root, w, h);
-            }
-        }
+        (void)e9ui_runFullscreenTransition(&e9ui->ctx, 0, prev, e9ui->root, w, h);
     }
     e9ui->fullscreen = NULL;
 }
@@ -1859,7 +2054,7 @@ e9ui_showTransientMessage(const char *message)
         return;
     }
     e9ui_transientMessage = message;
-    e9ui_fullscreenHintStart = debugger_uiTicks();
+    e9ui_fullscreenHintStart = e9ui_getTicks(&e9ui->ctx);
 }
 
 void
@@ -1924,20 +2119,17 @@ e9ui_renderFrame(void)
   e9ui_renderFpsOverlay(&e9ui->ctx, w, h);
 
   if (e9ui->ctx.font == NULL) {
-    SDL_SetRenderDrawColor(e9ui->ctx.renderer, 220, 190, 190, 255);
-    debug_font_drawText(e9ui->ctx.renderer, 12, 12, "MISSING FONT - EXPECTED", 2);
-    debug_font_drawText(e9ui->ctx.renderer, 12, 28, "assets/RobotoMono-Regular.ttf", 2);
+    e9ui_renderMissingFontNotice();
   }
 
   e9ui_renderTooltipOverlay();
 
-  uint64_t uiFrameId = debugger.uiFrameCounter + 1;
-  if (!ui_test_hasFailed()) {
-    (void)ui_test_captureWindowFrame(uiFrameId, e9ui->ctx.renderer);
+  uint64_t uiFrameId = e9ui_getNextUiFrameId(&e9ui->ctx);
+  (void)e9ui_captureUiFrame(&e9ui->ctx, uiFrameId, e9ui->ctx.renderer);
+  if (e9ui_shouldPresentFrame(&e9ui->ctx)) {
+    SDL_RenderPresent(e9ui->ctx.renderer);
   }
-
-  SDL_RenderPresent(e9ui->ctx.renderer);
-  debugger.uiFrameCounter = uiFrameId;
+  e9ui_commitUiFrameId(&e9ui->ctx, uiFrameId);
 }
 
 void
@@ -1967,9 +2159,7 @@ e9ui_renderFrameNoLayout(void)
   e9ui_renderFpsOverlay(&e9ui->ctx, w, h);
 
   if (e9ui->ctx.font == NULL) {
-    SDL_SetRenderDrawColor(e9ui->ctx.renderer, 220, 190, 190, 255);
-    debug_font_drawText(e9ui->ctx.renderer, 12, 12, "MISSING FONT - EXPECTED", 2);
-    debug_font_drawText(e9ui->ctx.renderer, 12, 28, "assets/RobotoMono-Regular.ttf", 2);
+    e9ui_renderMissingFontNotice();
   }
 
   e9ui_renderTooltipOverlay();
@@ -2007,9 +2197,7 @@ e9ui_renderFrameNoLayoutNoPresent(void)
   e9ui_renderFpsOverlay(&e9ui->ctx, w, h);
 
   if (e9ui->ctx.font == NULL) {
-    SDL_SetRenderDrawColor(e9ui->ctx.renderer, 220, 190, 190, 255);
-    debug_font_drawText(e9ui->ctx.renderer, 12, 12, "MISSING FONT - EXPECTED", 2);
-    debug_font_drawText(e9ui->ctx.renderer, 12, 28, "assets/RobotoMono-Regular.ttf", 2);
+    e9ui_renderMissingFontNotice();
   }
 
   e9ui_renderTooltipOverlay();
@@ -2042,9 +2230,7 @@ e9ui_renderFrameNoLayoutNoPresentNoClear(void)
   e9ui_renderFpsOverlay(&e9ui->ctx, w, h);
 
   if (e9ui->ctx.font == NULL) {
-    SDL_SetRenderDrawColor(e9ui->ctx.renderer, 220, 190, 190, 255);
-    debug_font_drawText(e9ui->ctx.renderer, 12, 12, "MISSING FONT - EXPECTED", 2);
-    debug_font_drawText(e9ui->ctx.renderer, 12, 28, "assets/RobotoMono-Regular.ttf", 2);
+    e9ui_renderMissingFontNotice();
   }
 
   e9ui_renderTooltipOverlay();
@@ -2108,16 +2294,8 @@ e9ui_loadWindowConfig(const char* configPath)
 int
 e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cliWinH, int startHidden)
 {
-  ui_test_mode_t uiTestMode = ui_test_getMode();
   e9ui_theme_ctor();
   e9ui_loadWindowConfig(configPath);
-
-#ifdef __APPLE__
-  if (e9ui->glCompositeEnabled && !debugger_platform_glCompositeNeedsOpenGLHint()) {
-    e9ui->glCompositeEnabled = 0;
-    debug_error("gl-composite: disabled (virtualized macOS renderer path)");
-  }
-#endif
 
   if (cliOverrideWindowSize) {
     e9ui->layout.winW = cliWinW;
@@ -2135,9 +2313,7 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     }
     {
         int refresh = e9ui_getDisplayRefreshRate(0);
-        if (refresh > 0) {
-            debugger.uiRefreshHz = refresh;
-        }
+        e9ui_setRefreshHz(&e9ui->ctx, refresh);
     }
     if (TTF_Init() != 0) {
         debug_error("TTF_Init failed: %s", TTF_GetError());
@@ -2158,41 +2334,11 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     int wantH = (e9ui->layout.winH > 0 ? e9ui->layout.winH : 700);
     int wantX = SDL_WINDOWPOS_CENTERED;
     int wantY = SDL_WINDOWPOS_CENTERED;
-#ifdef _WIN32
-    SDL_Rect windowsDefaultUsableBounds = {0, 0, 0, 0};
-    int windowsApplyDefaultUsableBounds = 0;
-#endif
-    int useDefaultWindowGeometry =
-        (!cliOverrideWindowSize &&
-         e9ui->layout.winX == E9UI_LAYOUT_WIN_X &&
-         e9ui->layout.winY == E9UI_LAYOUT_WIN_Y &&
-         e9ui->layout.winW == E9UI_LAYOUT_WIN_W &&
-         e9ui->layout.winH == E9UI_LAYOUT_WIN_H) ? 1 : 0;
-    if (useDefaultWindowGeometry && uiTestMode == UI_TEST_MODE_NONE) {
-        SDL_Rect usable = {0, 0, 0, 0};
-        if (SDL_GetDisplayUsableBounds(0, &usable) == 0 &&
-            usable.w > 0 && usable.h > 0) {
-#ifdef _WIN32
-            windowsDefaultUsableBounds = usable;
-            windowsApplyDefaultUsableBounds = 1;
-#else
-            wantW = usable.w;
-            wantH = usable.h;
-            wantX = usable.x;
-            wantY = usable.y;
-#endif
-        }
-    }
-    if (e9ui->glCompositeEnabled && debugger_platform_glCompositeNeedsOpenGLHint()) {
-      SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
-    }
     Uint32 winFlags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
-    if (e9ui->glCompositeEnabled) {
-      winFlags |= SDL_WINDOW_OPENGL;
-    }
     if (startHidden) {
       winFlags |= SDL_WINDOW_HIDDEN;
     }
+    e9ui_prepareMainWindow(&e9ui->ctx, cliOverrideWindowSize, startHidden, &wantX, &wantY, &wantW, &wantH, &winFlags);
     SDL_Window *win = SDL_CreateWindow("ENGINE9000 DEBUGGER/PROFILER 68K", wantX, wantY, wantW, wantH,
                                        winFlags);
     if (!win) {
@@ -2201,30 +2347,8 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     }
     e9ui_applyWindowIcon(win);
     e9ui_updateRefreshRate(win);
-#ifdef _WIN32
-#if SDL_VERSION_ATLEAST(2,0,5)
-    if (windowsApplyDefaultUsableBounds) {
-        int borderTop = 0;
-        int borderLeft = 0;
-        int borderBottom = 0;
-        int borderRight = 0;
-        if (SDL_GetWindowBordersSize(win, &borderTop, &borderLeft, &borderBottom, &borderRight) == 0) {
-            int fitClientW = windowsDefaultUsableBounds.w - borderLeft - borderRight;
-            int fitClientH = windowsDefaultUsableBounds.h - borderTop - borderBottom;
-            if (fitClientW > 0 && fitClientH > 0) {
-                SDL_SetWindowSize(win, fitClientW, fitClientH);
-                SDL_SetWindowPosition(win,
-                                      windowsDefaultUsableBounds.x + borderLeft,
-                                      windowsDefaultUsableBounds.y + borderTop);
-            }
-        } else {
-            debug_error("SDL_GetWindowBordersSize failed: %s", SDL_GetError());
-        }
-    }
-#endif
-#endif
     uint32_t rendererFlags = SDL_RENDERER_ACCELERATED;
-    if (uiTestMode == UI_TEST_MODE_NONE) {
+    if (e9ui_shouldUseVsync(&e9ui->ctx)) {
         rendererFlags |= SDL_RENDERER_PRESENTVSYNC;
     }
     SDL_Renderer *ren = SDL_CreateRenderer(win, -1, rendererFlags);
@@ -2247,24 +2371,13 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     if (e9ui->layout.winX >= 0 && e9ui->layout.winY >= 0) {
         SDL_SetWindowPosition(win, e9ui->layout.winX, e9ui->layout.winY);
     }
-    if (uiTestMode != UI_TEST_MODE_NONE) {
-        SDL_SetWindowSize(win, wantW, wantH);
-    }
-    if (e9ui->glCompositeEnabled) {
-      if (!gl_composite_init(win, ren)) {
-        debug_error("gl-composite: disabled (init failed)");
-      }
-    }
+    e9ui_finalizeMainWindow(&e9ui->ctx, win, ren, wantW, wantH);
 
   // Load default monospace font
   TTF_Font *font = e9ui_loadFont();
   if (!font) {
   }
   e9ui->ctx.font = font;
-  // Initialize root event hooks
-  e9ui->ctx.registerHotkey = hotkeys_registerHotkey;
-  e9ui->ctx.unregisterHotkey = hotkeys_unregisterHotkey;
-  e9ui->ctx.dispatchHotkey = hotkeys_dispatchHotkey;
   e9ui->ctx.onSplitChanged = e9ui_onSplitChanged;
   // Load themed fonts (button + text fonts)
   e9ui_theme_loadFonts();
@@ -2273,7 +2386,9 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
     e9ui->overlayRoot = e9ui_makeOverlayHost("e9ui_overlay_host");
   }
 
+#ifdef E9UI_ENABLE_GAMEPAD
   e9ui_controllerInit();
+#endif
     
     return 1;
 }
@@ -2324,69 +2439,27 @@ int
 e9ui_processEvents(void)
 {
     SDL_Event ev;
-    ui_test_mode_t mode = ui_test_getMode();
-    int compareMode = (mode == UI_TEST_MODE_COMPARE || mode == UI_TEST_MODE_REMAKE) ? 1 : 0;
     while (1) {
         e9ui_runDeferred(&e9ui->ctx);
         int hasEvent = 0;
-        if (compareMode) {
-	  hasEvent = input_record_pollUiEvent(&ev);
-          SDL_Event dummy;
-	  SDL_PollEvent(&dummy);
-        } else {
-	  hasEvent = SDL_PollEvent(&ev);
+        uint64_t uiFrameId = e9ui_getNextUiFrameId(&e9ui->ctx);
+        int pollResult = e9ui_pollInjectedUiEvent(&e9ui->ctx, uiFrameId, &ev);
+        if (pollResult > 0) {
+            hasEvent = 1;
+        } else if (pollResult == 0) {
+	    hasEvent = SDL_PollEvent(&ev);
         }
         if (!hasEvent) {
             break;
         }
-        if (!compareMode) {
-            if (input_record_isUiEventRecording() && !input_record_isInjecting()) {
-                input_record_recordUiEvent(debugger.uiFrameCounter + 1, &ev);
-            }
-        }
+        e9ui_recordUiEvent(&e9ui->ctx, uiFrameId, &ev);
 
-        uint32_t customLogWindowId = custom_log_getWindowId();
-        uint32_t customWindowId = custom_ui_getWindowId();
-        uint32_t shaderWindowId = shader_ui_getWindowId();
-        uint32_t memoryTrackWindowId = memory_track_ui_getWindowId();
         uint32_t evWindowId = e9ui_eventWindowId(&ev);
         uint32_t mainWindowId = 0;
         if (e9ui->ctx.window) {
             mainWindowId = SDL_GetWindowID(e9ui->ctx.window);
         }
-        if (customLogWindowId && evWindowId == customLogWindowId) {
-            if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE) {
-                custom_log_handleEvent(&ev);
-                continue;
-            }
-            custom_log_handleEvent(&ev);
-            e9ui_forceDefaultCursorOnNonMainHover(&ev);
-            continue;
-        }
-        if (customWindowId && evWindowId == customWindowId) {
-            if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE) {
-                custom_ui_handleEvent(&ev);
-                continue;
-            }
-            custom_ui_handleEvent(&ev);
-            e9ui_forceDefaultCursorOnNonMainHover(&ev);
-            continue;
-        }
-        if (shaderWindowId && evWindowId == shaderWindowId) {
-            if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE) {
-                shader_ui_handleEvent(&ev);
-                continue;
-            }
-            shader_ui_handleEvent(&ev);
-            e9ui_forceDefaultCursorOnNonMainHover(&ev);
-            continue;
-        }
-        if (memoryTrackWindowId && evWindowId == memoryTrackWindowId) {
-            if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE) {
-                memory_track_ui_handleEvent(&ev);
-                continue;
-            }
-            memory_track_ui_handleEvent(&ev);
+        if (e9ui_routeAuxWindowEvent(&e9ui->ctx, &ev, mainWindowId)) {
             e9ui_forceDefaultCursorOnNonMainHover(&ev);
             continue;
         }
@@ -2408,7 +2481,7 @@ e9ui_processEvents(void)
             if (!mainWindowId || ev.motion.windowID != mainWindowId) {
                 continue;
             }
-            if (sprite_debug_is_window_id(ev.motion.windowID) || mega_sprite_debug_ownsWindowId(ev.motion.windowID)) {
+            if (e9ui_ownsAuxWindowId(&e9ui->ctx, ev.motion.windowID)) {
                 continue;
             }
             int rawXrel = ev.motion.xrel;
@@ -2446,7 +2519,7 @@ e9ui_processEvents(void)
             if (!mainWindowId || ev.button.windowID != mainWindowId) {
                 continue;
             }
-            if (sprite_debug_is_window_id(ev.button.windowID) || mega_sprite_debug_ownsWindowId(ev.button.windowID)) {
+            if (e9ui_ownsAuxWindowId(&e9ui->ctx, ev.button.windowID)) {
                 continue;
             }
             int scaledX = e9ui_scale_coord(&e9ui->ctx, ev.button.x);
@@ -2471,10 +2544,10 @@ e9ui_processEvents(void)
             if (!mainWindowId || ev.wheel.windowID != mainWindowId) {
                 continue;
             }
-            if (sprite_debug_is_window_id(ev.wheel.windowID) || mega_sprite_debug_ownsWindowId(ev.wheel.windowID)) {
+            if (e9ui_ownsAuxWindowId(&e9ui->ctx, ev.wheel.windowID)) {
                 continue;
             }
-            ev.wheel.y = debugger_platform_normalizeMouseWheelY(ev.wheel.y);
+            ev.wheel.y = e9ui_normalizeMouseWheelY(&e9ui->ctx, ev.wheel.y);
             int scaledX = e9ui->ctx.mouseX;
             int scaledY = e9ui->ctx.mouseY;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
@@ -2495,8 +2568,7 @@ e9ui_processEvents(void)
             }
         }
         else if (ev.type == SDL_WINDOWEVENT) {
-            sprite_debug_handleWindowEvent(&ev);
-            mega_sprite_debug_handleWindowEvent(&ev);
+            e9ui_handleAuxWindowEvent(&e9ui->ctx, &ev);
             if (!mainWindowId || ev.window.windowID != mainWindowId) {
                 continue;
             }
@@ -2506,21 +2578,13 @@ e9ui_processEvents(void)
                 e9ui->layout.winW = ev.window.data1; e9ui->layout.winH = ev.window.data2; config_saveConfig();
                 e9ui_updateFontScale();
             } else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-                custom_ui_setMainWindowFocused(1);
-                custom_log_setMainWindowFocused(1);
-                shader_ui_setMainWindowFocused(1);
-                memory_track_ui_setMainWindowFocused(1);
-                sprite_debug_setMainWindowFocused(1);
-                mega_sprite_debug_setMainWindowFocused(1);
+                e9ui_setMainWindowFocused(&e9ui->ctx, 1);
             } else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-                custom_ui_setMainWindowFocused(0);
-                custom_log_setMainWindowFocused(0);
-                shader_ui_setMainWindowFocused(0);
-                memory_track_ui_setMainWindowFocused(0);
-                sprite_debug_setMainWindowFocused(0);
-                mega_sprite_debug_setMainWindowFocused(0);
+                e9ui_setMainWindowFocused(&e9ui->ctx, 0);
             }
         }
+        
+#ifdef E9UI_ENABLE_GAMEPAD
         else if (ev.type == SDL_CONTROLLERDEVICEADDED) {
             if (!e9ui_controller) {
                 e9ui_controllerOpenIndex(ev.cdevice.which);
@@ -2550,6 +2614,7 @@ e9ui_processEvents(void)
             }
             continue;
         }
+#endif
         else if (ev.type == SDL_KEYDOWN) {
             e9ui->ctx.keyMods = ev.key.keysym.mod;
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
@@ -2567,7 +2632,7 @@ e9ui_processEvents(void)
             SDL_Keymod mods = ev.key.keysym.mod;
             int accel = (mods & KMOD_GUI) || (mods & KMOD_CTRL);
             int reverseTab = (mods & KMOD_SHIFT) ? 1 : 0;
-            if (hotkeys_handleKeydown(&e9ui->ctx, &ev.key)) {
+            if (e9ui_handleGlobalKeydown(&e9ui->ctx, &ev.key)) {
                 continue;
             }
             if (!accel && key == SDLK_TAB && !e9ui_getFocus(&e9ui->ctx)) {
@@ -2604,7 +2669,7 @@ e9ui_processEvents(void)
         // For mouse and other events, bubble through tree for hit-testing and focus updates
         (void)e9ui_sceneProcessEvent(&ev);
 	if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT && !e9ui->ctx.focusClickHandled) {
-	  if (!sprite_debug_is_window_id(ev.button.windowID) && !mega_sprite_debug_ownsWindowId(ev.button.windowID)) {
+	  if (!e9ui_ownsAuxWindowId(&e9ui->ctx, ev.button.windowID)) {
 	    e9ui_setFocus(&e9ui->ctx, NULL);
 	  }
         }
@@ -2617,8 +2682,9 @@ e9ui_processEvents(void)
 void
 e9ui_shutdown(void)
 {  
+#ifdef E9UI_ENABLE_GAMEPAD
   e9ui_controllerClose();
-  gl_composite_shutdown();
+#endif
   if (e9ui_fullscreenHintFont) {
     TTF_CloseFont(e9ui_fullscreenHintFont);
     e9ui_fullscreenHintFont = NULL;
@@ -2637,7 +2703,7 @@ e9ui_shutdown(void)
   e9ui_split_resetCursors();
   e9ui_split_stack_resetCursors();
   e9ui_box_resetCursors();
-  hotkeys_shutdown();
+  e9ui_shutdownHostUi(&e9ui->ctx);
   if (e9ui->deferred) {
     alloc_free(e9ui->deferred);
     e9ui->deferred = NULL;

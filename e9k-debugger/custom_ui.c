@@ -57,6 +57,7 @@ typedef struct custom_ui_state {
     int blitterVisBlink;
     int blitterVisDecay;
     int dmaStatsEnabled;
+    int estimateFpsEnabled;
     int copperLimitEnabled;
     int copperLimitStart;
     int copperLimitEnd;
@@ -101,6 +102,9 @@ typedef struct custom_ui_state {
     e9ui_component_t *blitterVisDecaySeekRow;
     e9ui_component_t *blitterVisDecaySeekBar;
     e9ui_component_t *dmaStatsCheckbox;
+    e9ui_component_t *estimateFpsCheckbox;
+    e9ui_component_t *estimateFpsText;
+    e9ui_component_t *estimateFpsTextRow;
     e9ui_component_t *dmaStatsHintText;
     e9ui_component_t *dmaStatsHintTextRow;
     e9ui_component_t *copperStatsChart;
@@ -373,6 +377,7 @@ static custom_ui_state_t custom_ui_state = {
     .blitterVisBlink = 1,
     .blitterVisDecay = 5,
     .dmaStatsEnabled = 0,
+    .estimateFpsEnabled = 0,
     .copperLimitEnabled = 0,
     .copperLimitStart = 52,
     .copperLimitEnd = 308,
@@ -421,6 +426,9 @@ custom_ui_syncDmaStatsSuboptions(custom_ui_state_t *ui);
 
 static void
 custom_ui_syncDmaStatsCycleExactHint(custom_ui_state_t *ui);
+
+static void
+custom_ui_syncEstimateFpsDisplay(custom_ui_state_t *ui);
 
 static e9ui_window_backend_t
 custom_ui_windowBackend(void)
@@ -3907,6 +3915,20 @@ custom_ui_dmaStatsChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selec
 }
 
 static void
+custom_ui_estimateFpsChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    custom_ui_state_t *ui = (custom_ui_state_t *)user;
+    if (!ui) {
+        return;
+    }
+    ui->estimateFpsEnabled = selected ? 1 : 0;
+    libretro_host_setEstimateFpsEnabled(ui->estimateFpsEnabled);
+    custom_ui_syncEstimateFpsDisplay(ui);
+}
+
+static void
 custom_ui_bplptrBlockAllChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
 {
     (void)self;
@@ -4735,6 +4757,38 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
         e9ui_checkbox_setLeftMargin(cbBplptrBlock, 28);
         e9ui_stack_addFixed(leftColumn, cbBplptrBlock);
     }
+    e9ui_stack_addFixed(leftColumn, e9ui_vspacer_make(8));
+
+    e9ui_component_t *cbEstimateFps = e9ui_checkbox_make("Estimate FPS",
+                                                         ui->estimateFpsEnabled,
+                                                         custom_ui_estimateFpsChanged,
+                                                         ui);
+    if (!cbEstimateFps) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->estimateFpsCheckbox = cbEstimateFps;
+
+    e9ui_component_t *estimateFpsText = e9ui_text_make("--");
+    if (!estimateFpsText) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_text_setColor(estimateFpsText, (SDL_Color){ 196, 214, 232, 255 });
+    ui->estimateFpsText = estimateFpsText;
+    e9ui_component_t *estimateFpsTextRow = custom_ui_insetRowMake(estimateFpsText, 0, 0);
+    if (!estimateFpsTextRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    ui->estimateFpsTextRow = estimateFpsTextRow;
+    e9ui_component_t *estimateFpsRow = custom_ui_dmaStatsHeaderRowMake(cbEstimateFps, estimateFpsTextRow, 12, 16);
+    if (!estimateFpsRow) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_stack_addFixed(leftColumn, estimateFpsRow);
+    custom_ui_syncEstimateFpsDisplay(ui);
 
     e9ui_component_t *rightColumn = e9ui_stack_makeVertical();
     if (!rightColumn) {
@@ -5185,6 +5239,32 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
 }
 
 static void
+custom_ui_syncEstimateFpsDisplay(custom_ui_state_t *ui)
+{
+    if (!ui) {
+        return;
+    }
+    if (ui->estimateFpsTextRow) {
+        e9ui_setHidden(ui->estimateFpsTextRow, ui->estimateFpsEnabled ? 0 : 1);
+    }
+    if (!ui->estimateFpsText) {
+        return;
+    }
+    if (!ui->estimateFpsEnabled) {
+        e9ui_text_setText(ui->estimateFpsText, "--");
+        return;
+    }
+    double estimatedFps = libretro_host_getEstimatedVideoFps();
+    if (estimatedFps > 0.0) {
+        char text[32];
+        snprintf(text, sizeof(text), "%.1f", estimatedFps);
+        e9ui_text_setText(ui->estimateFpsText, text);
+        return;
+    }
+    e9ui_text_setText(ui->estimateFpsText, "...");
+}
+
+static void
 custom_ui_prepareFrame(custom_ui_state_t *ui, const e9ui_context_t *frameCtx)
 {
     if (!ui) {
@@ -5203,6 +5283,7 @@ custom_ui_prepareFrame(custom_ui_state_t *ui, const e9ui_context_t *frameCtx)
     custom_ui_tickBplptrLineLimitTextboxes(ui);
     custom_ui_updateStatsCharts(ui);
     custom_ui_syncDmaStatsCycleExactHint(ui);
+    custom_ui_syncEstimateFpsDisplay(ui);
 }
 
 static int
@@ -5326,6 +5407,9 @@ custom_ui_init(void)
     ui->blitterVisDecaySeekRow = NULL;
     ui->blitterVisDecaySeekBar = NULL;
     ui->dmaStatsCheckbox = NULL;
+    ui->estimateFpsCheckbox = NULL;
+    ui->estimateFpsText = NULL;
+    ui->estimateFpsTextRow = NULL;
     ui->dmaStatsHintText = NULL;
     ui->dmaStatsHintTextRow = NULL;
     ui->copperStatsChart = NULL;
@@ -5369,6 +5453,7 @@ custom_ui_init(void)
     custom_ui_syncBplptrBlockMasterCheckbox(ui);
     custom_ui_syncAudiosMasterCheckbox(ui);
     custom_ui_syncBlitterDebugCheckbox(ui);
+    libretro_host_setEstimateFpsEnabled(ui->estimateFpsEnabled);
 
     ui->root = custom_ui_buildRoot(ui);
     if (!ui->root) {
@@ -5466,6 +5551,12 @@ int
 custom_ui_getBlitterVisDecay(void)
 {
     return custom_ui_state.blitterVisDecay;
+}
+
+int
+custom_ui_getEstimateFpsEnabled(void)
+{
+    return custom_ui_state.estimateFpsEnabled ? 1 : 0;
 }
 
 int
@@ -5616,13 +5707,13 @@ custom_ui_persistConfig(FILE *file)
                                                 &ui->winW,
                                                 &ui->winH);
     }
-    if (!ui->winHasSaved) {
-        return;
+    if (ui->winHasSaved) {
+        fprintf(file, "comp.custom_ui.win_x=%d\n", ui->winX);
+        fprintf(file, "comp.custom_ui.win_y=%d\n", ui->winY);
+        fprintf(file, "comp.custom_ui.win_w=%d\n", ui->winW);
+        fprintf(file, "comp.custom_ui.win_h=%d\n", ui->winH);
     }
-    fprintf(file, "comp.custom_ui.win_x=%d\n", ui->winX);
-    fprintf(file, "comp.custom_ui.win_y=%d\n", ui->winY);
-    fprintf(file, "comp.custom_ui.win_w=%d\n", ui->winW);
-    fprintf(file, "comp.custom_ui.win_h=%d\n", ui->winH);
+    fprintf(file, "comp.custom_ui.estimate_fps=%d\n", ui->estimateFpsEnabled ? 1 : 0);
 }
 
 int
@@ -5653,6 +5744,12 @@ custom_ui_loadConfigProperty(const char *prop, const char *value)
             return 0;
         }
         ui->winH = intValue;
+    } else if (strcmp(prop, "estimate_fps") == 0) {
+        if (!custom_ui_parseInt(value, &intValue)) {
+            return 0;
+        }
+        ui->estimateFpsEnabled = intValue ? 1 : 0;
+        return 1;
     } else {
         return 0;
     }

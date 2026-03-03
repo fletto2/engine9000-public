@@ -249,6 +249,89 @@ e9ui_getFpsEnabled(void);
 void
 e9ui_setFpsEnabled(int enabled);
 
+uint32_t
+e9ui_getTicks(e9ui_context_t *ctx);
+
+void
+e9ui_setRefreshHz(e9ui_context_t *ctx, int refreshHz);
+
+const char *
+e9ui_getWindowIconAssetPath(e9ui_context_t *ctx);
+
+uint64_t
+e9ui_getNextUiFrameId(e9ui_context_t *ctx);
+
+void
+e9ui_commitUiFrameId(e9ui_context_t *ctx, uint64_t frameId);
+
+int
+e9ui_captureUiFrame(e9ui_context_t *ctx, uint64_t frameId, SDL_Renderer *renderer);
+
+int
+e9ui_transformTextboxSelection(e9ui_context_t *ctx,
+                               const char *actionId,
+                               const char *input,
+                               char *out,
+                               size_t outCap);
+
+int
+e9ui_shouldPresentFrame(e9ui_context_t *ctx);
+
+int
+e9ui_pollInjectedUiEvent(e9ui_context_t *ctx, uint64_t frameId, SDL_Event *eventValue);
+
+void
+e9ui_recordUiEvent(e9ui_context_t *ctx, uint64_t frameId, const SDL_Event *eventValue);
+
+int
+e9ui_runFullscreenTransition(e9ui_context_t *ctx,
+                             int entering,
+                             e9ui_component_t *from,
+                             e9ui_component_t *to,
+                             int width,
+                             int height);
+
+int
+e9ui_routeAuxWindowEvent(e9ui_context_t *ctx, SDL_Event *eventValue, uint32_t mainWindowId);
+
+int
+e9ui_ownsAuxWindowId(e9ui_context_t *ctx, uint32_t windowId);
+
+void
+e9ui_handleAuxWindowEvent(e9ui_context_t *ctx, const SDL_Event *eventValue);
+
+void
+e9ui_setMainWindowFocused(e9ui_context_t *ctx, int focused);
+
+int
+e9ui_normalizeMouseWheelY(e9ui_context_t *ctx, int value);
+
+int
+e9ui_handleGlobalKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev);
+
+void
+e9ui_shutdownHostUi(e9ui_context_t *ctx);
+
+void
+e9ui_prepareMainWindow(e9ui_context_t *ctx,
+                       int cliOverrideWindowSize,
+                       int startHidden,
+                       int *wantX,
+                       int *wantY,
+                       int *wantW,
+                       int *wantH,
+                       Uint32 *winFlags);
+
+int
+e9ui_shouldUseVsync(e9ui_context_t *ctx);
+
+void
+e9ui_finalizeMainWindow(e9ui_context_t *ctx,
+                        SDL_Window *window,
+                        SDL_Renderer *renderer,
+                        int wantW,
+                        int wantH);
+
 void
 e9ui_drawSelectableText(e9ui_context_t *ctx,
                         e9ui_component_t *owner,

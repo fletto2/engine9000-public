@@ -47,6 +47,15 @@ double
 libretro_host_getTimingFps(void);
 
 void
+libretro_host_setEstimateFpsEnabled(int enabled);
+
+int
+libretro_host_getEstimateFpsEnabled(void);
+
+double
+libretro_host_getEstimatedVideoFps(void);
+
+void
 libretro_host_setJoypadState(unsigned port, unsigned id, int pressed);
 
 void

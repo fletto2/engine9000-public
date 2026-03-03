@@ -34,11 +34,20 @@ e9ui_labeled_select_setTotalWidth(e9ui_component_t *comp, int totalWidth_px);
 void
 e9ui_labeled_select_setValue(e9ui_component_t *comp, const char *value);
 
+void
+e9ui_labeled_select_setOptions(e9ui_component_t *comp,
+                               const e9ui_select_option_t *options,
+                               int optionCount,
+                               const char *selectedValue);
+
 const char *
 e9ui_labeled_select_getValue(const e9ui_component_t *comp);
 
 void
 e9ui_labeled_select_setOnChange(e9ui_component_t *comp, e9ui_labeled_select_change_cb_t cb, void *user);
+
+void
+e9ui_labeled_select_setEditable(e9ui_component_t *comp, int editable);
 
 e9ui_component_t *
 e9ui_labeled_select_getButton(const e9ui_component_t *comp);

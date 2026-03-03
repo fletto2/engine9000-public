@@ -31,6 +31,9 @@ int
 custom_ui_getBlitterVisDecay(void);
 
 int
+custom_ui_getEstimateFpsEnabled(void);
+
+int
 custom_ui_getCopperLimitEnabled(void);
 
 int

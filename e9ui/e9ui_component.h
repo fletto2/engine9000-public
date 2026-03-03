@@ -32,6 +32,7 @@ typedef enum e9ui_mouse_button {
 typedef struct e9ui_mouse_event {
     e9ui_mouse_action_t action;
     e9ui_mouse_button_t button;
+    int clicks;
     int x;
     int y;
     int dx;
@@ -94,4 +95,3 @@ typedef struct {
   e9ui_component_t* component;
   void* meta;
 } e9ui_component_child_t;
-

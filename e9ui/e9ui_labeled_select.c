@@ -18,6 +18,7 @@ typedef struct e9ui_labeled_select_state {
     int optionCount;
     int selectedIndex;
     e9ui_component_t *textbox;
+    int editable;
     char **infoLines;
     int infoLineCount;
     int infoLineCap;
@@ -721,6 +722,7 @@ e9ui_labeled_select_make(const char *label, int labelWidth_px, int totalWidth_px
         st->optionCount = 0;
     }
     st->selectedIndex = 0;
+    st->editable = 0;
     if (initialValue && *initialValue) {
         int found = e9ui_labeled_select_findIndex(st, initialValue);
         if (found >= 0) {
@@ -801,6 +803,60 @@ e9ui_labeled_select_setValue(e9ui_component_t *comp, const char *value)
     e9ui_labeled_select_syncTextboxLabel(st);
 }
 
+void
+e9ui_labeled_select_setOptions(e9ui_component_t *comp,
+                               const e9ui_select_option_t *options,
+                               int optionCount,
+                               const char *selectedValue)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    e9ui_labeled_select_state_t *st = (e9ui_labeled_select_state_t *)comp->state;
+    if (st->options) {
+        alloc_free(st->options);
+        st->options = NULL;
+    }
+    st->optionCount = 0;
+    st->selectedIndex = 0;
+
+    if (options && optionCount > 0) {
+        st->options = (e9ui_select_option_t *)alloc_calloc((size_t)optionCount, sizeof(*st->options));
+        if (!st->options) {
+            if (st->textbox) {
+                e9ui_textbox_setOptions(st->textbox, NULL, 0);
+                st->textbox->disabled = 1;
+            }
+            e9ui_labeled_select_syncTextboxLabel(st);
+            return;
+        }
+        memcpy(st->options, options, (size_t)optionCount * sizeof(*st->options));
+        st->optionCount = optionCount;
+        int found = e9ui_labeled_select_findIndex(st, selectedValue);
+        if (found >= 0) {
+            st->selectedIndex = found;
+        }
+    }
+
+    if (st->textbox) {
+        e9ui_textbox_setOptions(st->textbox, NULL, 0);
+        if (st->optionCount > 0) {
+            e9ui_textbox_option_t *tbOpts =
+                (e9ui_textbox_option_t *)alloc_calloc((size_t)st->optionCount, sizeof(*tbOpts));
+            if (tbOpts) {
+                for (int i = 0; i < st->optionCount; ++i) {
+                    tbOpts[i].value = st->options[i].value;
+                    tbOpts[i].label = st->options[i].label;
+                }
+                e9ui_textbox_setOptions(st->textbox, tbOpts, st->optionCount);
+                alloc_free(tbOpts);
+            }
+        }
+        st->textbox->disabled = st->optionCount <= 1 ? 1 : 0;
+    }
+    e9ui_labeled_select_syncTextboxLabel(st);
+}
+
 const char *
 e9ui_labeled_select_getValue(const e9ui_component_t *comp)
 {
@@ -820,6 +876,19 @@ e9ui_labeled_select_setOnChange(e9ui_component_t *comp, e9ui_labeled_select_chan
     e9ui_labeled_select_state_t *st = (e9ui_labeled_select_state_t*)comp->state;
     st->onChange = cb;
     st->onChangeUser = user;
+}
+
+void
+e9ui_labeled_select_setEditable(e9ui_component_t *comp, int editable)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    e9ui_labeled_select_state_t *st = (e9ui_labeled_select_state_t *)comp->state;
+    st->editable = editable ? 1 : 0;
+    if (st->textbox) {
+        e9ui_textbox_setReadOnly(st->textbox, st->editable ? 0 : 1);
+    }
 }
 
 e9ui_component_t *

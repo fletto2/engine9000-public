@@ -787,6 +787,7 @@ debugger_main(int argc, char **argv)
     return 1;
   }
 
+  ui_configureE9uiHost();
   if (!e9ui_ctor(debugger_configPath(), debugger.cliWindowOverride, debugger.cliWindowW, debugger.cliWindowH, debugger.cliHeadless)) {
     input_record_shutdown();
     ui_test_shutdown();

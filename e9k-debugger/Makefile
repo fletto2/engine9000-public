@@ -13,7 +13,7 @@ PKG_CFLAGS := $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_image SDL2_ttf libpng)
 PKG_LIBS := $(shell $(PKG_CONFIG) --libs sdl2 SDL2_image SDL2_ttf libpng)
 
 BASE_INCLUDES += -I../e9k-lib
-BASE_INCLUDES += -I./e9ui
+BASE_INCLUDES += -I../e9ui
 BASE_INCLUDES += -I./lib9000
 BASE_INCLUDES += -I.
 INCLUDES += $(BASE_INCLUDES)
@@ -44,6 +44,7 @@ CFLAGS += -DUI_TEST_DISABLED
 endif
 CFLAGS += -DE9K_ENABLE_MEGADRIVE=$(E9K_ENABLE_MEGADRIVE)
 CFLAGS += -DE9K_ENABLE_GL_COMPOSITE=$(E9K_ENABLE_GL_COMPOSITE)
+CFLAGS += -DE9UI_ENABLE_GAMEPAD -DE9UI_ENABLE_DEBUG_FONT
 CFLAGS += $(INCLUDES)
 
 LIBS   += -ldl
@@ -81,6 +82,7 @@ W64_CFLAGS +=  -D_THREAD_SAFE
 W64_CFLAGS += -DUI_TEST_DISABLED
 W64_CFLAGS += -DE9K_ENABLE_MEGADRIVE=$(E9K_ENABLE_MEGADRIVE)
 W64_CFLAGS += -DE9K_ENABLE_GL_COMPOSITE=$(E9K_ENABLE_GL_COMPOSITE)
+W64_CFLAGS += -DE9UI_ENABLE_GAMEPAD -DE9UI_ENABLE_DEBUG_FONT
 W64_CFLAGS += $(W64_EXTRA_CFLAGS)
 W64_LIBS    = -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lSDL2_image -lreadline -lole32 -lcomdlg32 -lpng -lz -lopengl32
 W64_LIBS   += $(W64_EXTRA_LIBS)
@@ -100,6 +102,7 @@ BUNDLE_MACOS = $(BUNDLE_DIR)/MacOS
 BUNDLE_RESOURCES = $(BUNDLE_DIR)/Resources
 
 LIB9000_SRCS=alloc.c list.c resource.c file.c strutil.c
+E9UI_DIR = ../e9ui
 
 E9UI_SRCS=e9ui_textbox.c e9ui_text_cache.c e9ui_text_select.c e9ui_text.c e9ui_scroll.c e9ui_scrollbar.c e9ui_step_buttons.c e9ui.c e9ui_split.c e9ui_split_stack.c e9ui_stack.c\
 	  e9ui_image.c e9ui_box.c e9ui_hstack.c e9ui_button.c e9ui_checkbox.c e9ui_flow.c e9ui_header_flow.c e9ui_spacer.c e9ui_vspacer.c e9ui_separator.c\
@@ -146,12 +149,14 @@ SRCS += $(TREE_SITTER_C_DIR)/src/parser.c
 endif
 endif
 
-W64_SRCS = $(filter-out $(PLATFORM_POSIX_SRCS) $(PLATFORM_LINUX_SRCS) $(PLATFORM_MACOS_SRCS) ui_test.c,$(SRCS)) $(PLATFORM_W64_SRCS) $(addprefix e9ui/, $(E9UI_SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
-SRCS_C = $(filter %.c,$(SRCS)) $(addprefix e9ui/, $(E9UI_SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
+W64_SRCS = $(filter-out $(PLATFORM_POSIX_SRCS) $(PLATFORM_LINUX_SRCS) $(PLATFORM_MACOS_SRCS) ui_test.c,$(SRCS)) $(PLATFORM_W64_SRCS) $(addprefix lib9000/, $(LIB9000_SRCS))
+SRCS_C = $(filter %.c,$(SRCS)) $(addprefix lib9000/, $(LIB9000_SRCS))
 SRCS_M = $(filter %.m,$(SRCS))
-OBJS = $(SRCS_C:%.c=$(BUILD_DIR)/%.o) $(SRCS_M:%.m=$(BUILD_DIR)/%.o)
+E9UI_OBJS = $(addprefix $(BUILD_DIR)/e9ui/,$(E9UI_SRCS:%.c=%.o))
+OBJS = $(SRCS_C:%.c=$(BUILD_DIR)/%.o) $(SRCS_M:%.m=$(BUILD_DIR)/%.o) $(E9UI_OBJS)
 DEPS = $(OBJS:.o=.d)
-W64_OBJS = $(W64_SRCS:%.c=$(W64_BUILD_DIR)/%.o)
+W64_E9UI_OBJS = $(addprefix $(W64_BUILD_DIR)/e9ui/,$(E9UI_SRCS:%.c=%.o))
+W64_OBJS = $(W64_SRCS:%.c=$(W64_BUILD_DIR)/%.o) $(W64_E9UI_OBJS)
 W64_DEPS = $(W64_OBJS:.o=.d)
 
 all: $(TARGET)
@@ -225,7 +230,7 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/%.o: e9ui/%.c
+$(BUILD_DIR)/e9ui/%.o: $(E9UI_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -238,6 +243,10 @@ $(BUILD_DIR)/%.o: %.m
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(W64_BUILD_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(W64_CC) $(W64_CFLAGS) -c -o $@ $<
+
+$(W64_BUILD_DIR)/e9ui/%.o: $(E9UI_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(W64_CC) $(W64_CFLAGS) -c -o $@ $<
 

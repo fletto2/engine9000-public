@@ -9,9 +9,13 @@
 #pragma once
 
 #include <stdint.h>
+#include "e9ui.h"
 
 void
 ui_build(void);
+
+void
+ui_configureE9uiHost(void);
 
 void
 ui_updateSourceTitle(void);
@@ -42,3 +46,52 @@ ui_refreshHotkeyTooltips(void);
 
 void
 ui_toggleRollingSavePauseResume(void);
+
+int
+ui_runFullscreenTransition(e9ui_context_t *ctx,
+                           int entering,
+                           e9ui_component_t *from,
+                           e9ui_component_t *to,
+                           int width,
+                           int height);
+
+int
+ui_routeAuxWindowEvent(e9ui_context_t *ctx, SDL_Event *eventValue, uint32_t mainWindowId);
+
+int
+ui_ownsAuxWindowId(e9ui_context_t *ctx, uint32_t windowId);
+
+void
+ui_handleAuxWindowEvent(e9ui_context_t *ctx, const SDL_Event *eventValue);
+
+void
+ui_setMainWindowFocused(e9ui_context_t *ctx, int focused);
+
+int
+ui_normalizeMouseWheelY(e9ui_context_t *ctx, int value);
+
+int
+ui_handleGlobalKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev);
+
+void
+ui_shutdownHostUi(e9ui_context_t *ctx);
+
+void
+ui_prepareMainWindow(e9ui_context_t *ctx,
+                     int cliOverrideWindowSize,
+                     int startHidden,
+                     int *wantX,
+                     int *wantY,
+                     int *wantW,
+                     int *wantH,
+                     Uint32 *winFlags);
+
+int
+ui_shouldUseVsync(e9ui_context_t *ctx);
+
+void
+ui_finalizeMainWindow(e9ui_context_t *ctx,
+                      SDL_Window *window,
+                      SDL_Renderer *renderer,
+                      int wantW,
+                      int wantH);

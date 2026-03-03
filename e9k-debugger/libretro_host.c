@@ -148,6 +148,15 @@ typedef struct  {
     int frameWidth;
     int frameHeight;
     uint64_t frameSeq;
+    int estimateFpsEnabled;
+    uint8_t *estimateFpsReferenceFrameData;
+    size_t estimateFpsReferenceFrameCapacity;
+    size_t estimateFpsReferenceFrameSize;
+    size_t estimateFpsReferencePitch;
+    int estimateFpsReferenceWidth;
+    int estimateFpsReferenceHeight;
+    unsigned estimateFpsReferenceFrameIndex;
+    double estimateFpsValue;
     retro_set_environment_fn_t setEnvironment;
     retro_set_video_refresh_fn_t setVideoRefresh;
     retro_set_audio_sample_fn_t setAudioSample;
@@ -701,6 +710,112 @@ libretro_host_destroyTexture(void)
 }
 
 static void
+libretro_host_clearEstimateFpsState(void)
+{
+    if (libretro_host.estimateFpsReferenceFrameData) {
+        free(libretro_host.estimateFpsReferenceFrameData);
+        libretro_host.estimateFpsReferenceFrameData = NULL;
+    }
+    libretro_host.estimateFpsReferenceFrameCapacity = 0;
+    libretro_host.estimateFpsReferenceFrameSize = 0;
+    libretro_host.estimateFpsReferencePitch = 0;
+    libretro_host.estimateFpsReferenceWidth = 0;
+    libretro_host.estimateFpsReferenceHeight = 0;
+    libretro_host.estimateFpsReferenceFrameIndex = 0;
+    libretro_host.estimateFpsValue = 0.0;
+}
+
+static int
+libretro_host_estimateFpsEnsureReferenceCapacity(size_t needed)
+{
+    if (needed <= libretro_host.estimateFpsReferenceFrameCapacity) {
+        return 1;
+    }
+    uint8_t *next = (uint8_t *)realloc(libretro_host.estimateFpsReferenceFrameData, needed);
+    if (!next) {
+        return 0;
+    }
+    libretro_host.estimateFpsReferenceFrameData = next;
+    libretro_host.estimateFpsReferenceFrameCapacity = needed;
+    return 1;
+}
+
+static int
+libretro_host_estimateFpsFramesDiffer(const uint8_t *frameData,
+                                      unsigned width,
+                                      unsigned height,
+                                      size_t pitch)
+{
+    if (!frameData ||
+        !libretro_host.estimateFpsReferenceFrameData ||
+        width != (unsigned)libretro_host.estimateFpsReferenceWidth ||
+        height != (unsigned)libretro_host.estimateFpsReferenceHeight ||
+        pitch != libretro_host.estimateFpsReferencePitch) {
+        return 1;
+    }
+    size_t frameSize = (size_t)height * pitch;
+    if (frameSize != libretro_host.estimateFpsReferenceFrameSize) {
+        return 1;
+    }
+    return memcmp(frameData, libretro_host.estimateFpsReferenceFrameData, frameSize) != 0 ? 1 : 0;
+}
+
+static void
+libretro_host_estimateFpsStoreReferenceFrame(const uint8_t *frameData,
+                                             unsigned width,
+                                             unsigned height,
+                                             size_t pitch,
+                                             unsigned frameIndex)
+{
+    if (!frameData || !width || !height) {
+        return;
+    }
+    size_t frameSize = (size_t)height * pitch;
+    if (!libretro_host_estimateFpsEnsureReferenceCapacity(frameSize)) {
+        return;
+    }
+    memcpy(libretro_host.estimateFpsReferenceFrameData, frameData, frameSize);
+    libretro_host.estimateFpsReferenceFrameSize = frameSize;
+    libretro_host.estimateFpsReferencePitch = pitch;
+    libretro_host.estimateFpsReferenceWidth = (int)width;
+    libretro_host.estimateFpsReferenceHeight = (int)height;
+    libretro_host.estimateFpsReferenceFrameIndex = frameIndex;
+}
+
+static void
+libretro_host_estimateFpsProcessFrame(const uint8_t *frameData,
+                                      unsigned width,
+                                      unsigned height,
+                                      size_t pitch,
+                                      unsigned frameIndex)
+{
+    if (!libretro_host.estimateFpsEnabled) {
+        return;
+    }
+    if (!frameData || !width || !height || pitch == 0) {
+        return;
+    }
+    if (!libretro_host.estimateFpsReferenceFrameData ||
+        libretro_host.estimateFpsReferenceFrameSize == 0) {
+        libretro_host_estimateFpsStoreReferenceFrame(frameData, width, height, pitch, frameIndex);
+        return;
+    }
+    if (!libretro_host_estimateFpsFramesDiffer(frameData, width, height, pitch)) {
+        return;
+    }
+    if (frameIndex > libretro_host.estimateFpsReferenceFrameIndex) {
+        unsigned span = frameIndex - libretro_host.estimateFpsReferenceFrameIndex;
+        if (span > 0u) {
+            double coreFps = libretro_host_getTimingFps();
+            if (coreFps > 0.0) {
+                libretro_host.estimateFpsValue = coreFps / (double)span;
+            }
+        }
+    }
+    libretro_host_estimateFpsStoreReferenceFrame(frameData, width, height, pitch, frameIndex);
+}
+
+static void
 libretro_host_clearFrame(void)
 {
     if (libretro_host.frameData) {
@@ -712,6 +827,7 @@ libretro_host_clearFrame(void)
     libretro_host.frameWidth = 0;
     libretro_host.frameHeight = 0;
     libretro_host.frameSeq = 0;
+    libretro_host_clearEstimateFpsState();
 }
 
 static void
@@ -819,6 +935,11 @@ libretro_host_videoCallback(const void *data, unsigned width, unsigned height, s
         libretro_host.frameWidth = (int)width;
         libretro_host.frameHeight = (int)height;
         libretro_host.frameSeq++;
+        libretro_host_estimateFpsProcessFrame(libretro_host.frameData,
+                                              width,
+                                              height,
+                                              libretro_host.framePitch,
+                                              frameIndex);
         return;
     }
 
@@ -844,6 +965,11 @@ libretro_host_videoCallback(const void *data, unsigned width, unsigned height, s
     libretro_host.frameWidth = (int)width;
     libretro_host.frameHeight = (int)height;
     libretro_host.frameSeq++;
+    libretro_host_estimateFpsProcessFrame(libretro_host.frameData,
+                                          width,
+                                          height,
+                                          pitch,
+                                          frameIndex);
 }
 
 static int16_t
@@ -1536,6 +1662,29 @@ libretro_host_getTimingFps(void)
         return fps;
     }
     return 60.0;
+}
+
+void
+libretro_host_setEstimateFpsEnabled(int enabled)
+{
+    int nextEnabled = enabled ? 1 : 0;
+    if (libretro_host.estimateFpsEnabled == nextEnabled) {
+        return;
+    }
+    libretro_host.estimateFpsEnabled = nextEnabled;
+    libretro_host_clearEstimateFpsState();
+}
+
+int
+libretro_host_getEstimateFpsEnabled(void)
+{
+    return libretro_host.estimateFpsEnabled ? 1 : 0;
+}
+
+double
+libretro_host_getEstimatedVideoFps(void)
+{
+    return libretro_host.estimateFpsValue;
 }
 
 void

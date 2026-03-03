@@ -9,7 +9,7 @@
 #include "e9ui.h"
 #include <stdio.h>
 #include <sys/stat.h>
-#include "debugger.h"
+#include "platform.h"
 
 typedef struct e9ui_fileselect_state {
     char *label;
@@ -269,7 +269,7 @@ e9ui_fileselect_openDialog(e9ui_context_t *ctx, void *user)
     const char *start = NULL;
     if (e9ui_fileselect_getInitialDir(st, initial, sizeof(initial))) {
         start = initial;
-    } else if (debugger_platform_getCurrentDir(initial, sizeof(initial))) {
+    } else if (platform_getCurrentDir(initial, sizeof(initial))) {
         start = initial;
     }
     printf("[fileselect] openDialog label='%s' mode=%d start='%s'\n",
@@ -277,14 +277,14 @@ e9ui_fileselect_openDialog(e9ui_context_t *ctx, void *user)
            (int)st->mode,
            start ? start : "");
     if (st->mode == E9UI_FILESELECT_FOLDER) {
-        result = debugger_platform_selectFolderDialog(title, start);
+        result = platform_selectFolderDialog(title, start);
     } else {
-        result = debugger_platform_openFileDialog(title,
-                                                  start,
-                                                  st->extensionCount,
-                                                  (const char * const *)st->extensions,
-                                                  NULL,
-                                                  0);
+        result = platform_openFileDialog(title,
+                                         start,
+                                         st->extensionCount,
+                                         (const char * const *)st->extensions,
+                                         NULL,
+                                         0);
     }
     printf("[fileselect] openDialog result='%s'\n", result ? result : "");
     if (result && *result) {
@@ -312,7 +312,7 @@ e9ui_fileselect_newFileDialog(e9ui_context_t *ctx, void *user)
 
     if (e9ui_fileselect_getInitialDir(st, initial, sizeof(initial))) {
         start = initial;
-    } else if (debugger_platform_getCurrentDir(initial, sizeof(initial))) {
+    } else if (platform_getCurrentDir(initial, sizeof(initial))) {
         start = initial;
     }
 
@@ -329,11 +329,11 @@ e9ui_fileselect_newFileDialog(e9ui_context_t *ctx, void *user)
            st->label ? st->label : "",
            start ? start : "");
 
-    result = debugger_platform_saveFileDialog(title,
-                                              start,
-                                              st->extensionCount,
-                                              (const char * const *)st->extensions,
-                                              NULL);
+    result = platform_saveFileDialog(title,
+                                     start,
+                                     st->extensionCount,
+                                     (const char * const *)st->extensions,
+                                     NULL);
     printf("[fileselect] newFileDialog result='%s'\n", result ? result : "");
     if (result && *result) {
         e9ui_textbox_setText(st->textbox, result);

@@ -7,7 +7,6 @@
  */
 
 #include "e9ui.h"
-#include "debugger.h"
 #include <string.h>
 
 typedef struct e9ui_button_state {
@@ -408,7 +407,7 @@ e9ui_button_render(e9ui_component_t *self, e9ui_context_t *ctx)
     SDL_Color textColor = disabled ? e9ui_button_disabledTextColor(&theme->text) : theme->text;
     int allow_cache = 1;
     if ((st->glowPulse || focused) && !disabled && !pressed) {
-        float t = (float)debugger_uiTicks() / 1000.0f;
+        float t = (float)e9ui_getTicks(ctx) / 1000.0f;
         float phase = 0.5f + 0.5f * sinf(t * 3.2f);
         fillColor = e9ui_button_applyGlow(&fillColor, phase);
         hi = e9ui_button_applyGlow(&hi, phase);

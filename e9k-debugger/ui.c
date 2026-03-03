@@ -32,12 +32,15 @@
 #include "profile.h"
 #include "profile_list.h"
 #include "profile_checkpoints.h"
+#include "print_eval.h"
 #include "prompt.h"
 #include "registers.h"
 #include "settings.h"
+#include "shader_ui.h"
 #include "snapshot.h"
 #include "rom_config.h"
 #include "source_pane.h"
+#include "sprite_debug.h"
 #include "stack.h"
 #include "status_bar.h"
 #include "system_badge.h"
@@ -45,6 +48,14 @@
 #include "trainer.h"
 #include "console.h"
 #include "smoke_test.h"
+#include "custom_log.h"
+#include "custom_ui.h"
+#include "memory_track_ui.h"
+#include "mega_sprite_debug.h"
+#include "transition.h"
+#include "input_record.h"
+#include "ui_test.h"
+#include "gl_composite.h"
 
 static e9ui_component_t *ui_source_panes[2];
 static e9ui_component_t *ui_btnContinue = NULL;
@@ -79,6 +90,205 @@ static char ui_tipRecord[128];
 static char ui_tipSettings[128];
 static char ui_tipReset[128];
 static char ui_tipRestart[128];
+#ifdef _WIN32
+static SDL_Rect ui_windowsDefaultUsableBounds = {0, 0, 0, 0};
+static int ui_windowsApplyDefaultUsableBounds = 0;
+#endif
+
+static uint32_t
+ui_hostGetTicks(e9ui_context_t *ctx)
+{
+    (void)ctx;
+    return debugger_uiTicks();
+}
+
+static void
+ui_hostSetRefreshHz(e9ui_context_t *ctx, int refreshHz)
+{
+    (void)ctx;
+    debugger.uiRefreshHz = refreshHz;
+}
+
+static const char *
+ui_hostGetWindowIconAssetPath(e9ui_context_t *ctx)
+{
+    (void)ctx;
+    return debugger_platform_windowIconAssetPath();
+}
+
+static uint64_t
+ui_hostGetNextUiFrameId(e9ui_context_t *ctx)
+{
+    (void)ctx;
+    return debugger.uiFrameCounter + 1;
+}
+
+static void
+ui_hostCommitUiFrameId(e9ui_context_t *ctx, uint64_t frameId)
+{
+    (void)ctx;
+    debugger.uiFrameCounter = frameId;
+}
+
+static int
+ui_hostCaptureUiFrame(e9ui_context_t *ctx, uint64_t frameId, SDL_Renderer *renderer)
+{
+    (void)ctx;
+    if (ui_test_hasFailed()) {
+        return 0;
+    }
+    return ui_test_captureWindowFrame(frameId, renderer);
+}
+
+static int
+ui_hostTransformTextboxSelection(e9ui_context_t *ctx,
+                                 const char *actionId,
+                                 const char *input,
+                                 char *out,
+                                 size_t outCap)
+{
+    (void)ctx;
+    if (!actionId || !input || !out || outCap == 0) {
+        return 0;
+    }
+    if (strcmp(actionId, "eval") != 0) {
+        return 0;
+    }
+    return print_eval_eval(input, out, outCap);
+}
+
+static int
+ui_hostShouldPresentFrame(e9ui_context_t *ctx)
+{
+    (void)ctx;
+    return 1;
+}
+
+static int
+ui_hostPollInjectedUiEvent(e9ui_context_t *ctx, uint64_t frameId, SDL_Event *eventValue)
+{
+    (void)ctx;
+    (void)frameId;
+    ui_test_mode_t mode = ui_test_getMode();
+    if (mode != UI_TEST_MODE_COMPARE && mode != UI_TEST_MODE_REMAKE) {
+        return 0;
+    }
+    int hasEvent = input_record_pollUiEvent(eventValue);
+    SDL_Event dummy;
+    SDL_PollEvent(&dummy);
+    return hasEvent ? 1 : -1;
+}
+
+static void
+ui_hostRecordUiEvent(e9ui_context_t *ctx, uint64_t frameId, const SDL_Event *eventValue)
+{
+    (void)ctx;
+    if (input_record_isUiEventRecording() && !input_record_isInjecting()) {
+        input_record_recordUiEvent(frameId, eventValue);
+    }
+}
+
+void
+ui_prepareMainWindow(e9ui_context_t *ctx,
+                     int cliOverrideWindowSize,
+                     int startHidden,
+                     int *wantX,
+                     int *wantY,
+                     int *wantW,
+                     int *wantH,
+                     Uint32 *winFlags)
+{
+    (void)ctx;
+    (void)startHidden;
+#ifdef _WIN32
+    ui_windowsDefaultUsableBounds = (SDL_Rect){0, 0, 0, 0};
+    ui_windowsApplyDefaultUsableBounds = 0;
+#endif
+#ifdef __APPLE__
+    if (e9ui->glCompositeEnabled && !debugger_platform_glCompositeNeedsOpenGLHint()) {
+        e9ui->glCompositeEnabled = 0;
+        debug_error("gl-composite: disabled (virtualized macOS renderer path)");
+    }
+#endif
+    int useDefaultWindowGeometry =
+        (!cliOverrideWindowSize &&
+         e9ui->layout.winX == E9UI_LAYOUT_WIN_X &&
+         e9ui->layout.winY == E9UI_LAYOUT_WIN_Y &&
+         e9ui->layout.winW == E9UI_LAYOUT_WIN_W &&
+         e9ui->layout.winH == E9UI_LAYOUT_WIN_H) ? 1 : 0;
+    if (useDefaultWindowGeometry && ui_shouldUseVsync(NULL)) {
+        SDL_Rect usable = {0, 0, 0, 0};
+        if (SDL_GetDisplayUsableBounds(0, &usable) == 0 &&
+            usable.w > 0 && usable.h > 0) {
+#ifdef _WIN32
+            ui_windowsDefaultUsableBounds = usable;
+            ui_windowsApplyDefaultUsableBounds = 1;
+#else
+            *wantW = usable.w;
+            *wantH = usable.h;
+            *wantX = usable.x;
+            *wantY = usable.y;
+#endif
+        }
+    }
+    if (e9ui->glCompositeEnabled && debugger_platform_glCompositeNeedsOpenGLHint()) {
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+    }
+    if (e9ui->glCompositeEnabled) {
+        *winFlags |= SDL_WINDOW_OPENGL;
+    }
+}
+
+int
+ui_shouldUseVsync(e9ui_context_t *ctx)
+{
+    (void)ctx;
+    ui_test_mode_t mode = ui_test_getMode();
+    if (mode == UI_TEST_MODE_COMPARE || mode == UI_TEST_MODE_REMAKE) {
+        return 0;
+    }
+    return 1;
+}
+
+void
+ui_finalizeMainWindow(e9ui_context_t *ctx,
+                      SDL_Window *window,
+                      SDL_Renderer *renderer,
+                      int wantW,
+                      int wantH)
+{
+    (void)ctx;
+#ifdef _WIN32
+#if SDL_VERSION_ATLEAST(2,0,5)
+    if (ui_windowsApplyDefaultUsableBounds) {
+        int borderTop = 0;
+        int borderLeft = 0;
+        int borderBottom = 0;
+        int borderRight = 0;
+        if (SDL_GetWindowBordersSize(window, &borderTop, &borderLeft, &borderBottom, &borderRight) == 0) {
+            int fitClientW = ui_windowsDefaultUsableBounds.w - borderLeft - borderRight;
+            int fitClientH = ui_windowsDefaultUsableBounds.h - borderTop - borderBottom;
+            if (fitClientW > 0 && fitClientH > 0) {
+                SDL_SetWindowSize(window, fitClientW, fitClientH);
+                SDL_SetWindowPosition(window,
+                                      ui_windowsDefaultUsableBounds.x + borderLeft,
+                                      ui_windowsDefaultUsableBounds.y + borderTop);
+            }
+        } else {
+            debug_error("SDL_GetWindowBordersSize failed: %s", SDL_GetError());
+        }
+    }
+#endif
+#endif
+    if (!ui_shouldUseVsync(NULL)) {
+        SDL_SetWindowSize(window, wantW, wantH);
+    }
+    if (e9ui->glCompositeEnabled) {
+        if (!gl_composite_init(window, renderer)) {
+            debug_error("gl-composite: disabled (init failed)");
+        }
+    }
+}
 
 static void
 ui_recordRefreshTooltip(void);
@@ -153,6 +363,156 @@ ui_basename(const char *path)
     const char *back = strrchr(path, '\\');
     const char *best = slash > back ? slash : back;
     return best ? best + 1 : path;
+}
+
+int
+ui_runFullscreenTransition(e9ui_context_t *ctx,
+                           int entering,
+                           e9ui_component_t *from,
+                           e9ui_component_t *to,
+                           int width,
+                           int height)
+{
+    (void)ctx;
+    e9k_transition_mode_t mode = transition_pickFullscreenMode(entering ? 1 : 0);
+    if (mode == e9k_transition_none) {
+        return 0;
+    }
+    e9ui->transition.inTransition = 1;
+    if (entering) {
+        if (mode == e9k_transition_slide) {
+            transition_slide_runTo(from, to, width, height);
+        } else if (mode == e9k_transition_explode) {
+            transition_explode_runTo(from, to, width, height);
+        } else if (mode == e9k_transition_doom) {
+            transition_doom_runTo(from, to, width, height);
+        } else if (mode == e9k_transition_flip) {
+            transition_flip_runTo(from, to, width, height);
+        } else if (mode == e9k_transition_rbar) {
+            transition_rbar_runTo(from, to, width, height);
+        }
+    } else {
+        if (mode == e9k_transition_slide) {
+            transition_slide_run(from, to, width, height);
+        } else if (mode == e9k_transition_explode) {
+            transition_explode_run(from, to, width, height);
+        } else if (mode == e9k_transition_doom) {
+            transition_doom_runTo(from, to, width, height);
+        } else if (mode == e9k_transition_flip) {
+            transition_flip_run(from, to, width, height);
+        } else if (mode == e9k_transition_rbar) {
+            transition_rbar_run(from, to, width, height);
+        }
+    }
+    return 1;
+}
+
+int
+ui_routeAuxWindowEvent(e9ui_context_t *ctx, SDL_Event *eventValue, uint32_t mainWindowId)
+{
+    (void)ctx;
+    if (!eventValue) {
+        return 0;
+    }
+    uint32_t evWindowId = 0;
+    switch (eventValue->type) {
+    case SDL_MOUSEMOTION:
+        evWindowId = eventValue->motion.windowID;
+        break;
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+        evWindowId = eventValue->button.windowID;
+        break;
+    case SDL_MOUSEWHEEL:
+        evWindowId = eventValue->wheel.windowID;
+        break;
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+        evWindowId = eventValue->key.windowID;
+        break;
+    case SDL_TEXTINPUT:
+        evWindowId = eventValue->text.windowID;
+        break;
+    case SDL_WINDOWEVENT:
+        evWindowId = eventValue->window.windowID;
+        break;
+    default:
+        break;
+    }
+    if (!evWindowId || (mainWindowId && evWindowId == mainWindowId)) {
+        return 0;
+    }
+    if (custom_log_getWindowId() == evWindowId) {
+        custom_log_handleEvent(eventValue);
+        return 1;
+    }
+    if (custom_ui_getWindowId() == evWindowId) {
+        custom_ui_handleEvent(eventValue);
+        return 1;
+    }
+    if (shader_ui_getWindowId() == evWindowId) {
+        shader_ui_handleEvent(eventValue);
+        return 1;
+    }
+    if (memory_track_ui_getWindowId() == evWindowId) {
+        memory_track_ui_handleEvent(eventValue);
+        return 1;
+    }
+    return 0;
+}
+
+int
+ui_ownsAuxWindowId(e9ui_context_t *ctx, uint32_t windowId)
+{
+    (void)ctx;
+    if (!windowId) {
+        return 0;
+    }
+    return sprite_debug_is_window_id(windowId) || mega_sprite_debug_ownsWindowId(windowId);
+}
+
+void
+ui_handleAuxWindowEvent(e9ui_context_t *ctx, const SDL_Event *eventValue)
+{
+    (void)ctx;
+    if (!eventValue) {
+        return;
+    }
+    sprite_debug_handleWindowEvent(eventValue);
+    mega_sprite_debug_handleWindowEvent(eventValue);
+}
+
+void
+ui_setMainWindowFocused(e9ui_context_t *ctx, int focused)
+{
+    (void)ctx;
+    custom_ui_setMainWindowFocused(focused);
+    custom_log_setMainWindowFocused(focused);
+    shader_ui_setMainWindowFocused(focused);
+    memory_track_ui_setMainWindowFocused(focused);
+    sprite_debug_setMainWindowFocused(focused);
+    mega_sprite_debug_setMainWindowFocused(focused);
+}
+
+int
+ui_normalizeMouseWheelY(e9ui_context_t *ctx, int value)
+{
+    (void)ctx;
+    return debugger_platform_normalizeMouseWheelY(value);
+}
+
+int
+ui_handleGlobalKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
+{
+    return hotkeys_handleKeydown(ctx, kev);
+}
+
+void
+ui_shutdownHostUi(e9ui_context_t *ctx)
+{
+    (void)ctx;
+    gl_composite_shutdown();
+    hotkeys_shutdown();
 }
 
 void
@@ -565,6 +925,35 @@ ui_copyFramebufferToClipboard(void)
 }
 
 void
+ui_configureE9uiHost(void)
+{
+    e9ui->ctx.getTicks = ui_hostGetTicks;
+    e9ui->ctx.setRefreshHz = ui_hostSetRefreshHz;
+    e9ui->ctx.getWindowIconAssetPath = ui_hostGetWindowIconAssetPath;
+    e9ui->ctx.getNextUiFrameId = ui_hostGetNextUiFrameId;
+    e9ui->ctx.commitUiFrameId = ui_hostCommitUiFrameId;
+    e9ui->ctx.captureUiFrame = ui_hostCaptureUiFrame;
+    e9ui->ctx.transformTextboxSelection = ui_hostTransformTextboxSelection;
+    e9ui->ctx.shouldPresentFrame = ui_hostShouldPresentFrame;
+    e9ui->ctx.pollInjectedUiEvent = ui_hostPollInjectedUiEvent;
+    e9ui->ctx.recordUiEvent = ui_hostRecordUiEvent;
+    e9ui->ctx.runFullscreenTransition = ui_runFullscreenTransition;
+    e9ui->ctx.routeAuxWindowEvent = ui_routeAuxWindowEvent;
+    e9ui->ctx.ownsAuxWindowId = ui_ownsAuxWindowId;
+    e9ui->ctx.handleAuxWindowEvent = ui_handleAuxWindowEvent;
+    e9ui->ctx.setMainWindowFocused = ui_setMainWindowFocused;
+    e9ui->ctx.normalizeMouseWheelY = ui_normalizeMouseWheelY;
+    e9ui->ctx.handleGlobalKeydown = ui_handleGlobalKeydown;
+    e9ui->ctx.shutdownHostUi = ui_shutdownHostUi;
+    e9ui->ctx.prepareMainWindow = ui_prepareMainWindow;
+    e9ui->ctx.shouldUseVsync = ui_shouldUseVsync;
+    e9ui->ctx.finalizeMainWindow = ui_finalizeMainWindow;
+    e9ui->ctx.registerHotkey = hotkeys_registerHotkey;
+    e9ui->ctx.unregisterHotkey = hotkeys_unregisterHotkey;
+    e9ui->ctx.dispatchHotkey = hotkeys_dispatchHotkey;
+}
+
+void
 ui_build(void)
 {
     // Build top row: [ image 240x48 ] [ toolbar grows ]
@@ -579,6 +968,7 @@ ui_build(void)
     e9ui->ctx.applyCompletion = prompt_applyCompletion;
     e9ui->ctx.showCompletions = prompt_showCompletions;
     e9ui->ctx.hideCompletions = prompt_hideCompletions;
+    ui_configureE9uiHost();
 
     e9ui_component_t *comp_console = console_makeComponent();
     e9ui_component_t *comp_console_box = e9ui_box_make(comp_console);

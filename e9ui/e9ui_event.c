@@ -102,6 +102,7 @@ e9ui_event_processMouseCallbacks(e9ui_component_t *comp, e9ui_context_t *ctx, co
         mouse_ev.dx = ev->motion.xrel;
         mouse_ev.dy = ev->motion.yrel;
         mouse_ev.button = E9UI_MOUSE_BUTTON_NONE;
+        mouse_ev.clicks = 0;
         inside = e9ui_event_pointInBounds(comp, mouse_ev.x, mouse_ev.y);
         if (inside && !comp->mouseInside) {
             comp->mouseInside = 1;
@@ -124,6 +125,7 @@ e9ui_event_processMouseCallbacks(e9ui_component_t *comp, e9ui_context_t *ctx, co
         mouse_ev.x = ev->button.x;
         mouse_ev.y = ev->button.y;
         mouse_ev.button = e9ui_event_translateMouseButton(ev->button.button);
+        mouse_ev.clicks = ev->button.clicks;
         inside = e9ui_event_pointInBounds(comp, mouse_ev.x, mouse_ev.y);
         if (inside) {
             comp->mouseInside = 1;
@@ -149,6 +151,7 @@ e9ui_event_processMouseCallbacks(e9ui_component_t *comp, e9ui_context_t *ctx, co
         mouse_ev.x = ev->button.x;
         mouse_ev.y = ev->button.y;
         mouse_ev.button = e9ui_event_translateMouseButton(ev->button.button);
+        mouse_ev.clicks = ev->button.clicks;
         inside = e9ui_event_pointInBounds(comp, mouse_ev.x, mouse_ev.y);
         int wasPressed = comp->mousePressed && comp->mousePressedButton == mouse_ev.button;
         if (wasPressed && comp->onMouseUp) {

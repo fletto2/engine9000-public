@@ -7,9 +7,7 @@
  */
 
 #include "e9ui.h"
-#include "debugger.h"
-#include "print_eval.h"
-#include "strutil.h"
+#include "platform.h"
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -902,7 +900,11 @@ textbox_convertSelectionExpression(textbox_state_t *st,
     char replacement[256];
     evalOut[0] = '\0';
     replacement[0] = '\0';
-    int ok = print_eval_eval(selection, evalOut, sizeof(evalOut));
+    int ok = e9ui_transformTextboxSelection(ctx,
+                                            "eval",
+                                            selection,
+                                            evalOut,
+                                            sizeof(evalOut));
     if (!ok || !textbox_evalExtractReplacement(selection, evalOut, replacement, sizeof(replacement))) {
         alloc_free(selection);
         return 0;
@@ -1078,7 +1080,7 @@ textbox_pathJoin(char *out, size_t cap, const char *dir, const char *name)
     memcpy(out, dir, dlen);
     size_t pos = dlen;
     if (needSep) {
-        out[pos++] = debugger_platform_preferredPathSeparator();
+        out[pos++] = platform_preferredPathSeparator();
     }
     memcpy(out + pos, name, nlen);
     out[pos + nlen] = '\0';
@@ -1092,12 +1094,14 @@ textbox_expandTilde(const char *in, char *out, size_t cap)
         return 0;
     }
     if (in[0] != '~' || (in[1] != '\0' && in[1] != '/' && in[1] != '\\')) {
-        strutil_strlcpy(out, cap, in);
+        strncpy(out, in, cap - 1);
+        out[cap - 1] = '\0';
         return 1;
     }
     char home[PATH_MAX];
-    if (!debugger_platform_getHomeDir(home, sizeof(home))) {
-        strutil_strlcpy(out, cap, in);
+    if (!platform_getHomeDir(home, sizeof(home))) {
+        strncpy(out, in, cap - 1);
+        out[cap - 1] = '\0';
         return 1;
     }
     size_t hlen = strlen(home);
@@ -1113,7 +1117,7 @@ textbox_expandTilde(const char *in, char *out, size_t cap)
     memcpy(out, home, hlen);
     size_t pos = hlen;
     if (needSep) {
-        out[pos++] = debugger_platform_preferredPathSeparator();
+        out[pos++] = platform_preferredPathSeparator();
     }
     memcpy(out + pos, rest, rlen);
     out[pos + rlen] = '\0';
@@ -1204,7 +1208,7 @@ textbox_completionCompare(const void *a, const void *b)
     if (!sb) {
         sb = "";
     }
-    if (debugger_platform_caseInsensitivePaths()) {
+    if (platform_caseInsensitivePaths()) {
     while (*sa && *sb) {
         unsigned char ca = (unsigned char)tolower((unsigned char)*sa);
         unsigned char cb = (unsigned char)tolower((unsigned char)*sb);
@@ -1285,7 +1289,7 @@ textbox_completionScanEntry(const char *path, void *user)
     }
     if (isDir) {
         char entry[PATH_MAX];
-        int written = snprintf(entry, sizeof(entry), "%s%c", name, debugger_platform_preferredPathSeparator());
+        int written = snprintf(entry, sizeof(entry), "%s%c", name, platform_preferredPathSeparator());
         if (written > 0 && (size_t)written < sizeof(entry)) {
             textbox_completionAppend(ctx->state, entry);
         }
@@ -1311,8 +1315,8 @@ textbox_buildFilenameCompletions(textbox_state_t *st, const char *dirPath, const
     scanCtx.state = st;
     scanCtx.fragment = fragment;
     scanCtx.foldersOnly = foldersOnly ? 1 : 0;
-    scanCtx.caseInsensitive = debugger_platform_caseInsensitivePaths();
-    if (!debugger_platform_scanFolder(dir, textbox_completionScanEntry, &scanCtx)) {
+    scanCtx.caseInsensitive = platform_caseInsensitivePaths();
+    if (!platform_scanFolder(dir, textbox_completionScanEntry, &scanCtx)) {
         return 0;
     }
 
@@ -1364,7 +1368,7 @@ textbox_applyFilenameCompletionChoice(textbox_state_t *st, e9ui_context_t *ctx, 
         if (textbox_pathJoin(full, sizeof(full), dirForCheck, choiceText) && textbox_isDirPath(full)) {
             char last = (nl > 0) ? st->scratch[nl - 1] : '\0';
             if (last != '/' && last != '\\') {
-                st->scratch[nl++] = debugger_platform_preferredPathSeparator();
+                st->scratch[nl++] = platform_preferredPathSeparator();
                 st->scratch[nl] = '\0';
                 addSep = 1;
             }
@@ -1491,7 +1495,7 @@ textbox_filenameCompletion(textbox_state_t *st, e9ui_context_t *ctx, TTF_Font *f
     }
 
     int count = st->completionCount;
-    int caseInsensitive = debugger_platform_caseInsensitivePaths();
+    int caseInsensitive = platform_caseInsensitivePaths();
     if (count == 1) {
         const char *cand = st->completionList[0] ? st->completionList[0] : "";
         textbox_applyFilenameCompletionChoice(st, ctx, font, viewW, cand);
@@ -1905,7 +1909,7 @@ textbox_onMouseDown(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_mous
     }
     textbox_markClear(st);
     TTF_Font *font = e9ui->theme.text.prompt ? e9ui->theme.text.prompt : ctx->font;
-    Uint32 now = debugger_uiTicks();
+    Uint32 now = e9ui_getTicks(ctx);
     if ((now - st->last_click_ms) <= 350 && abs(ev->x - st->last_click_x) <= 4) {
         st->click_streak++;
     } else {
