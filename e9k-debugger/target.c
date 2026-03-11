@@ -2,7 +2,7 @@
 #include "target.h"
 #include <SDL.h>
 
-target_iface_t* target_targets[3];
+target_iface_t* target_targets[4];
 target_iface_t* target;
 static size_t target_targetCount = 0;
 
@@ -23,6 +23,10 @@ target_ctor(void)
 #if E9K_ENABLE_MEGADRIVE
     target_targets[TARGET_MEGADRIVE] = target_megadrive();
     target_targetCount = 3;
+#endif
+#if E9K_ENABLE_ATARIST
+    target_targets[TARGET_ATARIST] = target_atarist();
+    target_targetCount = TARGET_ATARIST + 1;
 #endif
 
     target_setConfigDefaults();
@@ -52,10 +56,12 @@ target_setConfigDefaults(void)
     target_iface_t *amiga = target_amiga();
     target_iface_t *neogeo = target_neogeo();
     target_iface_t *megadrive = target_megadrive();
+    target_iface_t *atarist = target_atarist();
 
     target_applyConfigDefaultsFor(amiga);
     target_applyConfigDefaultsFor(neogeo);
     target_applyConfigDefaultsFor(megadrive);
+    target_applyConfigDefaultsFor(atarist);
 }
 
 target_iface_t *

@@ -799,7 +799,13 @@ e9ui_window_overlayHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, cons
             return 1;
         }
     } else if (ev->type == SDL_MOUSEWHEEL) {
-        if (e9ui_window_overlayPointInE9Rect(&st->rect, ev->wheel.mouseX, ev->wheel.mouseY)) {
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+        int wx = ev->wheel.mouseX, wy = ev->wheel.mouseY;
+#else
+        int wx, wy;
+        SDL_GetMouseState(&wx, &wy);
+#endif
+        if (e9ui_window_overlayPointInE9Rect(&st->rect, wx, wy)) {
             return 1;
         }
     }

@@ -11,12 +11,13 @@ ifeq ($(HOST_OS),Darwin)
 LIBRETRO_PLATFORM := osx
 endif
 
-.PHONY: all w64 release-w64 clean test mega9000 mega9000-w64 mega9000-clean mega9000-support update-public
+.PHONY: all w64 release-w64 clean test mega9000 mega9000-w64 mega9000-clean mega9000-support st9000 st9000-w64 st9000-clean update-public
 
 all:
 	$(MAKE) $(JOBS) -C ami9000 platform=$(LIBRETRO_PLATFORM)
 	$(MAKE) $(JOBS) -C geo9000/libretro platform=$(LIBRETRO_PLATFORM)
 	$(MAKE) mega9000
+	$(MAKE) st9000
 	$(MAKE) $(JOBS) -C e9k-debugger
 	$(MAKE) $(JOBS) -C tools/amiga/adf9000
 	$(MAKE) $(JOBS) -C tools/amiga/hdf9000
@@ -40,6 +41,7 @@ clean:
 	$(MAKE) $(JOBS) -C geo9000/libretro platform=win64 CC=$(MINGW_CC) clean
 	$(MAKE) $(JOBS) -C geo9000/libretro clean
 	$(MAKE) mega9000-clean
+	$(MAKE) st9000-clean
 	$(MAKE) $(JOBS) -C e9k-debugger clean
 	$(MAKE) $(JOBS) -C tools/amiga/adf9000 clean
 	$(MAKE) $(JOBS) -C tools/amiga/hdf9000 clean
@@ -50,15 +52,12 @@ test:
 	$(MAKE) -C tools/amiga/adf9000 test
 
 mega9000-support:
-	@if [ -f .gitmodules ] && git config -f .gitmodules --get submodule.mega9000.path >/dev/null 2>&1; then \
-		echo "Updating mega9000 submodule..."; \
-		if git submodule update --init --recursive $(MEGA9000_DIR); then \
-			echo "mega9000 support is ready"; \
-		else \
-			echo "mega9000 is skipped (submodule update failed)"; \
-		fi; \
+	@if [ -d $(MEGA9000_DIR) ]; then \
+		echo "mega9000 already present"; \
 	else \
-		echo "mega9000 is skipped (no mega9000 submodule configured). Run 'git submodule add <url> $(MEGA9000_DIR)' to enable support."; \
+		echo "Cloning mega9000..."; \
+		git clone https://github.com/alpine9000/mega9000.git $(MEGA9000_DIR) && \
+		echo "mega9000 support is ready"; \
 	fi
 
 mega9000:
@@ -80,6 +79,33 @@ mega9000-clean:
 		$(MAKE) $(JOBS) -C $(MEGA9000_DIR) -f Makefile.libretro clean; \
 	else \
 		echo "mega9000 is skipped (repo not present)."; \
+	fi
+
+ST9000_DIR=st9000
+ST9000_MAKEFILE=$(ST9000_DIR)/Makefile.libretro
+
+st9000:
+	@if [ -f $(ST9000_MAKEFILE) ]; then \
+		$(MAKE) $(JOBS) -C $(ST9000_DIR) -f Makefile.libretro platform=$(LIBRETRO_PLATFORM); \
+		cp $(ST9000_DIR)/hatari_libretro.so e9k-debugger/system/st9000.so 2>/dev/null || \
+		cp $(ST9000_DIR)/hatari_libretro.dylib e9k-debugger/system/st9000.dylib 2>/dev/null || \
+		true; \
+	else \
+		echo "st9000 is skipped (repo not present)."; \
+	fi
+
+st9000-w64:
+	@if [ -f $(ST9000_MAKEFILE) ]; then \
+		$(MAKE) $(JOBS) -C $(ST9000_DIR) -f Makefile.libretro platform=win64 CC=$(MINGW_CC); \
+	else \
+		echo "st9000 is skipped (repo not present)."; \
+	fi
+
+st9000-clean:
+	@if [ -f $(ST9000_MAKEFILE) ]; then \
+		$(MAKE) $(JOBS) -C $(ST9000_DIR) -f Makefile.libretro clean; \
+	else \
+		echo "st9000 is skipped (repo not present)."; \
 	fi
 
 update-public:

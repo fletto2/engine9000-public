@@ -68,6 +68,11 @@ typedef struct e9k_megadrive_config {
     char romFolder[PATH_MAX];
 } e9k_megadrive_config_t;
 
+typedef struct e9k_atarist_config {
+    e9k_libretro_config_t libretro;
+    char romFolder[PATH_MAX];
+} e9k_atarist_config_t;
+
 typedef struct amiga_debug {
     int *debugDma;
     int *debugCopper;
@@ -79,6 +84,7 @@ typedef struct e9k_system_config {
     e9k_neogeo_config_t neogeo;
     e9k_amiga_config_t amiga;
     e9k_megadrive_config_t megadrive;
+    e9k_atarist_config_t atarist;
     int recordEnabled;
     int logosEnabled;
     int crtEnabled;

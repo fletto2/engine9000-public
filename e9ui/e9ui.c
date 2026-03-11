@@ -2549,7 +2549,7 @@ e9ui_processEvents(void)
             ev.wheel.y = e9ui_normalizeMouseWheelY(&e9ui->ctx, ev.wheel.y);
             int scaledX = e9ui->ctx.mouseX;
             int scaledY = e9ui->ctx.mouseY;
-#if SDL_VERSION_ATLEAST(2, 0, 18)
+#if SDL_VERSION_ATLEAST(2, 26, 0)
             if (ev.wheel.mouseX != 0 || ev.wheel.mouseY != 0) {
                 scaledX = e9ui_scale_coord(&e9ui->ctx, ev.wheel.mouseX);
                 scaledY = e9ui_scale_coord(&e9ui->ctx, ev.wheel.mouseY);

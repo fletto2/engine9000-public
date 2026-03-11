@@ -1178,8 +1178,10 @@ custom_log_overlayTranslateEventLocal(e9ui_component_t *self, const e9ui_event_t
         return 1;
     }
     if (ev->type == SDL_MOUSEWHEEL) {
+#if SDL_VERSION_ATLEAST(2, 26, 0)
         out->wheel.mouseX -= self->bounds.x;
         out->wheel.mouseY -= self->bounds.y;
+#endif
         return 1;
     }
     if (ev->type == SDL_KEYDOWN || ev->type == SDL_KEYUP) {
