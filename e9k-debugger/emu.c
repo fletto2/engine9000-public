@@ -20,26 +20,47 @@
 #include "ui.h"
 #include "hotkeys.h"
 #include "e9ui_button.h"
+#include "e9ui_scroll.h"
 #include "shader_ui.h"
 #include "emu_geo.h"
 #define EMU_RANGE_BAR_MAX 4
 #define EMU_OVERLAY_BUTTON_MICRO_THRESHOLD_W 480
 #define EMU_OVERLAY_BUTTON_NANO_THRESHOLD_W 350
+#define EMU_ZOOM_MIN_PERCENT 100
+#define EMU_ZOOM_MAX_PERCENT 400
+#define EMU_ZOOM_STEP_PERCENT 25
 
 typedef struct emu_range_bar_binding {
     size_t index;
 } emu_range_bar_binding_t;
 
+typedef struct emu_zoom_binding {
+    int deltaPercent;
+    struct geo9000_state *state;
+} emu_zoom_binding_t;
+
 typedef struct geo9000_state {
     int wasFocused;
+    int zoomPercent;
+    int viewportWidth;
+    int viewportHeight;
+    int contentWidth;
+    int contentHeight;
+    e9ui_component_t *viewComp;
+    e9ui_component_t *scrollComp;
+    char *scrollMeta;
     char *seekBarMeta;
     int seekBarForcedHidden;
     int histogramEnabled;
     char *shaderUiBtnMeta;
+    char *zoomOutBtnMeta;
+    char *zoomInBtnMeta;
     char *buttonStackMeta;
     size_t rangeBarCount;
     char *rangeBarMeta[EMU_RANGE_BAR_MAX];
     emu_range_bar_binding_t rangeBarBindings[EMU_RANGE_BAR_MAX];
+    emu_zoom_binding_t zoomOutBinding;
+    emu_zoom_binding_t zoomInBinding;
 } emu_state_t;
 
 typedef struct geo9000_button_stack_state {
@@ -402,6 +423,97 @@ emu_buttonStackMake(void)
     return comp;
 }
 
+static int
+emu_zoomClampPercent(int zoomPercent)
+{
+    if (zoomPercent < EMU_ZOOM_MIN_PERCENT) {
+        return EMU_ZOOM_MIN_PERCENT;
+    }
+    if (zoomPercent > EMU_ZOOM_MAX_PERCENT) {
+        return EMU_ZOOM_MAX_PERCENT;
+    }
+    return zoomPercent;
+}
+
+static void
+emu_updateScrollContentSize(emu_state_t *state, e9ui_component_t *scroll)
+{
+    int zoomPercent = 0;
+    int contentWidth = 0;
+    int contentHeight = 0;
+
+    if (!state || !scroll) {
+        return;
+    }
+    zoomPercent = emu_zoomClampPercent(state->zoomPercent);
+    state->zoomPercent = zoomPercent;
+
+    contentWidth = (state->viewportWidth * zoomPercent + 99) / 100;
+    contentHeight = (state->viewportHeight * zoomPercent + 99) / 100;
+    if (contentWidth < 1) {
+        contentWidth = 1;
+    }
+    if (contentHeight < 1) {
+        contentHeight = 1;
+    }
+
+    state->contentWidth = contentWidth;
+    state->contentHeight = contentHeight;
+    e9ui_scroll_setContentWidthPx(scroll, contentWidth);
+    e9ui_scroll_setContentHeightPx(scroll, contentHeight);
+}
+
+static void
+emu_adjustZoom(e9ui_context_t *ctx, void *user)
+{
+    emu_zoom_binding_t *binding = (emu_zoom_binding_t*)user;
+    emu_state_t *state = NULL;
+    e9ui_component_t *scroll = NULL;
+    int oldZoom = 0;
+    int newZoom = 0;
+    int oldContentWidth = 0;
+    int oldContentHeight = 0;
+    int oldScrollX = 0;
+    int oldScrollY = 0;
+    int centerX = 0;
+    int centerY = 0;
+    int newScrollX = 0;
+    int newScrollY = 0;
+
+    (void)ctx;
+    if (!binding || !binding->state) {
+        return;
+    }
+    state = binding->state;
+    scroll = state->scrollComp;
+    if (!scroll) {
+        return;
+    }
+
+    oldZoom = emu_zoomClampPercent(state->zoomPercent);
+    newZoom = emu_zoomClampPercent(oldZoom + binding->deltaPercent);
+    if (newZoom == oldZoom) {
+        return;
+    }
+
+    oldContentWidth = state->contentWidth > 0 ? state->contentWidth : scroll->bounds.w;
+    oldContentHeight = state->contentHeight > 0 ? state->contentHeight : scroll->bounds.h;
+    e9ui_scroll_getScrollPx(scroll, &oldScrollX, &oldScrollY);
+    centerX = oldScrollX + scroll->bounds.w / 2;
+    centerY = oldScrollY + scroll->bounds.h / 2;
+
+    state->zoomPercent = newZoom;
+    emu_updateScrollContentSize(state, scroll);
+
+    if (oldContentWidth > 0) {
+        newScrollX = ((centerX * state->contentWidth) + oldContentWidth / 2) / oldContentWidth - scroll->bounds.w / 2;
+    }
+    if (oldContentHeight > 0) {
+        newScrollY = ((centerY * state->contentHeight) + oldContentHeight / 2) / oldContentHeight - scroll->bounds.h / 2;
+    }
+    e9ui_scroll_setScrollPx(scroll, newScrollX, newScrollY);
+}
+
 static void
 emu_toggleShaderUi(e9ui_context_t *ctx, void *user)
 {
@@ -544,6 +656,9 @@ emu_pointInBounds(const e9ui_component_t *comp, int x, int y)
 }
 
 static int
+emu_getVideoDst(e9ui_component_t *self, SDL_Rect *outDst);
+
+static int
 emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
 {
     if (!self || !ev) {
@@ -588,6 +703,13 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
         int my = (ev->type == SDL_MOUSEMOTION) ? ev->motion.y : ev->button.y;
         if (!emu_pointInBounds(self, mx, my)) {
             return 0;
+        }
+        if (target && target->emu && target->emu->handleOverlayEvent &&
+            (ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP)) {
+            SDL_Rect dst;
+            if (emu_getVideoDst(self, &dst) && target->emu->handleOverlayEvent(ctx, &dst, ev)) {
+                return 1;
+            }
         }
         if (ev->type == SDL_MOUSEBUTTONDOWN) {
             (void)emu_mouseCaptureEnable(ctx);
@@ -687,11 +809,62 @@ emu_fitRect(e9ui_rect_t bounds, int tex_w, int tex_h)
     return dst;
 }
 
+static int
+emu_getVideoDst(e9ui_component_t *self, SDL_Rect *outDst)
+{
+    const uint8_t *data = NULL;
+    int tex_w = 0;
+    int tex_h = 0;
+    size_t pitch = 0;
+
+    if (outDst) {
+        memset(outDst, 0, sizeof(*outDst));
+    }
+    if (!self || !outDst) {
+        return 0;
+    }
+    if (!libretro_host_getFrame(&data, &tex_w, &tex_h, &pitch)) {
+        return 0;
+    }
+    *outDst = emu_fitRect(self->bounds, tex_w, tex_h);
+    if (target->emu->adjustVideoDst) {
+        target->emu->adjustVideoDst(outDst);
+    }
+    return 1;
+}
+
 static void
 emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
 {
+    SDL_Rect prevClip;
+    SDL_Rect viewClip;
+    SDL_bool clipEnabled = SDL_FALSE;
+    int clipApplied = 0;
+
     if (!ctx || !ctx->renderer) {
         return;
+    }
+    if (!self) {
+        return;
+    }
+    clipEnabled = SDL_RenderIsClipEnabled(ctx->renderer);
+    SDL_RenderGetClipRect(ctx->renderer, &prevClip);
+    viewClip.x = self->bounds.x;
+    viewClip.y = self->bounds.y;
+    viewClip.w = self->bounds.w;
+    viewClip.h = self->bounds.h;
+    if (viewClip.w > 0 && viewClip.h > 0) {
+        if (clipEnabled) {
+            SDL_Rect mergedClip;
+            if (SDL_IntersectRect(&prevClip, &viewClip, &mergedClip)) {
+                SDL_RenderSetClipRect(ctx->renderer, &mergedClip);
+            } else {
+                SDL_RenderSetClipRect(ctx->renderer, &viewClip);
+            }
+        } else {
+            SDL_RenderSetClipRect(ctx->renderer, &viewClip);
+        }
+        clipApplied = 1;
     }
     emu_state_t *state = (emu_state_t *)self->state;
     emu_mouseCaptureValidate(ctx);
@@ -707,9 +880,12 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
     int tex_h = 0;
     size_t pitch = 0;
     if (!libretro_host_getFrame(&data, &tex_w, &tex_h, &pitch)) {
-        return;
+        goto restore_clip;
     }
-    SDL_Rect dst = emu_fitRect(self->bounds, tex_w, tex_h);
+    SDL_Rect dst;
+    if (!emu_getVideoDst(self, &dst)) {
+        goto restore_clip;
+    }
     if (gl_composite_isActive()) {
         if (e9ui->glCompositeCapture) {
             if (gl_composite_captureToRenderer(ctx->renderer, data, tex_w, tex_h, pitch, &dst)) {
@@ -721,7 +897,7 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
     } else {
         SDL_Texture *tex = libretro_host_getTexture(ctx->renderer);
         if (!tex) {
-            return;
+            goto restore_clip;
         }
         SDL_RenderCopy(ctx->renderer, tex, NULL, &dst);
     }
@@ -803,6 +979,147 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
             }
         }
     }
+
+restore_clip:
+    if (clipApplied) {
+        if (clipEnabled) {
+            SDL_RenderSetClipRect(ctx->renderer, &prevClip);
+        } else {
+            SDL_RenderSetClipRect(ctx->renderer, NULL);
+        }
+    }
+}
+
+static int
+emu_hostPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
+{
+    (void)self;
+    (void)ctx;
+    (void)availW;
+    return 0;
+}
+
+static void
+emu_hostLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
+{
+    emu_state_t *state = NULL;
+    e9ui_component_t *scroll = NULL;
+
+    if (!self) {
+        return;
+    }
+    self->bounds = bounds;
+    state = (emu_state_t*)self->state;
+    if (!state) {
+        return;
+    }
+    state->viewportWidth = bounds.w > 0 ? bounds.w : 1;
+    state->viewportHeight = bounds.h > 0 ? bounds.h : 1;
+    scroll = state->scrollComp;
+    if (!scroll) {
+        return;
+    }
+    emu_updateScrollContentSize(state, scroll);
+    if (scroll->layout) {
+        scroll->layout(scroll, ctx, bounds);
+    }
+}
+
+static void
+emu_hostRenderButtonStack(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    emu_state_t *state = NULL;
+    e9ui_component_t *stack = NULL;
+    int overlayButtonMode = emu_overlay_button_mode_mini;
+    int microThresholdW = 0;
+    int nanoThresholdW = 0;
+    int margin = 0;
+    int stackW = 0;
+    int stackH = 0;
+
+    if (!self || !ctx) {
+        return;
+    }
+    state = (emu_state_t*)self->state;
+    if (!state || !state->buttonStackMeta) {
+        return;
+    }
+    stack = e9ui_child_find(self, state->buttonStackMeta);
+    if (!stack) {
+        return;
+    }
+
+    microThresholdW = e9ui_scale_px(ctx, EMU_OVERLAY_BUTTON_MICRO_THRESHOLD_W);
+    nanoThresholdW = e9ui_scale_px(ctx, EMU_OVERLAY_BUTTON_NANO_THRESHOLD_W);
+    if (self->bounds.w <= nanoThresholdW) {
+        overlayButtonMode = emu_overlay_button_mode_nano;
+    } else if (self->bounds.w <= microThresholdW) {
+        overlayButtonMode = emu_overlay_button_mode_micro;
+    }
+    emu_buttonStackSetCompactMode(stack, overlayButtonMode);
+
+    margin = e9ui_scale_px(ctx, 8);
+    emu_buttonStackMeasure(stack, ctx, &stackW, &stackH);
+    if (stackW <= 0 || stackH <= 0) {
+        return;
+    }
+    stack->bounds.x = self->bounds.x + self->bounds.w - stackW - margin;
+    stack->bounds.y = self->bounds.y + margin;
+    stack->bounds.w = stackW;
+    stack->bounds.h = stackH;
+    if (stack->layout) {
+        stack->layout(stack, ctx, stack->bounds);
+    }
+    e9ui_setAutoHideClip(stack, &self->bounds);
+    if (!e9ui_getHidden(stack) && stack->render) {
+        stack->render(stack, ctx);
+    }
+}
+
+static void
+emu_hostRender(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    emu_state_t *state = NULL;
+    SDL_Rect dst;
+
+    if (!self || !ctx) {
+        return;
+    }
+    state = (emu_state_t*)self->state;
+    if (state && state->scrollComp && state->scrollComp->render) {
+        state->scrollComp->render(state->scrollComp, ctx);
+    }
+    emu_hostRenderButtonStack(self, ctx);
+    if (state && state->viewComp &&
+        target && target->emu && target->emu->renderForeground &&
+        emu_getVideoDst(state->viewComp, &dst)) {
+        target->emu->renderForeground(ctx, &dst);
+    }
+}
+
+static int
+emu_hostHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
+{
+    emu_state_t *state = NULL;
+    e9ui_component_t *stack = NULL;
+
+    if (!self || !ev) {
+        return 0;
+    }
+    state = (emu_state_t*)self->state;
+    if (state && state->buttonStackMeta &&
+        (ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP || ev->type == SDL_MOUSEMOTION)) {
+        int mx = (ev->type == SDL_MOUSEMOTION) ? ev->motion.x : ev->button.x;
+        int my = (ev->type == SDL_MOUSEMOTION) ? ev->motion.y : ev->button.y;
+        stack = e9ui_child_find(self, state->buttonStackMeta);
+        if (stack && emu_pointInBounds(stack, mx, my)) {
+            return 0;
+        }
+    }
+    if (state && state->scrollComp && state->scrollComp->handleEvent) {
+        return state->scrollComp->handleEvent(state->scrollComp, ctx, ev);
+    }
+    return 0;
 }
 
 static void
@@ -819,35 +1136,108 @@ emu_dtor(e9ui_component_t *self, e9ui_context_t *ctx)
     (void)self;
 }
 
+static void
+emu_viewDtor(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    (void)ctx;
+    if (!self) {
+        return;
+    }
+    self->state = NULL;
+}
+
 e9ui_component_t *
 emu_makeComponent(void)
 {
     e9ui_component_t *comp = (e9ui_component_t*)alloc_calloc(1, sizeof(*comp));
+    e9ui_component_t *view = (e9ui_component_t*)alloc_calloc(1, sizeof(*view));
     emu_state_t *state = (emu_state_t*)alloc_calloc(1, sizeof(*state));
+    e9ui_component_t *scroll = NULL;
+
+    if (!comp || !view || !state) {
+        alloc_free(comp);
+        alloc_free(view);
+        alloc_free(state);
+        return NULL;
+    }
+
     comp->name = "emu";
-    comp->preferredHeight = emu_viewPreferredHeight;
-    comp->layout = emu_viewLayout;
-    comp->render = emu_viewRender;
-    comp->handleEvent = emu_handleEvent;
+    comp->preferredHeight = emu_hostPreferredHeight;
+    comp->layout = emu_hostLayout;
+    comp->render = emu_hostRender;
+    comp->handleEvent = emu_hostHandleEvent;
     comp->dtor = emu_dtor;
-    comp->focusable = 1;
     comp->state = state;
 
+    view->name = "emu_view";
+    view->preferredHeight = emu_viewPreferredHeight;
+    view->layout = emu_viewLayout;
+    view->render = emu_viewRender;
+    view->handleEvent = emu_handleEvent;
+    view->dtor = emu_viewDtor;
+    view->focusable = 1;
+    view->state = state;
+
     state->histogramEnabled = 0;
+    state->zoomPercent = 100;
+    state->viewportWidth = 1;
+    state->viewportHeight = 1;
+    state->viewComp = view;
+
+    scroll = e9ui_scroll_make(view);
+    if (!scroll) {
+        alloc_free(view);
+        alloc_free(state);
+        alloc_free(comp);
+        return NULL;
+    }
+    state->scrollComp = scroll;
+    state->scrollMeta = alloc_strdup("scroll");
+    e9ui_child_add(comp, scroll, state->scrollMeta);
+
     e9ui_component_t *button_stack = emu_buttonStackMake();
     if (button_stack) {
         e9ui_setAutoHide(button_stack, 1, 64);
-        e9ui_setFocusTarget(button_stack, comp);
+        e9ui_setFocusTarget(button_stack, view);
         state->buttonStackMeta = alloc_strdup("button_stack");
         e9ui_child_add(comp, button_stack, state->buttonStackMeta);
     }
 
-    target->emu->createOverlays(comp, button_stack);
+    state->zoomOutBinding.deltaPercent = -EMU_ZOOM_STEP_PERCENT;
+    state->zoomOutBinding.state = state;
+    state->zoomInBinding.deltaPercent = EMU_ZOOM_STEP_PERCENT;
+    state->zoomInBinding.state = state;
+
+    e9ui_component_t *btnZoomOut = e9ui_button_make("-", emu_adjustZoom, &state->zoomOutBinding);
+    if (btnZoomOut) {
+        e9ui_button_setMini(btnZoomOut, 1);
+        e9ui_setFocusTarget(btnZoomOut, view);
+        state->zoomOutBtnMeta = alloc_strdup("zoom_out");
+        if (button_stack) {
+            e9ui_child_add(button_stack, btnZoomOut, state->zoomOutBtnMeta);
+        } else {
+            e9ui_child_add(comp, btnZoomOut, state->zoomOutBtnMeta);
+        }
+    }
+
+    e9ui_component_t *btnZoomIn = e9ui_button_make("+", emu_adjustZoom, &state->zoomInBinding);
+    if (btnZoomIn) {
+        e9ui_button_setMini(btnZoomIn, 1);
+        e9ui_setFocusTarget(btnZoomIn, view);
+        state->zoomInBtnMeta = alloc_strdup("zoom_in");
+        if (button_stack) {
+            e9ui_child_add(button_stack, btnZoomIn, state->zoomInBtnMeta);
+        } else {
+            e9ui_child_add(comp, btnZoomIn, state->zoomInBtnMeta);
+        }
+    }
+
+    target->emu->createOverlays(view, button_stack);
     
-    e9ui_component_t *btn_shader = e9ui_button_make("CRT Settings", emu_toggleShaderUi, comp);
+    e9ui_component_t *btn_shader = e9ui_button_make("CRT Settings", emu_toggleShaderUi, view);
     if (btn_shader) {
         e9ui_button_setMini(btn_shader, 1);
-        e9ui_setFocusTarget(btn_shader, comp);
+        e9ui_setFocusTarget(btn_shader, view);
         state->shaderUiBtnMeta = alloc_strdup("shader_ui");
         if (button_stack) {
             e9ui_child_add(button_stack, btn_shader, state->shaderUiBtnMeta);
@@ -873,7 +1263,7 @@ emu_makeComponent(void)
         }
         e9ui_setAutoHide(seek, 1, e9ui_seek_bar_getHoverMargin(seek));
         state->seekBarMeta = alloc_strdup("seek_bar");
-        e9ui_child_add(comp, seek, state->seekBarMeta);
+        e9ui_child_add(view, seek, state->seekBarMeta);
     }
 
     if (target && target->emu && target->emu->rangeBarCount && target->emu->rangeBarDescribe) {
@@ -906,7 +1296,7 @@ emu_makeComponent(void)
             range_bar_setTooltipCallback(rangeBar, emu_rangeBarTooltip, &state->rangeBarBindings[i]);
             e9ui_setAutoHide(rangeBar, 1, range_bar_getHoverMargin(rangeBar));
             state->rangeBarMeta[i] = alloc_strdup(desc.metaKey);
-            e9ui_child_add(comp, rangeBar, state->rangeBarMeta[i]);
+            e9ui_child_add(view, rangeBar, state->rangeBarMeta[i]);
         }
     }
     return comp;

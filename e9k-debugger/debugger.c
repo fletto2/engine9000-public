@@ -842,6 +842,7 @@ debugger_main(int argc, char **argv)
     } else {
       debugger_applyCoreOptions();
       debugger.amigaDebug.debugDma = NULL;
+      debugger.amigaDebug.debugCopper = NULL;
       if (!libretro_host_start(corePath, debugger.libretro.romPath,
                                debugger.libretro.systemDir, debugger.libretro.saveDir)) {
         debug_error("libretro: failed to start core");

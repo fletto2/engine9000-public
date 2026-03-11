@@ -50,6 +50,7 @@
 typedef struct custom_ui_state {
     int open;
     int blitterEnabled;
+    int copperVisualiserEnabled;
     int blitterDebugEnabled;
     int suppressBlitterDebugCallbacks;
     int blitterVisMode;
@@ -92,6 +93,7 @@ typedef struct custom_ui_state {
     e9ui_component_t *bitplanesCheckbox;
     e9ui_component_t *bitplaneCheckboxes[CUSTOM_UI_AMIGA_BITPLANE_COUNT];
     e9ui_component_t *audiosCheckbox;
+    e9ui_component_t *copperVisualiserCheckbox;
     e9ui_component_t *blitterDebugCheckbox;
     e9ui_component_t *blitterVisPatternCheckbox;
     e9ui_component_t *blitterVisModeCheckbox;
@@ -372,6 +374,7 @@ static const SDL_Color custom_ui_dmaColorIdle = { 0x5a, 0x5a, 0x5a, 255 };
 
 static custom_ui_state_t custom_ui_state = {
     .blitterEnabled = 1,
+    .copperVisualiserEnabled = 0,
     .blitterDebugEnabled = 0,
     .blitterVisMode = CUSTOM_UI_BLITTER_VIS_MODE_COLLECT,
     .blitterVisBlink = 1,
@@ -429,6 +432,9 @@ custom_ui_syncDmaStatsCycleExactHint(custom_ui_state_t *ui);
 
 static void
 custom_ui_syncEstimateFpsDisplay(custom_ui_state_t *ui);
+
+static void
+custom_ui_syncCopperVisualiserCheckbox(custom_ui_state_t *ui);
 
 static e9ui_window_backend_t
 custom_ui_windowBackend(void)
@@ -2674,21 +2680,19 @@ custom_ui_updateCopperStatsChart(custom_ui_state_t *ui)
         return;
     }
 
-    e9k_debug_ami_dma_debug_frame_info_t probedInfo;
-    memset(&probedInfo, 0, sizeof(probedInfo));
-    size_t probedRecordCount = 0u;
-    const e9k_debug_ami_dma_debug_raw_record_t *probedRecords = NULL;
+    const e9k_debug_ami_dma_debug_frame_view_t *probedFrame = NULL;
     int haveProbe = 0;
     if (ui->dmaStatsEnabled) {
-        probedRecordCount = libretro_host_debugAmiGetDmaDebugFramePtr(
-            E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE,
-            &probedRecords,
-            &probedInfo);
-        if (probedRecordCount > 0u && probedRecords && probedInfo.frameNumber >= 0) {
+        probedFrame = libretro_host_debugAmiGetDmaDebugFrameView(
+            E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE);
+        if (probedFrame &&
+            probedFrame->records &&
+            probedFrame->info.recordCount > 0u &&
+            probedFrame->info.frameNumber >= 0) {
             haveProbe = 1;
             if (ui->dmaStatsCacheValid &&
                 ui->dmaStatsCacheFrameSelect == (int)E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE &&
-                ui->dmaStatsCacheFrameNumber == probedInfo.frameNumber) {
+                ui->dmaStatsCacheFrameNumber == probedFrame->info.frameNumber) {
                 return;
             }
         }
@@ -2729,19 +2733,15 @@ custom_ui_updateCopperStatsChart(custom_ui_state_t *ui)
         int *debugDma = NULL;
         libretro_host_debugGetAmigaDebugDmaAddr(&debugDma);
         uint32_t dmaFrameSelect = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE;
-        e9k_debug_ami_dma_debug_frame_info_t dmaInfo = probedInfo;
-        size_t dmaRecordCount = probedRecordCount;
-        const e9k_debug_ami_dma_debug_raw_record_t *records = probedRecords;
+        const e9k_debug_ami_dma_debug_frame_view_t *dmaFrame = probedFrame;
         if (!haveProbe) {
-            dmaRecordCount = libretro_host_debugAmiGetDmaDebugFramePtr(
-                dmaFrameSelect,
-                &records,
-                &dmaInfo);
+            dmaFrame = libretro_host_debugAmiGetDmaDebugFrameView(dmaFrameSelect);
         }
-        if (dmaRecordCount > 0u && records) {
-            size_t readTotal = dmaRecordCount;
-            e9k_debug_ami_dma_debug_frame_info_t readInfo = dmaInfo;
-            int stride = readInfo.hposCount > 0 ? readInfo.hposCount : dmaInfo.hposCount;
+        if (dmaFrame && dmaFrame->records && dmaFrame->info.recordCount > 0u) {
+            size_t readTotal = dmaFrame->info.recordCount;
+            e9k_debug_ami_dma_debug_frame_info_t readInfo = dmaFrame->info;
+            const e9k_debug_ami_dma_debug_raw_record_t *records = dmaFrame->records;
+            int stride = readInfo.hposCount;
             if (stride <= 0) {
                 stride = 288;
             }
@@ -2752,8 +2752,9 @@ custom_ui_updateCopperStatsChart(custom_ui_state_t *ui)
             if (libretro_host_debugAmiGetVideoLineCount(&videoLineCount) && videoLineCount > 0) {
                 int debugDmaMode = (debugDma && *debugDma > 0) ? *debugDma : 0;
                 int visibleMax = videoLineCount - 1;
-                if (debugDmaMode == (int)E9K_DEBUG_AMI_DMA_DEBUG_MODE_COLLECT_ONLY) {
-                    // Collect-only mode has no overlay scaling.
+                if (debugDmaMode == (int)E9K_DEBUG_AMI_DMA_DEBUG_MODE_COLLECT_ONLY ||
+                    debugDmaMode == (int)E9K_DEBUG_AMI_DMA_DEBUG_MODE_VIDEO_SYNC) {
+                    // These modes do not use the legacy core-side overlay scaling.
                 } else if (debugDmaMode >= 4) {
                     visibleMax /= 2;
                 } else {
@@ -2899,10 +2900,12 @@ custom_ui_updateCopperStatsChart(custom_ui_state_t *ui)
                         dmaSlotsAvailableFrame = (uint32_t)totalAvailable64;
             }
         }
-        if (dmaFrameSelect == E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE && dmaInfo.frameNumber >= 0) {
+        if (dmaFrame &&
+            dmaFrameSelect == E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE &&
+            dmaFrame->info.frameNumber >= 0) {
             ui->dmaStatsCacheValid = 1;
             ui->dmaStatsCacheFrameSelect = (int)dmaFrameSelect;
-            ui->dmaStatsCacheFrameNumber = dmaInfo.frameNumber;
+            ui->dmaStatsCacheFrameNumber = dmaFrame->info.frameNumber;
         } else {
             ui->dmaStatsCacheValid = 0;
             ui->dmaStatsCacheFrameSelect = 0;
@@ -3752,6 +3755,18 @@ custom_ui_syncBlitterDebugCheckbox(custom_ui_state_t *ui)
     custom_ui_syncBlitterDebugSuboptions(ui);
 }
 
+static void
+custom_ui_syncCopperVisualiserCheckbox(custom_ui_state_t *ui)
+{
+    if (!ui) {
+        return;
+    }
+    ui->copperVisualiserEnabled = emu_ami_getCopperDebugEnabled() ? 1 : 0;
+    if (ui->copperVisualiserCheckbox) {
+        e9ui_checkbox_setSelected(ui->copperVisualiserCheckbox, ui->copperVisualiserEnabled, &ui->ctx);
+    }
+}
+
 static int
 custom_ui_areAllSpritesEnabled(const custom_ui_state_t *ui)
 {
@@ -3993,6 +4008,19 @@ custom_ui_blitterDebugChanged(e9ui_component_t *self, e9ui_context_t *ctx, int s
     ui->blitterDebugEnabled = selected ? 1 : 0;
     custom_ui_applyBlitterDebugOption();
     custom_ui_syncBlitterDebugSuboptions(ui);
+}
+
+static void
+custom_ui_copperVisualiserChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    custom_ui_state_t *ui = (custom_ui_state_t*)user;
+    if (!ui) {
+        return;
+    }
+    ui->copperVisualiserEnabled = selected ? 1 : 0;
+    emu_ami_setCopperDebugEnabled(ui->copperVisualiserEnabled);
 }
 
 static void
@@ -4759,6 +4787,18 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
     }
     e9ui_stack_addFixed(leftColumn, e9ui_vspacer_make(8));
 
+    e9ui_component_t *cbBlitter = e9ui_checkbox_make("Blitter",
+                                                     ui->blitterEnabled,
+                                                     custom_ui_blitterChanged,
+                                                     ui);
+    if (!cbBlitter) {
+        e9ui_childDestroy(rootStack, &ui->ctx);
+        return NULL;
+    }
+    e9ui_checkbox_setLeftMargin(cbBlitter, 12);
+    e9ui_stack_addFixed(leftColumn, cbBlitter);
+    e9ui_stack_addFixed(leftColumn, e9ui_vspacer_make(8));
+
     e9ui_component_t *cbEstimateFps = e9ui_checkbox_make("Estimate FPS",
                                                          ui->estimateFpsEnabled,
                                                          custom_ui_estimateFpsChanged,
@@ -4768,6 +4808,7 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
         return NULL;
     }
     ui->estimateFpsCheckbox = cbEstimateFps;
+    e9ui_checkbox_setLeftMargin(cbEstimateFps, 12);
 
     e9ui_component_t *estimateFpsText = e9ui_text_make("--");
     if (!estimateFpsText) {
@@ -4782,7 +4823,7 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
         return NULL;
     }
     ui->estimateFpsTextRow = estimateFpsTextRow;
-    e9ui_component_t *estimateFpsRow = custom_ui_dmaStatsHeaderRowMake(cbEstimateFps, estimateFpsTextRow, 12, 16);
+    e9ui_component_t *estimateFpsRow = custom_ui_dmaStatsHeaderRowMake(cbEstimateFps, estimateFpsTextRow, 0, 16);
     if (!estimateFpsRow) {
         e9ui_childDestroy(rootStack, &ui->ctx);
         return NULL;
@@ -4796,16 +4837,17 @@ custom_ui_buildRoot(custom_ui_state_t *ui)
         return NULL;
     }
 
-    e9ui_component_t *cbBlitter = e9ui_checkbox_make("Blitter",
-                                                     ui->blitterEnabled,
-                                                     custom_ui_blitterChanged,
-                                                     ui);
-    if (!cbBlitter) {
+    e9ui_component_t *cbCopperVisualiser = e9ui_checkbox_make("Copper Visualiser",
+                                                              ui->copperVisualiserEnabled,
+                                                              custom_ui_copperVisualiserChanged,
+                                                              ui);
+    if (!cbCopperVisualiser) {
         e9ui_childDestroy(rootStack, &ui->ctx);
         return NULL;
     }
-    e9ui_checkbox_setLeftMargin(cbBlitter, 12);
-    e9ui_stack_addFixed(rightColumn, cbBlitter);
+    ui->copperVisualiserCheckbox = cbCopperVisualiser;
+    e9ui_checkbox_setLeftMargin(cbCopperVisualiser, 12);
+    e9ui_stack_addFixed(rightColumn, cbCopperVisualiser);
     e9ui_stack_addFixed(rightColumn, e9ui_vspacer_make(8));
 
     e9ui_component_t *cbBlitterDebug = e9ui_checkbox_make("Blitter Visualiser",
@@ -5278,6 +5320,7 @@ custom_ui_prepareFrame(custom_ui_state_t *ui, const e9ui_context_t *frameCtx)
         ui->pendingRemove = NULL;
     }
     custom_ui_syncBlitterDebugCheckbox(ui);
+    custom_ui_syncCopperVisualiserCheckbox(ui);
     custom_ui_tickBlitterVisDecayTextbox(ui);
     custom_ui_tickCopperLimitTextboxes(ui);
     custom_ui_tickBplptrLineLimitTextboxes(ui);
@@ -5384,6 +5427,7 @@ custom_ui_init(void)
     ui->bitplanesCheckbox = NULL;
     ui->bplptrBlockAllCheckbox = NULL;
     ui->audiosCheckbox = NULL;
+    ui->copperVisualiserCheckbox = NULL;
     ui->copperLimitCheckbox = NULL;
     ui->copperLimitStartRow = NULL;
     ui->copperLimitStartTextbox = NULL;

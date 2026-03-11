@@ -439,9 +439,8 @@ e9ui_getOverlayHost(void)
 static void
 e9ui_sceneUpdateState(void)
 {
-    e9ui_component_t *contentRoot = e9ui_activeContentRoot();
-    if (contentRoot) {
-        e9ui_updateState(contentRoot, &e9ui->ctx);
+    if (e9ui->root) {
+        e9ui_updateState(e9ui->root, &e9ui->ctx);
     }
     if (e9ui->overlayRoot) {
         e9ui_updateState(e9ui->overlayRoot, &e9ui->ctx);
@@ -1790,7 +1789,7 @@ e9ui_pointerBlockedByOverlayAtCurrentMouse(void)
     return e9ui_pointerBlockedByOverlayRecursive(overlayRoot, e9ui->ctx.mouseX, e9ui->ctx.mouseY);
 }
 
-static void
+void
 e9ui_drawTooltip(const e9ui_context_t *ctx, const char *text, int baseX, int baseY)
 {
     if (!ctx || !ctx->renderer || !ctx->font || !text || !*text) {

@@ -37,6 +37,10 @@ extern bool libretro_frame_end;
 #define E9K_HACK_DMA_DEBUG_EXPORT 0
 #endif
 
+#ifndef E9K_HACK_COPPER_DEBUG_EXPORT
+#define E9K_HACK_COPPER_DEBUG_EXPORT 0
+#endif
+
 #if E9K_DEBUGGER_CUSTOM_LOGGER
 #define E9K_DEBUG_AMI_CUSTOM_LOG_ENTRY_CAP 262144u
 #endif
@@ -1456,47 +1460,11 @@ e9k_debug_ami_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, siz
 #endif
 }
 
-static void
-e9k_debug_dmaDebugCopyRecord(e9k_debug_ami_dma_debug_record_t *dst, const struct dma_rec *src)
-{
-	if (!dst || !src) {
-		return;
-	}
-	dst->hpos = src->hpos;
-	dst->vpos = src->vpos;
-	dst->dhpos = src->dhpos;
-	dst->reg = (uint16_t)src->reg;
-	dst->size = (uint16_t)src->size;
-	dst->dat = (uint64_t)src->dat;
-	dst->addr = (uint32_t)src->addr;
-	dst->evt = (uint32_t)src->evt;
-	dst->evt2 = (uint32_t)src->evt2;
-	dst->evtdata = (uint32_t)src->evtdata;
-	dst->type = (int16_t)src->type;
-	dst->extra = (uint16_t)src->extra;
-	dst->intlev = (int8_t)src->intlev;
-	dst->ipl = (int8_t)src->ipl;
-	dst->ipl2 = (int8_t)src->ipl2;
-	dst->evtdataset = src->evtdataset ? 1u : 0u;
-	dst->cf_reg = (uint16_t)src->cf_reg;
-	dst->cf_dat = (uint16_t)src->cf_dat;
-	dst->cf_addr = (uint16_t)src->cf_addr;
-	dst->ciareg = src->ciareg;
-	dst->ciamask = src->ciamask;
-	dst->ciaphase = src->ciaphase;
-	dst->ciavalue = (uint16_t)src->ciavalue;
-	dst->ciarw = src->ciarw ? 1u : 0u;
-	dst->end = src->end ? 1u : 0u;
-	dst->reserved[0] = 0u;
-	dst->reserved[1] = 0u;
-}
+static e9k_debug_ami_dma_debug_frame_view_t e9k_debug_dmaDebugFrameViews[2];
+static e9k_debug_ami_copper_debug_frame_view_t e9k_debug_copperDebugFrameViews[2];
 
-E9K_DEBUG_EXPORT size_t
-e9k_debug_ami_dma_debug_read_frame(uint32_t frameSelect,
-                                   e9k_debug_ami_dma_debug_record_t *out,
-                                   size_t cap,
-                                   e9k_debug_ami_dma_debug_frame_info_t *outInfo,
-                                   size_t infoCap)
+E9K_DEBUG_EXPORT const e9k_debug_ami_dma_debug_frame_view_t *
+e9k_debug_ami_dma_debug_get_frame_view(uint32_t frameSelect)
 {
 #if E9K_HACK_DMA_DEBUG_EXPORT
 	const struct dma_rec *records = NULL;
@@ -1508,15 +1476,16 @@ e9k_debug_ami_dma_debug_read_frame(uint32_t frameSelect,
 	int dmaHoffset = 0;
 	int debugDmaEnabled = 0;
 	int coreFrameSelect = DEBUG_DMA_EXPORT_FRAME_LATEST_COMPLETE;
-	size_t totalCount = 0;
+	int topEdgeX = 0;
+	int topEdgeY = 0;
+	int renderWidth = 0;
+	int renderHeight = 0;
+	int visibleOffsetX = 0;
+	int visibleOffsetY = 0;
+	e9k_debug_ami_dma_debug_frame_view_t *view = NULL;
 
 	if (frameSelect == E9K_DEBUG_AMI_DMA_DEBUG_FRAME_ACTIVE) {
 		coreFrameSelect = DEBUG_DMA_EXPORT_FRAME_ACTIVE;
-	}
-	if (outInfo && infoCap >= sizeof(*outInfo)) {
-		memset(outInfo, 0, sizeof(*outInfo));
-		outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
-		outInfo->frameSelect = frameSelect;
 	}
 	if (!debug_dmaExportGetFrame(coreFrameSelect,
 				&records,
@@ -1527,119 +1496,94 @@ e9k_debug_ami_dma_debug_read_frame(uint32_t frameSelect,
 				&recordToggle,
 				&dmaHoffset,
 				&debugDmaEnabled)) {
-		return 0u;
+		return NULL;
 	}
-
 	if (recordCount < 0) {
 		recordCount = 0;
 	}
-	totalCount = (size_t)recordCount;
-
-	if (outInfo && infoCap >= sizeof(*outInfo)) {
-		outInfo->frameNumber = frameNumber;
-		outInfo->recordToggle = recordToggle;
-		outInfo->hposCount = hposCount;
-		outInfo->vposCount = vposCount;
-		outInfo->dmaHoffset = dmaHoffset;
-		outInfo->recordCount = (uint32_t)recordCount;
-		outInfo->debugDmaEnabled = debugDmaEnabled > 0 ? 1u : 0u;
+	if (recordToggle < 0 || recordToggle > 1) {
+		recordToggle = 0;
 	}
-
-	if (!records || !out || cap == 0u) {
-		return totalCount;
+	view = &e9k_debug_dmaDebugFrameViews[recordToggle];
+	memset(view, 0, sizeof(*view));
+	view->records = (const e9k_debug_ami_dma_debug_raw_record_t *)records;
+	view->info.version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
+	view->info.frameSelect = frameSelect;
+	view->info.frameNumber = frameNumber;
+	view->info.recordToggle = recordToggle;
+	view->info.hposCount = hposCount;
+	view->info.vposCount = vposCount;
+	view->info.dmaHoffset = dmaHoffset;
+	view->info.recordCount = (uint32_t)recordCount;
+	view->info.debugDmaEnabled = debugDmaEnabled > 0 ? 1u : 0u;
+	view->visibleWidth = retrow_crop;
+	view->visibleHeight = retroh_crop;
+	get_custom_topedge(&topEdgeX, &topEdgeY, false);
+	(void)topEdgeX;
+	visibleOffsetX = coord_diw_shres_to_window_x(denisehtotal) - retrow_crop;
+	if (visibleOffsetX < 0) {
+		visibleOffsetX = 0;
 	}
-
-	size_t writeCount = totalCount;
-	if (writeCount > cap) {
-		writeCount = cap;
+	visibleOffsetY = topEdgeY;
+	if (visibleOffsetY < 0) {
+		visibleOffsetY = 0;
 	}
-	for (size_t i = 0; i < writeCount; ++i) {
-		e9k_debug_dmaDebugCopyRecord(&out[i], &records[i]);
-	}
-	return totalCount;
+	renderWidth = visibleOffsetX + retrow_crop;
+	renderHeight = visibleOffsetY + retroh_crop;
+	view->renderWidth = renderWidth;
+	view->renderHeight = renderHeight;
+	view->visibleOffsetX = visibleOffsetX;
+	view->visibleOffsetY = visibleOffsetY;
+	view->dhposWrap = denisehtotal >> 2;
+	view->dhposScale = 1 << (2 - shres_shift);
+	return view;
 #else
 	(void)frameSelect;
-	(void)out;
-	(void)cap;
-	if (outInfo && infoCap >= sizeof(*outInfo)) {
-		memset(outInfo, 0, sizeof(*outInfo));
-		outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
-		outInfo->frameSelect = frameSelect;
-	}
-	(void)infoCap;
-	return 0u;
+	return NULL;
 #endif
 }
 
-E9K_DEBUG_EXPORT size_t
-e9k_debug_ami_dma_debug_get_frame_ptr(uint32_t frameSelect,
-                                      const e9k_debug_ami_dma_debug_raw_record_t **outRecords,
-                                      e9k_debug_ami_dma_debug_frame_info_t *outInfo,
-                                      size_t infoCap)
+#if E9K_HACK_COPPER_DEBUG_EXPORT
+E9K_DEBUG_EXPORT const e9k_debug_ami_copper_debug_frame_view_t *
+e9k_debug_ami_copper_debug_get_frame_view(uint32_t frameSelect)
 {
-#if E9K_HACK_DMA_DEBUG_EXPORT
-	const struct dma_rec *records = NULL;
+	const struct cop_rec *records = NULL;
 	int recordCount = 0;
-	int hposCount = 0;
-	int vposCount = 0;
 	int frameNumber = -1;
 	int recordToggle = -1;
-	int dmaHoffset = 0;
-	int debugDmaEnabled = 0;
+	int debugCopperEnabled = 0;
 	int coreFrameSelect = DEBUG_DMA_EXPORT_FRAME_LATEST_COMPLETE;
+	e9k_debug_ami_copper_debug_frame_view_t *view = NULL;
 
-	if (frameSelect == E9K_DEBUG_AMI_DMA_DEBUG_FRAME_ACTIVE) {
+	if (frameSelect == E9K_DEBUG_AMI_COPPER_DEBUG_FRAME_ACTIVE) {
 		coreFrameSelect = DEBUG_DMA_EXPORT_FRAME_ACTIVE;
 	}
-	if (outRecords) {
-		*outRecords = NULL;
-	}
-	if (outInfo && infoCap >= sizeof(*outInfo)) {
-		memset(outInfo, 0, sizeof(*outInfo));
-		outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
-		outInfo->frameSelect = frameSelect;
-	}
-	if (!debug_dmaExportGetFrame(coreFrameSelect,
+	if (!debug_copperExportGetFrame(coreFrameSelect,
 				&records,
 				&recordCount,
-				&hposCount,
-				&vposCount,
 				&frameNumber,
 				&recordToggle,
-				&dmaHoffset,
-				&debugDmaEnabled)) {
-		return 0u;
+				&debugCopperEnabled)) {
+		return NULL;
 	}
 	if (recordCount < 0) {
 		recordCount = 0;
 	}
-	if (outInfo && infoCap >= sizeof(*outInfo)) {
-		outInfo->frameNumber = frameNumber;
-		outInfo->recordToggle = recordToggle;
-		outInfo->hposCount = hposCount;
-		outInfo->vposCount = vposCount;
-		outInfo->dmaHoffset = dmaHoffset;
-		outInfo->recordCount = (uint32_t)recordCount;
-		outInfo->debugDmaEnabled = debugDmaEnabled > 0 ? 1u : 0u;
+	if (recordToggle < 0 || recordToggle > 1) {
+		recordToggle = 0;
 	}
-	if (outRecords && records) {
-		*outRecords = (const e9k_debug_ami_dma_debug_raw_record_t *)records;
-	}
-	return (size_t)recordCount;
-#else
-	(void)frameSelect;
-	if (outRecords) {
-		*outRecords = NULL;
-	}
-	if (outInfo && infoCap >= sizeof(*outInfo)) {
-		memset(outInfo, 0, sizeof(*outInfo));
-		outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
-		outInfo->frameSelect = frameSelect;
-	}
-	(void)infoCap;
-	return 0u;
-#endif
+	view = &e9k_debug_copperDebugFrameViews[recordToggle];
+	memset(view, 0, sizeof(*view));
+	view->records = (const e9k_debug_ami_copper_debug_raw_record_t *)records;
+	view->info.version = E9K_DEBUG_AMI_COPPER_DEBUG_FRAME_INFO_VERSION;
+	view->info.frameSelect = frameSelect;
+	view->info.frameNumber = frameNumber;
+	view->info.recordToggle = recordToggle;
+	view->info.recordCount = (uint32_t)recordCount;
+	view->info.debugCopperEnabled = debugCopperEnabled > 0 ? 1u : 0u;
+	return view;
 }
+#endif
 
 E9K_DEBUG_EXPORT int
 e9k_debug_ami_get_video_line_count(void)
@@ -2434,3 +2378,11 @@ e9k_debug_amiga_get_debug_dma_addr(void)
 {
 	return &debug_dma;
 }
+
+#if E9K_HACK_COPPER_DEBUG_EXPORT
+E9K_DEBUG_EXPORT int *
+e9k_debug_amiga_get_debug_copper_addr(void)
+{
+	return &debug_copper;
+}
+#endif

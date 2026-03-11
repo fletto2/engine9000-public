@@ -30,6 +30,9 @@ void
 ui_centerSourceOnAddress(uint32_t addr);
 
 void
+ui_centerCprSourceOnAddress(uint32_t addr);
+
+void
 ui_applySourcePaneElfMode(void);
 
 void

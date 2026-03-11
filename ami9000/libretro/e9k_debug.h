@@ -97,18 +97,13 @@ e9k_debug_ami_blitter_vis_read_points(e9k_debug_ami_blitter_vis_point_t *out, si
 size_t
 e9k_debug_ami_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap);
 
-size_t
-e9k_debug_ami_dma_debug_read_frame(uint32_t frameSelect,
-                                   e9k_debug_ami_dma_debug_record_t *out,
-                                   size_t cap,
-                                   e9k_debug_ami_dma_debug_frame_info_t *outInfo,
-                                   size_t infoCap);
+const e9k_debug_ami_dma_debug_frame_view_t *
+e9k_debug_ami_dma_debug_get_frame_view(uint32_t frameSelect);
 
-size_t
-e9k_debug_ami_dma_debug_get_frame_ptr(uint32_t frameSelect,
-                                      const e9k_debug_ami_dma_debug_raw_record_t **outRecords,
-                                      e9k_debug_ami_dma_debug_frame_info_t *outInfo,
-                                      size_t infoCap);
+#if E9K_HACK_COPPER_DEBUG_EXPORT
+const e9k_debug_ami_copper_debug_frame_view_t *
+e9k_debug_ami_copper_debug_get_frame_view(uint32_t frameSelect);
+#endif
 
 int
 e9k_debug_ami_get_video_line_count(void);
@@ -121,6 +116,11 @@ e9k_debug_ami_core_line_to_video_line(int coreLine);
 
 bool
 e9k_debug_ami_set_floppy_path(int drive, const char *path);
+
+#if E9K_HACK_COPPER_DEBUG_EXPORT
+int *
+e9k_debug_amiga_get_debug_copper_addr(void);
+#endif
 
 void
 e9k_debug_reapply_memhooks(void);

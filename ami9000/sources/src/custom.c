@@ -1890,7 +1890,7 @@ static void decide_hdiw(int hpos, bool halfcycle = false)
 		for (int i = (last_diw_hpos >> 1); i <= hpos; i++) {
 			decide_hdiw2(i, halfcycle);
 			halfcycle = false;
-			record_dma_denise(i, hdiw_denisecounter >> 2);
+			record_dma_denise(i, hdiw_denisecounter >> 2, hdiw_denisecounter_abs >> 2);
 		}
 	}
 #else
@@ -8862,7 +8862,7 @@ static void VHPOSW_delayed(uae_u32 v)
 		}
 		vpos = newvpos;
 #ifdef DEBUGGER
-		record_dma_denise(hnew, hdiw_denisecounter >> 2);
+		record_dma_denise(hnew, hdiw_denisecounter >> 2, hdiw_denisecounter_abs >> 2);
 #endif
 		vb_check();
 		decide_vline(hnew);

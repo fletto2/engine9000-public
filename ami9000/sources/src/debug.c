@@ -27,6 +27,7 @@
 #include "debugmem.h"
 #include "cia.h"
 #include "xwin.h"
+#include "drawing.h"
 #include "identify.h"
 #include "audio.h"
 #include "sounddep/sound.h"
@@ -38,6 +39,9 @@
 #include "crc32.h"
 #include "cpummu.h"
 #include "rommgr.h"
+
+extern int diwfirstword_total;
+extern int diwlastword_total;
 
 #ifdef __LIBRETRO__
 void e9k_debug_memhook_afterRead(uint32_t addr24, uint32_t value, uint32_t sizeBits);
@@ -100,6 +104,19 @@ static uaecptr debug_copper_pc;
 
 extern int audio_channel_mask;
 extern int inputdevice_logging;
+
+static int
+debug_clampDmaMode(int mode)
+{
+#if E9K_HACK_DMA_DEBUG_VIDEO_SYNC
+	return mode;
+#else
+	if (mode == DEBUG_DMA_MODE_VIDEO_SYNC) {
+		return DEBUG_DMA_MODE_COLLECT_ONLY;
+	}
+	return mode;
+#endif
+}
 
 static void debug_cycles(int mode)
 {
@@ -250,7 +267,11 @@ static const TCHAR help[] = {
 	_T("  dm                    Dump current address space map.\n")
 	_T("  v <vpos> [<hpos>] [<lines>]\n")
 	_T("                        Show DMA data (accurate only in cycle-exact mode).\n")
-	_T("                        v [-1 to -6] = enable DMA debugger. mode 6 collects only (no overlay).\n")
+#if E9K_HACK_DMA_DEBUG_VIDEO_SYNC
+	_T("                        v [-1 to -7] = enable DMA debugger. mode 7 is video-synced, mode 6 collects only.\n")
+#else
+	_T("                        v [-1 to -6] = enable DMA debugger. mode 6 collects only.\n")
+#endif
 	_T("  vh [<ratio> <lines>]  \"Heat map\"\n")
 	_T("  I <custom event>      Send custom event string\n")
 	_T("  ?<value>              Hex ($ and 0x)/Bin (%)/Dec (!) converter and calculator.\n")
@@ -1392,6 +1413,10 @@ struct cop_rec
 };
 static struct cop_rec *cop_record[2];
 static int nr_cop_records[2], curr_cop_set, selected_cop_set;
+#if E9K_HACK_COPPER_DEBUG_EXPORT
+static int cop_record_frame[2] = { -1, -1 };
+static int cop_record_frameCounter;
+#endif
 
 #define NR_DMA_REC_HPOS 288
 #define NR_DMA_REC_VPOS 1000
@@ -1447,7 +1472,7 @@ void record_dma_reset(int start)
 	dma_record_toggle ^= 1;
 	record_dma_clear(dma_record_toggle);
 	if (start && !debug_dma) {
-		debug_dma = start;
+		debug_dma = debug_clampDmaMode(start);
 	}
 }
 
@@ -1574,11 +1599,71 @@ debug_dmaExportGetFrame(int frameSelect,
 }
 #endif
 
+#if E9K_HACK_COPPER_DEBUG_EXPORT
+int
+debug_copperExportGetFrame(int frameSelect,
+	const struct cop_rec **outRecords,
+	int *outRecordCount,
+	int *outFrameNumber,
+	int *outRecordToggle,
+	int *outDebugCopperEnabled)
+{
+	int recordToggle = curr_cop_set ^ 1;
+
+	if (outRecords) {
+		*outRecords = NULL;
+	}
+	if (outRecordCount) {
+		*outRecordCount = 0;
+	}
+	if (outFrameNumber) {
+		*outFrameNumber = -1;
+	}
+	if (outRecordToggle) {
+		*outRecordToggle = -1;
+	}
+	if (outDebugCopperEnabled) {
+		*outDebugCopperEnabled = debug_copper;
+	}
+
+	if (!cop_record[0] || !cop_record[1]) {
+		return 0;
+	}
+	if (frameSelect == DEBUG_DMA_EXPORT_FRAME_ACTIVE) {
+		recordToggle = curr_cop_set;
+	}
+	if (recordToggle < 0 || recordToggle > 1) {
+		return 0;
+	}
+
+	if (outRecords) {
+		*outRecords = cop_record[recordToggle];
+	}
+	if (outRecordCount) {
+		*outRecordCount = nr_cop_records[recordToggle];
+	}
+	if (outFrameNumber) {
+		*outFrameNumber = cop_record_frame[recordToggle];
+	}
+	if (outRecordToggle) {
+		*outRecordToggle = recordToggle;
+	}
+	return 1;
+}
+#endif
+
 void record_copper_reset (void)
 {
 	/* Start a new set of copper records.  */
+	int old_set = curr_cop_set;
+
 	curr_cop_set ^= 1;
 	nr_cop_records[curr_cop_set] = 0;
+#if E9K_HACK_COPPER_DEBUG_EXPORT
+	cop_record_frame[old_set] = cop_record_frameCounter;
+	cop_record_frameCounter++;
+	cop_record_frame[curr_cop_set] = cop_record_frameCounter;
+#endif
 }
 
 STATIC_INLINE uae_u32 ledcolor (uae_u32 c, uae_u32 *rc, uae_u32 *gc, uae_u32 *bc, uae_u32 *a)
@@ -1686,11 +1771,244 @@ static void set_debug_colors(void)
 
 static int cycles_toggle;
 
+#if E9K_HACK_DMA_DEBUG_VIDEO_SYNC
+static int debug_dmaVideoSyncLoggedFrame = -1;
+static int debug_dmaVideoSyncLineLogBudget;
+static int debug_dmaVideoSyncSlotLogBudget;
+
+static int
+debug_dmaGetSyncedWindowX(int dhposAbs)
+{
+	return coord_diw_shres_to_window_x(dhposAbs << 2) - visible_left_border;
+}
+
+static int
+debug_dmaNormalizeLineDhpos(int dhpos, int lineStartDhpos, int dhposWrap)
+{
+	if (dhposWrap > 0 && dhpos < lineStartDhpos) {
+		return dhpos + dhposWrap;
+	}
+	return dhpos;
+}
+#endif
+
 static void debug_draw_cycles(uae_u8 *buf, int bpp, int line, int width, int height, uae_u32 *xredcolors, uae_u32 *xgreencolors, uae_u32 *xbluescolors)
 {
 	int y, x, xx, dx, xplus, yplus;
 	struct dma_rec *dr;
 	int t;
+
+	(void)xredcolors;
+	(void)xgreencolors;
+	(void)xbluescolors;
+
+#if E9K_HACK_DMA_DEBUG_VIDEO_SYNC
+	if (debug_dma == DEBUG_DMA_MODE_VIDEO_SYNC) {
+		int maxhpos = record_dma_maxhpos;
+		int lineStartDhpos = -1;
+		int lineStartWindowX = 0;
+		int dhposWrap = denisehtotal >> 2;
+		int lineWrapWindowX = 0;
+		int hiddenLeftX = 0;
+		int hblankStop = 0;
+		int hblankStart = 0;
+		int vblankStop = 0;
+		int vblankStart = 0;
+		int frameNumber;
+		int activeSlots = 0;
+		int drawnSlots = 0;
+		int clippedLeft = 0;
+		int clippedRight = 0;
+		int firstDhpos = -1;
+		int firstWindowX = 0;
+		int firstNativeX = 0;
+		int lastLoggedDhpos = -1;
+		int lastWindowX = 0;
+		int lastNativeX = 0;
+		bool logLine = false;
+
+		t = dma_record_toggle ^ 1;
+		frameNumber = dma_record_frame[t];
+		get_screen_blanking_limits(&hblankStop, &hblankStart, &vblankStop, &vblankStart);
+		if (frameNumber != debug_dmaVideoSyncLoggedFrame) {
+			int topEdgeX;
+				int topEdgeY;
+
+			debug_dmaVideoSyncLoggedFrame = frameNumber;
+			debug_dmaVideoSyncLineLogBudget = 6;
+			debug_dmaVideoSyncSlotLogBudget = 16;
+			get_custom_topedge(&topEdgeX, &topEdgeY, false);
+			printf("dma-video-sync frame=%d width=%d height=%d visibleLeft=%d topEdgeX=%d topEdgeY=%d hblankStop=%d hblankStart=%d dhposWrap=%d diwNative=[%d,%d) loresShift=%d shresShift=%d maxh=%d maxv=%d cyclesToggle=%d\n",
+				frameNumber,
+				width,
+				height,
+				visible_left_border,
+				topEdgeX,
+				topEdgeY,
+				hblankStop,
+				hblankStart,
+				dhposWrap,
+				diwfirstword_total - visible_left_border,
+				diwlastword_total - visible_left_border,
+				lores_shift,
+				shres_shift,
+				record_dma_maxhpos,
+				record_dma_maxvpos,
+				cycles_toggle);
+		}
+
+		y = coord_native_to_amiga_y(line);
+		if (y < 0) {
+			return;
+		}
+		if (y > record_dma_maxvpos || y >= NR_DMA_REC_VPOS || line < 0 || line >= height) {
+			return;
+		}
+		if (maxhpos > NR_DMA_REC_HPOS) {
+			maxhpos = NR_DMA_REC_HPOS;
+		}
+		for (x = 0; x < maxhpos; x++) {
+			dr = &dma_record[t][y * NR_DMA_REC_HPOS + x];
+			if (dr->end) {
+				break;
+			}
+			if (dr->dhpos > 0) {
+				lineStartDhpos = dr->dhpos;
+				break;
+			}
+		}
+			if (lineStartDhpos < 0) {
+				return;
+			}
+			lineStartWindowX = coord_diw_shres_to_window_x(lineStartDhpos << 2);
+			lineWrapWindowX = coord_diw_shres_to_window_x(dhposWrap << 2);
+			hiddenLeftX = lineWrapWindowX - width;
+			if (hiddenLeftX < 0) {
+				hiddenLeftX = 0;
+			}
+			logLine = debug_dmaVideoSyncLineLogBudget > 0;
+			for (x = 0; x < maxhpos; x++) {
+			uae_u32 c = 0;
+			int x0;
+			int x1;
+			int dhposOrdered;
+			int nextDhposOrdered;
+			int rawWindowX0;
+			int rawWindowX1;
+
+			dr = &dma_record[t][y * NR_DMA_REC_HPOS + x];
+			if (dr->end) {
+				break;
+			}
+			if (dr->reg == 0xffff && dr->cf_reg == 0xffff) {
+				continue;
+			}
+			if (dr->cf_reg != 0xffff && ((cycles_toggle ^ line) & 1)) {
+				c = debug_colors[DMARECORD_CONFLICT].l[0];
+			} else if (dr->reg == 0xffff || !debug_colors[dr->type].enabled) {
+				continue;
+			} else {
+				c = debug_colors[dr->type].l[dr->extra & 7];
+			}
+			if (dr->reg != 0xffff && dr->extra > 0xF) {
+				if (dr->extra & 0x10) {
+					c = debug_colors[dr->type].l[4];
+				} else if (dr->extra & 0x20) {
+					c = debug_colors[dr->type].l[6];
+				}
+			}
+
+			dhposOrdered = debug_dmaNormalizeLineDhpos(dr->dhpos, lineStartDhpos, dhposWrap);
+			nextDhposOrdered = dhposOrdered + 2;
+			if (x + 1 < maxhpos) {
+				struct dma_rec *next = &dma_record[t][y * NR_DMA_REC_HPOS + x + 1];
+				if (!next->end) {
+					nextDhposOrdered = debug_dmaNormalizeLineDhpos(next->dhpos, lineStartDhpos, dhposWrap);
+				}
+				}
+
+				rawWindowX0 = coord_diw_shres_to_window_x(dhposOrdered << 2) - lineStartWindowX;
+				rawWindowX1 = coord_diw_shres_to_window_x(nextDhposOrdered << 2) - lineStartWindowX;
+				x0 = rawWindowX0 - hiddenLeftX;
+				x1 = rawWindowX1 - hiddenLeftX;
+				activeSlots++;
+			if (firstDhpos < 0) {
+				firstDhpos = dr->dhpos;
+				firstWindowX = rawWindowX0;
+				firstNativeX = x0;
+			}
+			lastLoggedDhpos = dr->dhpos;
+			lastWindowX = rawWindowX0;
+			lastNativeX = x0;
+			if (x1 <= 0) {
+				clippedLeft++;
+			} else if (x0 >= width) {
+				clippedRight++;
+			}
+			if (debug_dmaVideoSyncSlotLogBudget > 0) {
+					printf("dma-video-sync slot frame=%d line=%d amigaY=%d hpos=%d dhpos=%d dhposAbs=%d lineStartDhpos=%d hiddenLeftX=%d dhposOrdered=%d nextDhposOrdered=%d windowX=[%d,%d) nativeX=[%d,%d) width=%d type=%d reg=%04x cf=%04x extra=%02x\n",
+						frameNumber,
+						line,
+						y,
+						dr->hpos,
+						dr->dhpos,
+						dr->dhpos_abs,
+						lineStartDhpos,
+						hiddenLeftX,
+						dhposOrdered,
+						nextDhposOrdered,
+						rawWindowX0,
+					rawWindowX1,
+					x0,
+					x1,
+					width,
+					dr->type,
+					dr->reg,
+					dr->cf_reg,
+						dr->extra);
+				debug_dmaVideoSyncSlotLogBudget--;
+			}
+				if (x1 <= x0) {
+					x1 = x0 + 1;
+				}
+				if (x1 <= 0 || x0 >= width) {
+					continue;
+				}
+			if (x0 < 0) {
+				x0 = 0;
+			}
+			if (x1 > width) {
+				x1 = width;
+			}
+			for (xx = x0; xx < x1; xx++) {
+				putpixel_4(buf, bpp, xx, c);
+			}
+			drawnSlots++;
+		}
+		if (logLine && activeSlots > 0) {
+			printf("dma-video-sync line frame=%d line=%d amigaY=%d active=%d drawn=%d clippedLeft=%d clippedRight=%d firstDhpos=%d firstWindowX=%d firstNativeX=%d lastDhpos=%d lastWindowX=%d lastNativeX=%d\n",
+				frameNumber,
+				line,
+				y,
+				activeSlots,
+				drawnSlots,
+				clippedLeft,
+				clippedRight,
+				firstDhpos,
+				firstWindowX,
+				firstNativeX,
+				lastLoggedDhpos,
+				lastWindowX,
+				lastNativeX);
+			debug_dmaVideoSyncLineLogBudget--;
+		}
+		return;
+	}
+#else
+	if (debug_dma == DEBUG_DMA_MODE_VIDEO_SYNC) {
+		return;
+	}
+#endif
 
 	if (debug_dma >= 4)
 		yplus = 2;
@@ -2404,7 +2722,7 @@ bool record_dma_check(int hpos, int vpos)
 	return dr->reg != 0xffff;
 }
 
-void record_dma_denise(int hpos, int dhpos)
+void record_dma_denise(int hpos, int dhpos, int dhposAbs)
 {
 	if (!dma_record[0]) {
 		return;
@@ -2415,6 +2733,7 @@ void record_dma_denise(int hpos, int dhpos)
 	}
 	struct dma_rec *dr = &dma_record[dma_record_toggle][vpos * NR_DMA_REC_HPOS + hpos];
 	dr->dhpos = dhpos;
+	dr->dhpos_abs = dhposAbs;
 }
 
 void record_dma_clear_2(int hpos, int vpos)
@@ -7360,7 +7679,7 @@ static bool debug_line (TCHAR *input)
 								record_dma_reset(0);
 								reset_drawing();
 							}
-							debug_dma = v1 < 0 ? -v1 : 1;
+							debug_dma = debug_clampDmaMode(v1 < 0 ? -v1 : 1);
 							console_out_f(_T("DMA debugger enabled, mode=%d.\n"), debug_dma);
 						}
 					}

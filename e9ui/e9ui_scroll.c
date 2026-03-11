@@ -244,3 +244,36 @@ e9ui_scroll_setContentWidthPx(e9ui_component_t *scroll, int contentWidth_px)
     e9ui_scroll_state_t *st = (e9ui_scroll_state_t*)scroll->state;
     st->contentWidthPx = contentWidth_px > 0 ? contentWidth_px : 0;
 }
+
+void
+e9ui_scroll_getScrollPx(e9ui_component_t *scroll, int *outScrollX, int *outScrollY)
+{
+    if (outScrollX) {
+        *outScrollX = 0;
+    }
+    if (outScrollY) {
+        *outScrollY = 0;
+    }
+    if (!scroll || !scroll->state) {
+        return;
+    }
+    e9ui_scroll_state_t *st = (e9ui_scroll_state_t*)scroll->state;
+    if (outScrollX) {
+        *outScrollX = st->scrollX;
+    }
+    if (outScrollY) {
+        *outScrollY = st->scrollY;
+    }
+}
+
+void
+e9ui_scroll_setScrollPx(e9ui_component_t *scroll, int scrollX, int scrollY)
+{
+    if (!scroll || !scroll->state) {
+        return;
+    }
+    e9ui_scroll_state_t *st = (e9ui_scroll_state_t*)scroll->state;
+    st->scrollX = scrollX;
+    st->scrollY = scrollY;
+    scroll_clamp(st, scroll->bounds.w, scroll->bounds.h);
+}

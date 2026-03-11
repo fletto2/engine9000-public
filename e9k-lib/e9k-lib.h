@@ -83,7 +83,11 @@ typedef struct e9k_debug_ami_blitter_vis_stats {
 #define E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE 0u
 #define E9K_DEBUG_AMI_DMA_DEBUG_FRAME_ACTIVE 1u
 #define E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION 1u
+#define E9K_DEBUG_AMI_COPPER_DEBUG_FRAME_LATEST_COMPLETE 0u
+#define E9K_DEBUG_AMI_COPPER_DEBUG_FRAME_ACTIVE 1u
+#define E9K_DEBUG_AMI_COPPER_DEBUG_FRAME_INFO_VERSION 1u
 #define E9K_DEBUG_AMI_DMA_EVENT2_COPPERUSE 0x00000004u
+#define E9K_DEBUG_AMI_DMA_DEBUG_MODE_VIDEO_SYNC 7u
 #define E9K_DEBUG_AMI_DMA_DEBUG_MODE_COLLECT_ONLY 6u
 
 typedef struct e9k_debug_ami_dma_debug_frame_info {
@@ -98,39 +102,11 @@ typedef struct e9k_debug_ami_dma_debug_frame_info {
     uint32_t debugDmaEnabled;
 } e9k_debug_ami_dma_debug_frame_info_t;
 
-typedef struct e9k_debug_ami_dma_debug_record {
-    int32_t hpos;
-    int32_t vpos;
-    int32_t dhpos;
-    uint16_t reg;
-    uint16_t size;
-    uint64_t dat;
-    uint32_t addr;
-    uint32_t evt;
-    uint32_t evt2;
-    uint32_t evtdata;
-    int16_t type;
-    uint16_t extra;
-    int8_t intlev;
-    int8_t ipl;
-    int8_t ipl2;
-    uint8_t evtdataset;
-    uint16_t cf_reg;
-    uint16_t cf_dat;
-    uint16_t cf_addr;
-    int32_t ciareg;
-    int32_t ciamask;
-    int32_t ciaphase;
-    uint16_t ciavalue;
-    uint8_t ciarw;
-    uint8_t end;
-    uint8_t reserved[2];
-} e9k_debug_ami_dma_debug_record_t;
-
 typedef struct e9k_debug_ami_dma_debug_raw_record {
     int hpos;
     int vpos;
     int dhpos;
+    int dhpos_abs;
     uint16_t reg;
     uint64_t dat;
     uint16_t size;
@@ -154,6 +130,44 @@ typedef struct e9k_debug_ami_dma_debug_raw_record {
     uint16_t ciavalue;
     bool end;
 } e9k_debug_ami_dma_debug_raw_record_t;
+
+typedef struct e9k_debug_ami_dma_debug_frame_view {
+    const e9k_debug_ami_dma_debug_raw_record_t *records;
+    e9k_debug_ami_dma_debug_frame_info_t info;
+    int32_t visibleWidth;
+    int32_t visibleHeight;
+    int32_t renderWidth;
+    int32_t renderHeight;
+    int32_t visibleOffsetX;
+    int32_t visibleOffsetY;
+    int32_t dhposWrap;
+    int32_t dhposScale;
+} e9k_debug_ami_dma_debug_frame_view_t;
+
+typedef struct e9k_debug_ami_copper_debug_frame_info {
+    uint32_t version;
+    uint32_t frameSelect;
+    int32_t frameNumber;
+    int32_t recordToggle;
+    uint32_t recordCount;
+    uint32_t debugCopperEnabled;
+} e9k_debug_ami_copper_debug_frame_info_t;
+
+typedef struct e9k_debug_ami_copper_debug_raw_record {
+    uint16_t w1;
+    uint16_t w2;
+    int32_t hpos;
+    int32_t vpos;
+    int32_t bhpos;
+    int32_t bvpos;
+    uint32_t addr;
+    uint32_t nextaddr;
+} e9k_debug_ami_copper_debug_raw_record_t;
+
+typedef struct e9k_debug_ami_copper_debug_frame_view {
+    const e9k_debug_ami_copper_debug_raw_record_t *records;
+    e9k_debug_ami_copper_debug_frame_info_t info;
+} e9k_debug_ami_copper_debug_frame_view_t;
 
 typedef struct e9k_debug_ami_custom_log_entry {
     uint16_t vpos;

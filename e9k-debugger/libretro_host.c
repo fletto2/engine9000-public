@@ -91,12 +91,13 @@ typedef uint64_t (*e9k_debug_read_cycle_count_fn_t)(void);
 typedef void (*e9k_debug_set_vblank_callback_fn_t)(void (*cb)(void *), void *user);
 typedef void (*e9k_debug_set_custom_log_frame_callback_fn_t)(e9k_debug_ami_custom_log_frame_callback_t cb, void *user);
 typedef int *(*e9k_debug_amiga_get_debug_dma_addr_fn_t)(void);
+typedef int *(*e9k_debug_amiga_get_debug_copper_addr_fn_t)(void);
 typedef void (*e9k_debug_ami_set_blitter_debug_fn_t)(int enabled);
 typedef int (*e9k_debug_ami_get_blitter_debug_fn_t)(void);
 typedef size_t (*e9k_debug_ami_blitter_vis_read_points_fn_t)(e9k_debug_ami_blitter_vis_point_t *out, size_t cap, uint32_t *out_width, uint32_t *out_height);
 typedef size_t (*e9k_debug_ami_blitter_vis_read_stats_fn_t)(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap);
-typedef size_t (*e9k_debug_ami_dma_debug_read_frame_fn_t)(uint32_t frameSelect, e9k_debug_ami_dma_debug_record_t *out, size_t cap, e9k_debug_ami_dma_debug_frame_info_t *outInfo, size_t infoCap);
-typedef size_t (*e9k_debug_ami_dma_debug_get_frame_ptr_fn_t)(uint32_t frameSelect, const e9k_debug_ami_dma_debug_raw_record_t **outRecords, e9k_debug_ami_dma_debug_frame_info_t *outInfo, size_t infoCap);
+typedef const e9k_debug_ami_dma_debug_frame_view_t *(*e9k_debug_ami_dma_debug_get_frame_view_fn_t)(uint32_t frameSelect);
+typedef const e9k_debug_ami_copper_debug_frame_view_t *(*e9k_debug_ami_copper_debug_get_frame_view_fn_t)(uint32_t frameSelect);
 typedef int (*e9k_debug_ami_get_video_line_count_fn_t)(void);
 typedef int (*e9k_debug_ami_video_line_to_core_line_fn_t)(int videoLine);
 typedef int (*e9k_debug_ami_core_line_to_video_line_fn_t)(int coreLine);
@@ -226,12 +227,13 @@ typedef struct  {
     e9k_debug_set_vblank_callback_fn_t setVblankCallback;
     e9k_debug_set_custom_log_frame_callback_fn_t setCustomLogFrameCallback;
     e9k_debug_amiga_get_debug_dma_addr_fn_t debugAmigaGetDebugDmaAddr;
+    e9k_debug_amiga_get_debug_copper_addr_fn_t debugAmigaGetDebugCopperAddr;
     e9k_debug_ami_set_blitter_debug_fn_t debugAmiSetBlitterDebug;
     e9k_debug_ami_get_blitter_debug_fn_t debugAmiGetBlitterDebug;
     e9k_debug_ami_blitter_vis_read_points_fn_t debugAmiBlitterVisReadPoints;
     e9k_debug_ami_blitter_vis_read_stats_fn_t debugAmiBlitterVisReadStats;
-    e9k_debug_ami_dma_debug_read_frame_fn_t debugAmiDmaDebugReadFrame;
-    e9k_debug_ami_dma_debug_get_frame_ptr_fn_t debugAmiDmaDebugGetFramePtr;
+    e9k_debug_ami_dma_debug_get_frame_view_fn_t debugAmiDmaDebugGetFrameView;
+    e9k_debug_ami_copper_debug_get_frame_view_fn_t debugAmiCopperDebugGetFrameView;
     e9k_debug_ami_get_video_line_count_fn_t debugAmiGetVideoLineCount;
     e9k_debug_ami_video_line_to_core_line_fn_t debugAmiVideoLineToCoreLine;
     e9k_debug_ami_core_line_to_video_line_fn_t debugAmiCoreLineToVideoLine;
@@ -2234,6 +2236,24 @@ libretro_host_debugGetAmigaDebugDmaAddr(int **out_addr)
 }
 
 bool
+libretro_host_debugGetAmigaDebugCopperAddr(int **out_addr)
+{
+    if (!out_addr) {
+        return false;
+    }
+    *out_addr = NULL;
+    if (!libretro_host.debugAmigaGetDebugCopperAddr) {
+        libretro_host.debugAmigaGetDebugCopperAddr = (e9k_debug_amiga_get_debug_copper_addr_fn_t)
+            libretro_host_loadSymbol("e9k_debug_amiga_get_debug_copper_addr");
+    }
+    if (!libretro_host.debugAmigaGetDebugCopperAddr) {
+        return false;
+    }
+    *out_addr = libretro_host.debugAmigaGetDebugCopperAddr();
+    return *out_addr != NULL;
+}
+
+bool
 libretro_host_debugAmiSetBlitterDebug(int enabled)
 {
     if (!libretro_host.debugAmiSetBlitterDebug) {
@@ -2302,55 +2322,30 @@ libretro_host_debugAmiReadBlitterVisStats(e9k_debug_ami_blitter_vis_stats_t *out
     return libretro_host.debugAmiBlitterVisReadStats(out, sizeof(*out)) == sizeof(*out);
 }
 
-size_t
-libretro_host_debugAmiReadDmaDebugFrame(uint32_t frameSelect,
-                                        e9k_debug_ami_dma_debug_record_t *out,
-                                        size_t cap,
-                                        e9k_debug_ami_dma_debug_frame_info_t *outInfo)
+const e9k_debug_ami_dma_debug_frame_view_t *
+libretro_host_debugAmiGetDmaDebugFrameView(uint32_t frameSelect)
 {
-    if (outInfo) {
-        memset(outInfo, 0, sizeof(*outInfo));
-        outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
-        outInfo->frameSelect = frameSelect;
+    if (!libretro_host.debugAmiDmaDebugGetFrameView) {
+        libretro_host.debugAmiDmaDebugGetFrameView = (e9k_debug_ami_dma_debug_get_frame_view_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_dma_debug_get_frame_view");
     }
-    if (!libretro_host.debugAmiDmaDebugReadFrame) {
-        libretro_host.debugAmiDmaDebugReadFrame = (e9k_debug_ami_dma_debug_read_frame_fn_t)
-            libretro_host_loadSymbol("e9k_debug_ami_dma_debug_read_frame");
+    if (!libretro_host.debugAmiDmaDebugGetFrameView) {
+        return NULL;
     }
-    if (!libretro_host.debugAmiDmaDebugReadFrame) {
-        return 0u;
-    }
-    return libretro_host.debugAmiDmaDebugReadFrame(frameSelect,
-                                                   out,
-                                                   cap,
-                                                   outInfo,
-                                                   outInfo ? sizeof(*outInfo) : 0u);
+    return libretro_host.debugAmiDmaDebugGetFrameView(frameSelect);
 }
 
-size_t
-libretro_host_debugAmiGetDmaDebugFramePtr(uint32_t frameSelect,
-                                          const e9k_debug_ami_dma_debug_raw_record_t **outRecords,
-                                          e9k_debug_ami_dma_debug_frame_info_t *outInfo)
+const e9k_debug_ami_copper_debug_frame_view_t *
+libretro_host_debugAmiGetCopperDebugFrameView(uint32_t frameSelect)
 {
-    if (outRecords) {
-        *outRecords = NULL;
+    if (!libretro_host.debugAmiCopperDebugGetFrameView) {
+        libretro_host.debugAmiCopperDebugGetFrameView = (e9k_debug_ami_copper_debug_get_frame_view_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_copper_debug_get_frame_view");
     }
-    if (outInfo) {
-        memset(outInfo, 0, sizeof(*outInfo));
-        outInfo->version = E9K_DEBUG_AMI_DMA_DEBUG_FRAME_INFO_VERSION;
-        outInfo->frameSelect = frameSelect;
+    if (!libretro_host.debugAmiCopperDebugGetFrameView) {
+        return NULL;
     }
-    if (!libretro_host.debugAmiDmaDebugGetFramePtr) {
-        libretro_host.debugAmiDmaDebugGetFramePtr = (e9k_debug_ami_dma_debug_get_frame_ptr_fn_t)
-            libretro_host_loadSymbol("e9k_debug_ami_dma_debug_get_frame_ptr");
-    }
-    if (!libretro_host.debugAmiDmaDebugGetFramePtr) {
-        return 0u;
-    }
-    return libretro_host.debugAmiDmaDebugGetFramePtr(frameSelect,
-                                                     outRecords,
-                                                     outInfo,
-                                                     outInfo ? sizeof(*outInfo) : 0u);
+    return libretro_host.debugAmiCopperDebugGetFrameView(frameSelect);
 }
 
 bool

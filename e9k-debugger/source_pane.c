@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include <ctype.h>
+#include <stdarg.h>
 #include <errno.h>
 
 #include "e9ui.h"
@@ -35,6 +36,7 @@
 #include "syntax_highlight_asm.h"
 #include "print_eval.h"
 #include "hunk_fileline_cache.h"
+#include "amiga_custom_regs.h"
 
 typedef struct source_pane_state {
     source_pane_mode_t viewMode; // C vs ASM vs HEX
@@ -214,10 +216,38 @@ static void
 source_pane_adjustScroll(source_pane_state_t *st, source_pane_mode_t mode, int delta);
 
 static source_pane_line_metrics_t
-source_pane_computeLineMetrics(e9ui_component_t *self, TTF_Font *font, int padPx);
+source_pane_computeLineMetrics(e9ui_component_t *self, e9ui_context_t *ctx, TTF_Font *font, int padPx);
 
 static TTF_Font *
 source_pane_resolveFont(const e9ui_context_t *ctx);
+
+static SDL_Rect
+source_pane_getContentArea(e9ui_component_t *self, e9ui_context_t *ctx, int padPx);
+
+static int
+source_pane_isAsmLikeMode(source_pane_mode_t mode);
+
+static int
+source_pane_isCpuAsmLikeMode(source_pane_mode_t mode);
+
+static int
+source_pane_isCprModeAvailable(void);
+
+static uint64_t
+source_pane_resolveCprAnchorAddr(uint64_t addr);
+
+static uint64_t
+source_pane_resolveAsmLikeAnchorAddr(source_pane_state_t *st, uint64_t addr);
+
+static uint64_t
+source_pane_getCurrentCprAddr(source_pane_state_t *st);
+
+static int
+source_pane_getCprWindow(source_pane_state_t *st, int maxLines, uint64_t *out_curAddr,
+                         const char ***out_lines, const uint64_t **out_addrs, int *out_count);
+
+static void
+source_pane_renderCpr(e9ui_component_t *self, e9ui_context_t *ctx);
 
 static int
 source_pane_getCScrollbarModel(e9ui_component_t *self,
@@ -248,7 +278,7 @@ source_pane_getCScrollbarModel(e9ui_component_t *self,
         return 0;
     }
 
-    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, padPx);
     if (metrics.innerHeight <= 0) {
         return 0;
     }
@@ -335,7 +365,7 @@ source_pane_stepButtonPageAmount(e9ui_component_t *self, e9ui_context_t *ctx)
     TTF_Font *useFont = source_pane_resolveFont(ctx);
     int maxLines = 1;
     if (useFont) {
-        source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, 10);
+        source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, 10);
         if (metrics.maxLines > 0) {
             maxLines = metrics.maxLines;
         }
@@ -382,6 +412,27 @@ source_pane_stepButtonsOnAction(void *user, e9ui_step_buttons_action_t action)
     }
     source_pane_adjustScroll(actionCtx->st, actionCtx->mode, delta);
     return 1;
+}
+
+static int
+source_pane_isAsmLikeMode(source_pane_mode_t mode)
+{
+    return (mode == source_pane_mode_a ||
+            mode == source_pane_mode_h ||
+            mode == source_pane_mode_cpr) ? 1 : 0;
+}
+
+static int
+source_pane_isCpuAsmLikeMode(source_pane_mode_t mode)
+{
+    return (mode == source_pane_mode_a ||
+            mode == source_pane_mode_h) ? 1 : 0;
+}
+
+static int
+source_pane_isCprModeAvailable(void)
+{
+    return target == target_amiga() ? 1 : 0;
 }
 
 static const char *
@@ -1688,7 +1739,7 @@ source_pane_refreshAsmSymbols(e9ui_component_t *comp, source_pane_state_t *st)
     if (!select) {
         return;
     }
-    int asmLikeMode = (st->viewMode == source_pane_mode_a || st->viewMode == source_pane_mode_h) ? 1 : 0;
+    int asmLikeMode = source_pane_isAsmLikeMode(st->viewMode);
     e9ui_setHidden(select, asmLikeMode ? 0 : 1);
     if (!asmLikeMode) {
         return;
@@ -1737,7 +1788,16 @@ source_pane_setAsmAnchorLocked(source_pane_state_t *st, uint64_t addr)
     if (!st) {
         return;
     }
-    uint64_t a = source_pane_resolveAsmAnchorAddr(addr);
+    uint64_t a = source_pane_resolveAsmLikeAnchorAddr(st, addr);
+    if (st->viewMode == source_pane_mode_cpr) {
+        st->scrollIndex = (int)(a >> 2);
+        st->scrollAnchorAddr = a;
+        st->scrollAnchorValid = 1;
+        st->scrollLocked = 1;
+        st->gutterPending = 0;
+        source_pane_syncLockButtonVisual(st);
+        return;
+    }
     int idx = 0;
     if (!dasm_findIndexForAddr(a, &idx)) {
         return;
@@ -1784,6 +1844,63 @@ source_pane_resolveAsmAnchorAddr(uint64_t addr)
     }
 
     return a;
+}
+
+static uint64_t
+source_pane_resolveCprAnchorAddr(uint64_t addr)
+{
+    uint64_t a = addr & 0x00ffffffull;
+    a &= ~3ull;
+    return a;
+}
+
+static uint64_t
+source_pane_resolveAsmLikeAnchorAddr(source_pane_state_t *st, uint64_t addr)
+{
+    if (st && st->viewMode == source_pane_mode_cpr) {
+        return source_pane_resolveCprAnchorAddr(addr);
+    }
+    return source_pane_resolveAsmAnchorAddr(addr);
+}
+
+static int
+source_pane_getCopperListAddr(const char *highName, const char *lowName, uint64_t *outAddr)
+{
+    unsigned long highValue = 0;
+    unsigned long lowValue = 0;
+
+    if (!highName || !lowName || !outAddr) {
+        return 0;
+    }
+    if (!machine_findReg(&debugger.machine, highName, &highValue) ||
+        !machine_findReg(&debugger.machine, lowName, &lowValue)) {
+        return 0;
+    }
+
+    *outAddr = (((uint64_t)highValue & 0x001full) << 16) |
+               ((uint64_t)lowValue & 0x0000fffeull);
+    *outAddr = source_pane_resolveCprAnchorAddr(*outAddr);
+    return 1;
+}
+
+static uint64_t
+source_pane_getCurrentCprAddr(source_pane_state_t *st)
+{
+    uint64_t addr = 0;
+
+    if (st && st->overrideActive) {
+        return source_pane_resolveCprAnchorAddr(st->overrideAddr);
+    }
+    if (source_pane_getCopperListAddr("COP1LCH", "COP1LCL", &addr)) {
+        return addr;
+    }
+    if (source_pane_getCopperListAddr("COP2LCH", "COP2LCL", &addr)) {
+        return addr;
+    }
+    if (st && st->scrollAnchorValid) {
+        return source_pane_resolveCprAnchorAddr(st->scrollAnchorAddr);
+    }
+    return 0;
 }
 
 static int
@@ -2471,7 +2588,7 @@ source_pane_findBreakpointForLine(const char *path, int line,
 
 
 static source_pane_line_metrics_t
-source_pane_computeLineMetrics(e9ui_component_t *self, TTF_Font *font, int padPx)
+source_pane_computeLineMetrics(e9ui_component_t *self, e9ui_context_t *ctx, TTF_Font *font, int padPx)
 {
     source_pane_line_metrics_t out = {0};
     if (!self || !font) {
@@ -2483,7 +2600,8 @@ source_pane_computeLineMetrics(e9ui_component_t *self, TTF_Font *font, int padPx
     if (out.lineHeight <= 0) {
         out.lineHeight = 16;
     }
-    out.innerHeight = self->bounds.h - padPx * 2;
+    SDL_Rect contentArea = source_pane_getContentArea(self, ctx, padPx);
+    out.innerHeight = contentArea.h - padPx * 2;
     if (out.innerHeight <= 0) {
         out.maxLines = 0;
         return out;
@@ -2493,6 +2611,34 @@ source_pane_computeLineMetrics(e9ui_component_t *self, TTF_Font *font, int padPx
         out.maxLines = 1;
     }
     return out;
+}
+
+static SDL_Rect
+source_pane_getContentArea(e9ui_component_t *self, e9ui_context_t *ctx, int padPx)
+{
+    SDL_Rect area = {0};
+    if (!self) {
+        return area;
+    }
+
+    area.x = self->bounds.x;
+    area.y = self->bounds.y;
+    area.w = self->bounds.w;
+    area.h = self->bounds.h;
+
+    source_pane_state_t *st = (source_pane_state_t *)self->state;
+    int topInset = source_pane_overlayTopRowHeight(self, ctx, st);
+    if (topInset < 0) {
+        topInset = 0;
+    }
+    if (topInset > 0) {
+        area.y += topInset;
+        area.h -= topInset;
+    }
+    if (area.h < padPx * 2) {
+        area.h = padPx * 2;
+    }
+    return area;
 }
 
 static TTF_Font *
@@ -3033,7 +3179,7 @@ source_pane_updateHoverTooltip(e9ui_component_t *self, e9ui_context_t *ctx, sour
         source_pane_clearHover(self, st);
         return;
     }
-    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, padPx);
     if (metrics.innerHeight <= 0 || metrics.lineHeight <= 0) {
         source_pane_clearHover(self, st);
         return;
@@ -3093,8 +3239,9 @@ source_pane_updateHoverTooltip(e9ui_component_t *self, e9ui_context_t *ctx, sour
     int th = 0;
     TTF_SizeText(useFont, zeros, &gutterW, &th);
     int gutterPad = e9ui_scale_px(ctx, 16);
-    int textX = self->bounds.x + padPx + gutterW + gutterPad - st->cScrollX;
-    int relY = my - (self->bounds.y + padPx);
+    SDL_Rect contentArea = source_pane_getContentArea(self, ctx, padPx);
+    int textX = contentArea.x + padPx + gutterW + gutterPad - st->cScrollX;
+    int relY = my - (contentArea.y + padPx);
     if (relY < 0) {
         source_pane_clearHover(self, st);
         return;
@@ -3187,6 +3334,26 @@ source_pane_adjustScroll(source_pane_state_t *st, source_pane_mode_t mode, int d
         source_pane_syncLockButtonVisual(st);
         return;
     }
+    if (mode == source_pane_mode_cpr) {
+        uint64_t destAddr = source_pane_getCurrentCprAddr(st);
+        if (st->scrollLocked && st->scrollAnchorValid) {
+            destAddr = st->scrollAnchorAddr;
+        }
+        if (delta < 0) {
+            uint64_t step = (uint64_t)(-delta) * 4ull;
+            destAddr = destAddr > step ? destAddr - step : 0ull;
+        } else {
+            destAddr += (uint64_t)delta * 4ull;
+        }
+        destAddr = source_pane_resolveCprAnchorAddr(destAddr);
+        st->scrollIndex = (int)(destAddr >> 2);
+        st->scrollAnchorAddr = destAddr;
+        st->scrollAnchorValid = 1;
+        st->scrollLocked = 1;
+        st->gutterPending = 0;
+        source_pane_syncLockButtonVisual(st);
+        return;
+    }
     int dest = st->scrollIndex + delta;
     int streaming = (dasm_getFlags() & DASM_IFACE_FLAG_STREAMING) ? 1 : 0;
     if (st->scrollLocked && st->scrollAnchorValid) {
@@ -3234,6 +3401,15 @@ source_pane_scrollToStart(source_pane_state_t *st, source_pane_mode_t mode)
         source_pane_syncLockButtonVisual(st);
         return;
     }
+    if (mode == source_pane_mode_cpr) {
+        st->scrollIndex = 0;
+        st->scrollAnchorAddr = 0;
+        st->scrollAnchorValid = 1;
+        st->scrollLocked = 1;
+        st->gutterPending = 0;
+        source_pane_syncLockButtonVisual(st);
+        return;
+    }
     if (dasm_getFlags() & DASM_IFACE_FLAG_STREAMING) {
         source_pane_followCurrent(st);
         return;
@@ -3269,6 +3445,21 @@ source_pane_scrollToEnd(source_pane_state_t *st, source_pane_mode_t mode, int ma
             }
             st->scrollLine = dest;
         }
+        st->scrollLocked = 1;
+        st->gutterPending = 0;
+        source_pane_syncLockButtonVisual(st);
+        return;
+    }
+    if (mode == source_pane_mode_cpr) {
+        uint64_t destAddr = 0x00fffffcu;
+        if (maxLines > 1) {
+            uint64_t back = (uint64_t)(maxLines - 1) * 4ull;
+            destAddr = destAddr > back ? destAddr - back : 0ull;
+        }
+        destAddr = source_pane_resolveCprAnchorAddr(destAddr);
+        st->scrollIndex = (int)(destAddr >> 2);
+        st->scrollAnchorAddr = destAddr;
+        st->scrollAnchorValid = 1;
         st->scrollLocked = 1;
         st->gutterPending = 0;
         source_pane_syncLockButtonVisual(st);
@@ -3477,7 +3668,7 @@ source_pane_searchFind(source_pane_state_t *st, e9ui_component_t *self, e9ui_con
     TTF_Font *use_font = source_pane_resolveFont(ctx);
     int max_lines = 1;
     if (use_font) {
-        source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, use_font, 10);
+        source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, use_font, 10);
         if (metrics.maxLines > 0) {
             max_lines = metrics.maxLines;
         }
@@ -3531,7 +3722,7 @@ source_pane_searchTextboxKey(e9ui_context_t *ctx, SDL_Keycode key, SDL_Keymod mo
         TTF_Font *useFont = source_pane_resolveFont(ctx);
         int maxLines = 1;
         if (useFont) {
-            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(pane, useFont, 10);
+            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(pane, ctx, useFont, 10);
             if (metrics.maxLines > 0) {
                 maxLines = metrics.maxLines;
             }
@@ -3679,6 +3870,9 @@ source_pane_modeValue(source_pane_mode_t mode)
     if (mode == source_pane_mode_c) {
         return "c";
     }
+    if (mode == source_pane_mode_cpr) {
+        return "cpr";
+    }
     if (mode == source_pane_mode_h) {
         return "hex";
     }
@@ -3694,6 +3888,9 @@ source_pane_modeFromValue(const char *value)
     if (strcmp(value, "c") == 0) {
         return source_pane_mode_c;
     }
+    if (strcmp(value, "cpr") == 0) {
+        return source_pane_mode_cpr;
+    }
     if (strcmp(value, "hex") == 0) {
         return source_pane_mode_h;
     }
@@ -3706,10 +3903,48 @@ source_pane_modePersistValue(source_pane_mode_t mode)
     if (mode == source_pane_mode_c) {
         return 0;
     }
+    if (mode == source_pane_mode_cpr) {
+        return 4;
+    }
     if (mode == source_pane_mode_h) {
         return 3;
     }
     return 2;
+}
+
+static void
+source_pane_refreshModeOptions(e9ui_component_t *comp, source_pane_state_t *st)
+{
+    static const e9ui_textbox_option_t modeOptionsBase[] = {
+        { .value = "c",   .label = "SRC" },
+        { .value = "asm", .label = "ASM" },
+        { .value = "hex", .label = "HEX" },
+    };
+    static const e9ui_textbox_option_t modeOptionsAmiga[] = {
+        { .value = "c",   .label = "SRC" },
+        { .value = "asm", .label = "ASM" },
+        { .value = "hex", .label = "HEX" },
+        { .value = "cpr", .label = "CPR" },
+    };
+
+    if (!comp || !st || !st->toggleBtnMeta) {
+        return;
+    }
+    e9ui_component_t *select = e9ui_child_find(comp, st->toggleBtnMeta);
+    if (!select) {
+        return;
+    }
+
+    if (source_pane_isCprModeAvailable()) {
+        e9ui_textbox_setOptions(select,
+                                modeOptionsAmiga,
+                                (int)(sizeof(modeOptionsAmiga) / sizeof(modeOptionsAmiga[0])));
+    } else {
+        e9ui_textbox_setOptions(select,
+                                modeOptionsBase,
+                                (int)(sizeof(modeOptionsBase) / sizeof(modeOptionsBase[0])));
+    }
+    e9ui_textbox_setSelectedValue(select, source_pane_modeValue(st->viewMode));
 }
 
 static void
@@ -3732,17 +3967,18 @@ source_pane_persistLoad(e9ui_component_t *self, e9ui_context_t *ctx, const char 
     return;
   }
   if (strcmp(key, "mode") == 0) {
-    int m = (int)strtol(value, NULL, 10);
-
-    source_pane_mode_t mode = source_pane_mode_a;
-	    if (m == 0) {
-	        mode = source_pane_mode_c;
-	    } else if (m == 3) {
-	        mode = source_pane_mode_h;
-	    }
-	    source_pane_setModeInternal(self, mode, 0);
-	  }
-	}
+      int m = (int)strtol(value, NULL, 10);
+      source_pane_mode_t mode = source_pane_mode_a;
+      if (m == 0) {
+          mode = source_pane_mode_c;
+      } else if (m == 4) {
+          mode = source_pane_mode_cpr;
+      } else if (m == 3) {
+          mode = source_pane_mode_h;
+      }
+      source_pane_setModeInternal(self, mode, 0);
+  }
+}
 
 static int
 source_pane_getAsmWindow(source_pane_state_t *st, int maxLines, uint64_t *out_curAddr,
@@ -3908,11 +4144,413 @@ source_pane_getAsmWindow(source_pane_state_t *st, int maxLines, uint64_t *out_cu
 }
 
 static void
+source_pane_sanitizeCopperValueTip(char *text)
+{
+    if (!text) {
+        return;
+    }
+    for (char *p = text; *p; ++p) {
+        if (*p == '\r' || *p == '\n' || *p == '\t') {
+            *p = ' ';
+        }
+    }
+}
+
+static void
+source_pane_appendCopperDecodeText(char *out, size_t cap, size_t *pos, const char *text)
+{
+    if (!out || cap == 0 || !pos || !text) {
+        return;
+    }
+    while (*text && *pos + 1 < cap) {
+        out[*pos] = *text;
+        (*pos)++;
+        text++;
+    }
+    out[*pos] = '\0';
+}
+
+static void
+source_pane_appendCopperDecodeFormat(char *out, size_t cap, size_t *pos, const char *fmt, ...)
+{
+    va_list args;
+    char buffer[256];
+
+    if (!out || cap == 0 || !pos || !fmt || *pos >= cap - 1) {
+        return;
+    }
+
+    va_start(args, fmt);
+    int written = vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    if (written < 0) {
+        return;
+    }
+
+    source_pane_appendCopperDecodeText(out, cap, pos, buffer);
+}
+
+static void
+source_pane_appendCopperWaitCore(uint32_t insn, char *out, size_t cap, size_t *pos)
+{
+    int vp = (int)((insn & 0xff000000u) >> 24);
+    int hp = (int)((insn & 0x00fe0000u) >> 16);
+    int ve = (int)((insn & 0x00007f00u) >> 8);
+    int he = (int)(insn & 0x000000feu);
+    int bfd = (int)((insn & 0x00008000u) >> 15);
+    int vMask = vp & (ve | 0x80);
+    int hMask = hp & he;
+    int didOutput = 0;
+
+    if (vMask > 0) {
+        didOutput = 1;
+        source_pane_appendCopperDecodeText(out, cap, pos, "vpos ");
+        if (ve != 0x7fu) {
+            source_pane_appendCopperDecodeFormat(out, cap, pos, "& 0x%02x ", ve);
+        }
+        source_pane_appendCopperDecodeFormat(out, cap, pos, ">= 0x%02x", vMask);
+    }
+    if (he > 0) {
+        if (vMask > 0) {
+            source_pane_appendCopperDecodeText(out, cap, pos, " and");
+        }
+        source_pane_appendCopperDecodeText(out, cap, pos, " hpos ");
+        if (he != 0xfe) {
+            source_pane_appendCopperDecodeFormat(out, cap, pos, "& 0x%02x ", he);
+        }
+        source_pane_appendCopperDecodeFormat(out, cap, pos, ">= 0x%02x", hMask);
+    } else {
+        if (didOutput) {
+            source_pane_appendCopperDecodeText(out, cap, pos, ", ");
+        }
+        source_pane_appendCopperDecodeText(out, cap, pos, "ignore horizontal");
+    }
+
+    source_pane_appendCopperDecodeFormat(out,
+                                         cap,
+                                         pos,
+                                         " ; VP %02x, VE %02x; HP %02x, HE %02x; BFD %d",
+                                         vp,
+                                         ve,
+                                         hp,
+                                         he,
+                                         bfd);
+}
+
+static void
+source_pane_decodeCopperInstruction(uint16_t w1, uint16_t w2, char *out, size_t cap)
+{
+    size_t pos = 0;
+
+    if (!out || cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+
+    uint32_t insn = ((uint32_t)w1 << 16) | (uint32_t)w2;
+    uint32_t insnType = insn & 0x00010001u;
+    if (insnType == 0x00010000u || insnType == 0x00010001u) {
+        int waitsForBlitterIdle = (w2 & 0x8000u) == 0u;
+        int isWaitForever = (w1 == 0xffffu && w2 == 0xfffeu) ? 1 : 0;
+
+        if (isWaitForever) {
+            strutil_strlcpy(out, cap, insnType == 0x00010001u ? "SKIP FOREVER" : "WAIT FOREVER");
+            return;
+        }
+
+        if (insnType == 0x00010001u) {
+            source_pane_appendCopperDecodeText(out, cap, &pos, "Skip if ");
+        } else {
+            source_pane_appendCopperDecodeText(out, cap, &pos, "WAIT for ");
+        }
+        source_pane_appendCopperWaitCore(insn, out, cap, &pos);
+        if (waitsForBlitterIdle) {
+            source_pane_appendCopperDecodeText(out, cap, &pos, " ; BLITTER MUST BE IDLE");
+        }
+        if (insnType == 0x00010000u && insn == 0xfffffffeu) {
+            source_pane_appendCopperDecodeText(out, cap, &pos, " ; End of Copperlist");
+        }
+        return;
+    }
+
+    uint16_t regOffset = (uint16_t)(w1 & 0x01feu);
+    const char *regName = amiga_custom_regs_nameForOffset(regOffset);
+    if (!regName || !regName[0]) {
+        (void)snprintf(out, cap, "%03X := %04X", (unsigned)regOffset, (unsigned)w2);
+        return;
+    }
+
+    (void)snprintf(out, cap, "%s := %04X", regName, (unsigned)w2);
+
+    const char *valueTip = amiga_custom_regs_valueTooltipForOffset(regOffset, w2);
+    if (!valueTip || !valueTip[0]) {
+        return;
+    }
+
+    char valueTipBuf[256];
+    strutil_strlcpy(valueTipBuf, sizeof(valueTipBuf), valueTip);
+    source_pane_sanitizeCopperValueTip(valueTipBuf);
+    size_t len = strlen(out);
+    if (len < cap) {
+        (void)snprintf(out + len, cap - len, " ; %s", valueTipBuf);
+    }
+}
+
+/*
+static void
+source_pane_appendCopperDecodeText(char *out, size_t cap, size_t *pos, const char *text)
+{
+    if (!out || cap == 0 || !pos || !text) {
+        return;
+    }
+    while (*text && *pos + 1 < cap) {
+        out[*pos] = *text;
+        (*pos)++;
+        text++;
+    }
+    out[*pos] = '\0';
+}
+
+static void
+source_pane_appendCopperDecodeFormat(char *out, size_t cap, size_t *pos, const char *fmt, ...)
+{
+    va_list args;
+    char buffer[256];
+
+    if (!out || cap == 0 || !pos || !fmt || *pos >= cap - 1) {
+        return;
+    }
+
+    va_start(args, fmt);
+    int written = vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    if (written < 0) {
+        return;
+    }
+
+    source_pane_appendCopperDecodeText(out, cap, pos, buffer);
+}
+
+static void
+source_pane_disassembleCopperWaitCore(uint32_t insn, char *out, size_t cap, size_t *pos)
+{
+    int vp = (int)((insn & 0xff000000u) >> 24);
+    int hp = (int)((insn & 0x00fe0000u) >> 16);
+    int ve = (int)((insn & 0x00007f00u) >> 8);
+    int he = (int)(insn & 0x000000feu);
+    int bfd = (int)((insn & 0x00008000u) >> 15);
+    int vMask = vp & (ve | 0x80);
+    int hMask = hp & he;
+    int didOutput = 0;
+
+    if (vMask > 0) {
+        didOutput = 1;
+        source_pane_appendCopperDecodeText(out, cap, pos, "vpos ");
+        if (ve != 0x7f) {
+            source_pane_appendCopperDecodeFormat(out, cap, pos, "& 0x%02x ", ve);
+        }
+        source_pane_appendCopperDecodeFormat(out, cap, pos, ">= 0x%02x", vMask);
+    }
+    if (he > 0) {
+        if (vMask > 0) {
+            source_pane_appendCopperDecodeText(out, cap, pos, " and");
+        }
+        source_pane_appendCopperDecodeText(out, cap, pos, " hpos ");
+        if (he != 0xfe) {
+            source_pane_appendCopperDecodeFormat(out, cap, pos, "& 0x%02x ", he);
+        }
+        source_pane_appendCopperDecodeFormat(out, cap, pos, ">= 0x%02x", hMask);
+    } else {
+        if (didOutput) {
+            source_pane_appendCopperDecodeText(out, cap, pos, ", ");
+        }
+        source_pane_appendCopperDecodeText(out, cap, pos, "ignore horizontal");
+    }
+
+    source_pane_appendCopperDecodeFormat(out,
+                                         cap,
+                                         pos,
+                                         " ; VP %02x, VE %02x; HP %02x, HE %02x; BFD %d",
+                                         vp,
+                                         ve,
+                                         hp,
+                                         he,
+                                         bfd);
+}
+
+static void
+source_pane_decodeCopperInstruction(uint16_t w1, uint16_t w2, char *out, size_t cap)
+{
+    uint32_t insn = 0;
+    uint32_t insnType = 0;
+    size_t pos = 0;
+
+    if (!out || cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+
+    insn = ((uint32_t)w1 << 16) | (uint32_t)w2;
+    insnType = insn & 0x00010001u;
+
+    switch (insnType) {
+        case 0x00010000u:
+            source_pane_appendCopperDecodeText(out, cap, &pos, "Wait for ");
+            source_pane_disassembleCopperWaitCore(insn, out, cap, &pos);
+            if (insn == 0xfffffffeu) {
+                source_pane_appendCopperDecodeText(out, cap, &pos, " ; End of Copperlist");
+            }
+            return;
+
+        case 0x00010001u:
+            source_pane_appendCopperDecodeText(out, cap, &pos, "Skip if ");
+            source_pane_disassembleCopperWaitCore(insn, out, cap, &pos);
+            return;
+
+        case 0x00000000u:
+        case 0x00000001u:
+        {
+            uint16_t regOffset = (uint16_t)((insn >> 16) & 0x01feu);
+            const char *regName = amiga_custom_regs_nameForOffset(regOffset);
+            if (regName && regName[0]) {
+                source_pane_appendCopperDecodeFormat(out, cap, &pos, "%s := 0x%04x", regName, (unsigned)w2);
+            } else {
+                source_pane_appendCopperDecodeFormat(out, cap, &pos, "%04x := 0x%04x", (unsigned)regOffset, (unsigned)w2);
+            }
+            return;
+        }
+
+        default:
+            source_pane_appendCopperDecodeFormat(out, cap, &pos, "INVALID %04x %04x", (unsigned)w1, (unsigned)w2);
+            return;
+    }
+}
+*/
+
+static int
+source_pane_getCprWindow(source_pane_state_t *st, int maxLines, uint64_t *out_curAddr,
+                         const char ***out_lines, const uint64_t **out_addrs, int *out_count)
+{
+    if (out_curAddr) {
+        *out_curAddr = 0;
+    }
+    if (out_lines) {
+        *out_lines = NULL;
+    }
+    if (out_addrs) {
+        *out_addrs = NULL;
+    }
+    if (out_count) {
+        *out_count = 0;
+    }
+    if (!st || maxLines <= 0 || !out_curAddr || !out_lines || !out_addrs || !out_count) {
+        return 0;
+    }
+
+    int freezeWhileRunning = 0;
+    if (!st->overrideActive && machine_getRunning(debugger.machine)) {
+        freezeWhileRunning = 1;
+    }
+    if (st->frozenActive && !freezeWhileRunning) {
+        st->frozenActive = 0;
+        source_pane_freeFrozenAsm(st);
+    }
+    if (freezeWhileRunning && !st->frozenActive) {
+        st->frozenPcAddr = source_pane_getCurrentCprAddr(st);
+        st->frozenActive = 1;
+        st->frozenAsmStartIndex = INT_MIN;
+        st->frozenAsmMaxLines = 0;
+        source_pane_freeFrozenAsm(st);
+    }
+
+    uint64_t curAddr = freezeWhileRunning ? st->frozenPcAddr : source_pane_getCurrentCprAddr(st);
+    curAddr = source_pane_resolveCprAnchorAddr(curAddr);
+    *out_curAddr = curAddr;
+
+    uint64_t startAddr = curAddr;
+    if (st->scrollLocked) {
+        if (st->scrollAnchorValid) {
+            startAddr = st->scrollAnchorAddr;
+        } else {
+            startAddr = (uint64_t)(uint32_t)(st->scrollIndex >= 0 ? st->scrollIndex : 0) * 4ull;
+        }
+    }
+    startAddr = source_pane_resolveCprAnchorAddr(startAddr);
+    int startIndex = (int)(startAddr >> 2);
+
+    if (freezeWhileRunning &&
+        st->frozenActive &&
+        st->frozenAsmLines &&
+        st->frozenAsmAddrs &&
+        st->frozenAsmStartIndex == startIndex &&
+        st->frozenAsmMaxLines == maxLines) {
+        *out_lines = (const char **)st->frozenAsmLines;
+        *out_addrs = (const uint64_t *)st->frozenAsmAddrs;
+        *out_count = st->frozenAsmCount;
+        return st->frozenAsmCount > 0 ? 1 : 0;
+    }
+
+    source_pane_freeFrozenAsm(st);
+    st->frozenAsmLines = (char **)alloc_calloc((size_t)maxLines, sizeof(*st->frozenAsmLines));
+    st->frozenAsmAddrs = (uint64_t *)alloc_calloc((size_t)maxLines, sizeof(*st->frozenAsmAddrs));
+    if (!st->frozenAsmLines || !st->frozenAsmAddrs) {
+        source_pane_freeFrozenAsm(st);
+        return 0;
+    }
+
+    for (int i = 0; i < maxLines; ++i) {
+        uint32_t addr = (uint32_t)((startAddr + ((uint64_t)i * 4ull)) & 0x00fffffcu);
+        uint8_t bytes[4];
+        if (!libretro_host_debugReadMemory(addr, bytes, sizeof(bytes))) {
+            break;
+        }
+
+        uint16_t w1 = ((uint16_t)bytes[0] << 8) | (uint16_t)bytes[1];
+        uint16_t w2 = ((uint16_t)bytes[2] << 8) | (uint16_t)bytes[3];
+        char decoded[320];
+        char words[32];
+        char lineBuf[384];
+
+        source_pane_decodeCopperInstruction(w1, w2, decoded, sizeof(decoded));
+        (void)snprintf(words, sizeof(words), "%04X %04X  ", (unsigned)w1, (unsigned)w2);
+        strutil_join2Trunc(lineBuf, sizeof(lineBuf), words, decoded);
+
+        st->frozenAsmLines[i] = alloc_strdup(lineBuf);
+        if (!st->frozenAsmLines[i]) {
+            break;
+        }
+        st->frozenAsmAddrs[i] = (uint64_t)addr;
+        st->frozenAsmCount++;
+    }
+
+    if (st->frozenAsmCount <= 0) {
+        source_pane_freeFrozenAsm(st);
+        return 0;
+    }
+
+    st->frozenAsmStartIndex = startIndex;
+    st->frozenAsmMaxLines = maxLines;
+
+    if (!st->scrollLocked) {
+        st->scrollIndex = startIndex;
+    } else if (!st->scrollAnchorValid) {
+        st->scrollAnchorAddr = startAddr;
+        st->scrollAnchorValid = 1;
+    }
+
+    *out_lines = (const char **)st->frozenAsmLines;
+    *out_addrs = (const uint64_t *)st->frozenAsmAddrs;
+    *out_count = st->frozenAsmCount;
+    return 1;
+}
+
+static void
 source_pane_renderAsm(e9ui_component_t *self, e9ui_context_t *ctx)
 {
     TTF_Font *useFont = source_pane_resolveFont(ctx);
     SDL_Rect area = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
     const int padPx = 10;
+    SDL_Rect contentArea = source_pane_getContentArea(self, ctx, padPx);
     SDL_SetRenderDrawColor(ctx->renderer, 20, 20, 24, 255);
     SDL_RenderFillRect(ctx->renderer, &area);
     if (!useFont) {
@@ -3920,7 +4558,7 @@ source_pane_renderAsm(e9ui_component_t *self, e9ui_context_t *ctx)
     }
 
     source_pane_state_t *st = (source_pane_state_t*)self->state;
-    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, padPx);
     if (metrics.innerHeight <= 0) {
         return;
     }
@@ -3936,7 +4574,7 @@ source_pane_renderAsm(e9ui_component_t *self, e9ui_context_t *ctx)
     uint64_t curAddr = 0;
     if (!source_pane_getAsmWindow(st, drawMaxLines, &curAddr, &lines, &addrs, &count)) {
         SDL_Color icol = (SDL_Color){200,160,160,255};
-        source_pane_renderStatusMessage(ctx, useFont, area, padPx, icol, "No disassembly available");
+        source_pane_renderStatusMessage(ctx, useFont, contentArea, padPx, icol, "No disassembly available");
         return;
     }
     int curRow = source_pane_findCurrentAddrRow(addrs, count, curAddr);
@@ -3958,20 +4596,20 @@ source_pane_renderAsm(e9ui_component_t *self, e9ui_context_t *ctx)
     TTF_SizeText(useFont, sample, &gutterW, &th);
     int gutterPad = e9ui_scale_px(ctx, 16);
     SDL_SetRenderDrawColor(ctx->renderer, 26, 26, 30, 255);
-    SDL_Rect gutter = { area.x, area.y, padPx + gutterW + gutterPad, area.h };
+    SDL_Rect gutter = { contentArea.x, contentArea.y, padPx + gutterW + gutterPad, contentArea.h };
     SDL_RenderFillRect(ctx->renderer, &gutter);
 
     SDL_Color txt = (SDL_Color){220,220,220,255};
     SDL_Color lno = (SDL_Color){160,160,200,255};
     SDL_Color lno_bp_on = (SDL_Color){120,200,120,255};
     SDL_Color lno_bp_off = (SDL_Color){200,140,60,255};
-    int textX = area.x + padPx + gutterW + gutterPad;
-    int hitW = area.x + area.w - textX - padPx;
+    int textX = contentArea.x + padPx + gutterW + gutterPad;
+    int hitW = contentArea.x + contentArea.w - textX - padPx;
     if (hitW < 0) {
         hitW = 0;
     }
-    int y = area.y + padPx;
-    int clipBottom = area.y + area.h + metrics.lineHeight;
+    int y = contentArea.y + padPx;
+    int clipBottom = contentArea.y + contentArea.h + metrics.lineHeight;
     for (int i = 0; i < count; ++i) {
         uint64_t a = addrs[i];
         const char *ins = lines[i] ? lines[i] : "";
@@ -3985,7 +4623,7 @@ source_pane_renderAsm(e9ui_component_t *self, e9ui_context_t *ctx)
         int nw = 0;
         int nh = 0;
         TTF_SizeText(useFont, abuf, &nw, &nh);
-        int lnx = area.x + padPx + (gutterW - nw);
+        int lnx = contentArea.x + padPx + (gutterW - nw);
         SDL_Color use_col = lno;
         machine_breakpoint_t *bp = machine_findBreakpointByAddr(&debugger.machine, (uint32_t)a);
         if (bp) {
@@ -4009,6 +4647,7 @@ source_pane_renderHex(e9ui_component_t *self, e9ui_context_t *ctx)
 {
     TTF_Font *useFont = source_pane_resolveFont(ctx);
     SDL_Rect area = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
+    SDL_Rect contentArea = source_pane_getContentArea(self, ctx, 10);
     const int padPx = 10;
     SDL_SetRenderDrawColor(ctx->renderer, 20, 20, 24, 255);
     SDL_RenderFillRect(ctx->renderer, &area);
@@ -4017,7 +4656,7 @@ source_pane_renderHex(e9ui_component_t *self, e9ui_context_t *ctx)
     }
 
     source_pane_state_t *st = (source_pane_state_t*)self->state;
-    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, padPx);
     if (metrics.innerHeight <= 0) {
         return;
     }
@@ -4033,7 +4672,7 @@ source_pane_renderHex(e9ui_component_t *self, e9ui_context_t *ctx)
     uint64_t curAddr = 0;
     if (!source_pane_getAsmWindow(st, drawMaxLines, &curAddr, &lines, &addrs, &count)) {
         SDL_Color icol = (SDL_Color){200,160,160,255};
-        source_pane_renderStatusMessage(ctx, useFont, area, padPx, icol, "No disassembly available");
+        source_pane_renderStatusMessage(ctx, useFont, contentArea, padPx, icol, "No disassembly available");
         return;
     }
     int curRow = source_pane_findCurrentAddrRow(addrs, count, curAddr);
@@ -4055,21 +4694,21 @@ source_pane_renderHex(e9ui_component_t *self, e9ui_context_t *ctx)
     TTF_SizeText(useFont, sample, &gutterW, &th);
     int gutterPad = e9ui_scale_px(ctx, 16);
     SDL_SetRenderDrawColor(ctx->renderer, 26, 26, 30, 255);
-    SDL_Rect gutter = { area.x, area.y, padPx + gutterW + gutterPad, area.h };
+    SDL_Rect gutter = { contentArea.x, contentArea.y, padPx + gutterW + gutterPad, contentArea.h };
     SDL_RenderFillRect(ctx->renderer, &gutter);
 
     SDL_Color txt = (SDL_Color){220,220,220,255};
     SDL_Color lno = (SDL_Color){160,160,200,255};
     SDL_Color lno_bp_on = (SDL_Color){120,200,120,255};
     SDL_Color lno_bp_off = (SDL_Color){200,140,60,255};
-    int textX = area.x + padPx + gutterW + gutterPad;
-    int hitW = area.x + area.w - textX - padPx;
+    int textX = contentArea.x + padPx + gutterW + gutterPad;
+    int hitW = contentArea.x + contentArea.w - textX - padPx;
     if (hitW < 0) {
         hitW = 0;
     }
 
-    int y = area.y + padPx;
-    int clipBottom = area.y + area.h + metrics.lineHeight;
+    int y = contentArea.y + padPx;
+    int clipBottom = contentArea.y + contentArea.h + metrics.lineHeight;
     for (int i = 0; i < count; ++i) {
         uint64_t a = addrs[i];
         const char *ins = lines[i] ? lines[i] : "";
@@ -4084,7 +4723,7 @@ source_pane_renderHex(e9ui_component_t *self, e9ui_context_t *ctx)
         int nw = 0;
         int nh = 0;
         TTF_SizeText(useFont, abuf, &nw, &nh);
-        int lnx = area.x + padPx + (gutterW - nw);
+        int lnx = contentArea.x + padPx + (gutterW - nw);
         SDL_Color use_col = lno;
         machine_breakpoint_t *bp = machine_findBreakpointByAddr(&debugger.machine, (uint32_t)a);
         if (bp) {
@@ -4146,14 +4785,118 @@ source_pane_renderHex(e9ui_component_t *self, e9ui_context_t *ctx)
 }
 
 static void
+source_pane_renderCpr(e9ui_component_t *self, e9ui_context_t *ctx)
+{
+    TTF_Font *useFont = source_pane_resolveFont(ctx);
+    SDL_Rect area = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
+    SDL_Rect contentArea = source_pane_getContentArea(self, ctx, 10);
+    const int padPx = 10;
+    SDL_SetRenderDrawColor(ctx->renderer, 20, 20, 24, 255);
+    SDL_RenderFillRect(ctx->renderer, &area);
+    if (!useFont) {
+        return;
+    }
+    if (!source_pane_isCprModeAvailable()) {
+        SDL_Color icol = (SDL_Color){200, 160, 160, 255};
+        source_pane_renderStatusMessage(ctx, useFont, contentArea, padPx, icol, "CPR mode is only available for Amiga");
+        return;
+    }
+
+    source_pane_state_t *st = (source_pane_state_t *)self->state;
+    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, padPx);
+    if (metrics.innerHeight <= 0) {
+        return;
+    }
+    int maxLines = metrics.maxLines;
+    if (maxLines <= 0) {
+        maxLines = 1;
+    }
+    int drawMaxLines = maxLines + 1;
+
+    const char **lines = NULL;
+    const uint64_t *addrs = NULL;
+    int count = 0;
+    uint64_t curAddr = 0;
+    if (!source_pane_getCprWindow(st, drawMaxLines, &curAddr, &lines, &addrs, &count)) {
+        SDL_Color icol = (SDL_Color){200, 160, 160, 255};
+        source_pane_renderStatusMessage(ctx, useFont, contentArea, padPx, icol, "No copper list data available");
+        return;
+    }
+    int curRow = source_pane_findCurrentAddrRow(addrs, count, curAddr);
+
+    int hexw = dasm_getAddrHexWidth();
+    if (hexw < 6) {
+        hexw = 6;
+    }
+    if (hexw > 16) {
+        hexw = 16;
+    }
+    char sample[32];
+    for (int i = 0; i < hexw; ++i) {
+        sample[i] = 'F';
+    }
+    sample[hexw] = '\0';
+    int gutterW = 0;
+    int th = 0;
+    TTF_SizeText(useFont, sample, &gutterW, &th);
+    int gutterPad = e9ui_scale_px(ctx, 16);
+    SDL_SetRenderDrawColor(ctx->renderer, 26, 26, 30, 255);
+    SDL_Rect gutter = { contentArea.x, contentArea.y, padPx + gutterW + gutterPad, contentArea.h };
+    SDL_RenderFillRect(ctx->renderer, &gutter);
+
+    SDL_Color txt = (SDL_Color){220, 220, 220, 255};
+    SDL_Color lno = (SDL_Color){160, 160, 200, 255};
+    int textX = contentArea.x + padPx + gutterW + gutterPad;
+    int hitW = contentArea.x + contentArea.w - textX - padPx;
+    if (hitW < 0) {
+        hitW = 0;
+    }
+
+    int y = contentArea.y + padPx;
+    int clipBottom = contentArea.y + contentArea.h + metrics.lineHeight;
+    for (int i = 0; i < count; ++i) {
+        uint64_t a = addrs[i];
+        const char *ins = lines[i] ? lines[i] : "";
+        if (i == curRow) {
+            SDL_SetRenderDrawColor(ctx->renderer, 40, 72, 138, 255);
+            SDL_Rect hl = { area.x + 2, y - 2, area.w - 4, metrics.lineHeight + 4 };
+            SDL_RenderFillRect(ctx->renderer, &hl);
+        }
+
+        char abuf[32];
+        (void)snprintf(abuf, sizeof(abuf), "%0*llX", hexw, (unsigned long long)a);
+        int nw = 0;
+        int nh = 0;
+        TTF_SizeText(useFont, abuf, &nw, &nh);
+        int lnx = contentArea.x + padPx + (gutterW - nw);
+
+        void *addrBucket = st ? (void *)&st->bucketAddr : (void *)self;
+        void *sourceBucket = st ? (void *)&st->bucketSource : (void *)self;
+        e9ui_text_select_drawText(ctx, self, useFont, abuf, lno, lnx, y,
+                                  metrics.lineHeight, 0, addrBucket, 1, 1);
+        source_pane_renderAsmLineHighlighted(ctx, self, useFont, ins, 10, txt,
+                                             textX, y, metrics.lineHeight, hitW, sourceBucket);
+
+        y += metrics.lineHeight;
+        if (y > clipBottom) {
+            break;
+        }
+    }
+}
+
+static void
 source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
 {
     TTF_Font *useFont = e9ui->theme.text.source ? e9ui->theme.text.source : ctx->font;
     SDL_Rect area = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
     source_pane_state_t *st = (source_pane_state_t*)self->state;
     if (st) {
+        if (st->viewMode == source_pane_mode_cpr && !source_pane_isCprModeAvailable()) {
+            source_pane_setModeInternal(self, source_pane_mode_h, 0);
+        }
+        source_pane_refreshModeOptions(self, st);
         source_pane_mode_t stepMode = st->viewMode;
-        int stepEnabled = ((stepMode == source_pane_mode_a || stepMode == source_pane_mode_h) &&
+        int stepEnabled = (source_pane_isAsmLikeMode(stepMode) &&
                            !machine_getRunning(debugger.machine)) ? 1 : 0;
         source_pane_step_buttons_action_ctx_t actionCtx = {
             self,
@@ -4171,6 +4914,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
                                source_pane_stepButtonsOnAction);
     }
     int padPx = 10;
+    SDL_Rect contentArea = source_pane_getContentArea(self, ctx, padPx);
     SDL_bool hadClip = SDL_FALSE;
     SDL_Rect prevClip = {0};
     source_pane_pushRenderClip(ctx, &area, &hadClip, &prevClip);
@@ -4188,7 +4932,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
         st->frozenActive = 0;
         source_pane_freeFrozenAsm(st);
     }
-    if (st && st->viewMode != source_pane_mode_a && st->viewMode != source_pane_mode_h &&
+    if (st && !source_pane_isAsmLikeMode(st->viewMode) &&
         (st->frozenActive || st->frozenAsmLines)) {
         st->frozenActive = 0;
         source_pane_freeFrozenAsm(st);
@@ -4201,6 +4945,11 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
     if (st && st->viewMode == source_pane_mode_h) {
         source_pane_refreshAsmSymbols(self, st);
         source_pane_renderHex(self, ctx);
+        goto done;
+    }
+    if (st && st->viewMode == source_pane_mode_cpr) {
+        source_pane_refreshAsmSymbols(self, st);
+        source_pane_renderCpr(self, ctx);
         goto done;
     }
     if (st && !freezeWhileRunning) {
@@ -4226,10 +4975,10 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
     }
     if (!path || !*path || (!manualView && curLine <= 0)) {
         SDL_Color icol = (SDL_Color){200,160,160,255};
-        source_pane_renderStatusMessage(ctx, useFont, area, padPx, icol, "No source code available");
+        source_pane_renderStatusMessage(ctx, useFont, contentArea, padPx, icol, "No source code available");
         goto done;
     }
-    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+    source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, padPx);
     if (metrics.innerHeight <= 0) {
         goto done;
     }
@@ -4259,7 +5008,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
     int total = 0;
     if (!source_getRange(path, start, end, &lines, &count, &first, &total)) {
         SDL_Color icol = (SDL_Color){200,160,160,255};
-        source_pane_renderStatusMessage(ctx, useFont, area, padPx, icol, "Failed to load source code");
+        source_pane_renderStatusMessage(ctx, useFont, contentArea, padPx, icol, "Failed to load source code");
         goto done;
     }
     // Adjust start if near end of file for better centering
@@ -4302,18 +5051,18 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
     int gutterPad = e9ui_scale_px(ctx, 16);
     // Draw gutter background
     SDL_SetRenderDrawColor(ctx->renderer, 26, 26, 30, 255);
-    SDL_Rect gutter = { area.x, area.y, padPx + gutterW + gutterPad, area.h };
+    SDL_Rect gutter = { contentArea.x, contentArea.y, padPx + gutterW + gutterPad, contentArea.h };
     SDL_RenderFillRect(ctx->renderer, &gutter);
 
-    int y = area.y + padPx;
+    int y = contentArea.y + padPx;
     int lineHeight = metrics.lineHeight;
-    int clipBottom = area.y + area.h + lineHeight;
+    int clipBottom = contentArea.y + contentArea.h + lineHeight;
     SDL_Color txt = (SDL_Color){220,220,220,255};
     SDL_Color lno = (SDL_Color){160,160,180,255};
     SDL_Color lno_bp_on = (SDL_Color){120,200,120,255};
     SDL_Color lno_bp_off = (SDL_Color){200,140,60,255};
-    int textX = area.x + padPx + gutterW + gutterPad;
-    int hitW = area.x + area.w - textX - padPx;
+    int textX = contentArea.x + padPx + gutterW + gutterPad;
+    int hitW = contentArea.x + contentArea.w - textX - padPx;
     if (hitW < 0) {
         hitW = 0;
     }
@@ -4323,7 +5072,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
         e9ui_scrollbar_clamp(viewW, 1, st->cContentPixelWidth, 1, &st->cScrollX, &scrollY);
         st->cContentPixelWidth = 0;
     }
-    SDL_Rect textClip = { textX, area.y, hitW, area.h };
+    SDL_Rect textClip = { textX, contentArea.y, hitW, contentArea.h };
     int textDrawX = textX - (st ? st->cScrollX : 0);
     const machine_breakpoint_t *bps = NULL;
     int bp_count = 0;
@@ -4382,7 +5131,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
         if (useFont) {
             TTF_SizeText(useFont, numbuf, &nw, &nh);
         }
-        int lnx = area.x + padPx + (gutterW - nw);
+        int lnx = contentArea.x + padPx + (gutterW - nw);
         if (useFont) {
             int nsw = 0, nsh = 0;
             SDL_Color use_col = lno;
@@ -4551,7 +5300,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
           }
       }
       if (asmSymbolSelect) {
-          int showAsmControls = (mode == source_pane_mode_a || mode == source_pane_mode_h) ? 1 : 0;
+          int showAsmControls = source_pane_isAsmLikeMode(mode);
           e9ui_setHidden(asmSymbolSelect, showAsmControls ? 0 : 1);
           if (showAsmControls && asmSymbolW > 0) {
               e9ui_rect_t bounds = {
@@ -4569,7 +5318,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
           }
       }
       if (asmAddress) {
-          int showAsmControls = (mode == source_pane_mode_a || mode == source_pane_mode_h) ? 1 : 0;
+          int showAsmControls = source_pane_isAsmLikeMode(mode);
           e9ui_setHidden(asmAddress, showAsmControls ? 0 : 1);
           if (showAsmControls && asmAddressW > 0) {
               e9ui_rect_t bounds = {
@@ -4604,7 +5353,7 @@ source_pane_render(e9ui_component_t *self, e9ui_context_t *ctx)
               searchBox->render(searchBox, ctx);
           }
       }
-      if (st && (mode == source_pane_mode_a || mode == source_pane_mode_h) &&
+      if (st && source_pane_isAsmLikeMode(mode) &&
           !machine_getRunning(debugger.machine)) {
           int topInsetPx = source_pane_overlayTopRowHeight(self, ctx, st);
           e9ui_step_buttons_render(ctx,
@@ -4624,6 +5373,9 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
         return 0;
     }
     source_pane_state_t *st = (source_pane_state_t*)self->state;
+    if (st && st->viewMode == source_pane_mode_cpr && !source_pane_isCprModeAvailable()) {
+        source_pane_setModeInternal(self, source_pane_mode_h, 0);
+    }
     source_pane_mode_t mode = st ? st->viewMode : source_pane_mode_c;
     if (st) {
         int mx = 0;
@@ -4680,7 +5432,7 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
             int viewW = 1;
             if (useFont) {
                 const int padPx = 10;
-                source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+                source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, padPx);
                 (void)metrics;
                 int digits = 3;
                 int tmp_total = totalLines > 0 ? totalLines : 1;
@@ -4725,7 +5477,7 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
             }
         }
     }
-    if (st && ctx && (mode == source_pane_mode_a || mode == source_pane_mode_h)) {
+    if (st && ctx && source_pane_isAsmLikeMode(mode)) {
         source_pane_step_buttons_action_ctx_t actionCtx = {
             self,
             ctx,
@@ -4817,7 +5569,7 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
             }
             return 0;
         }
-        if (st->gutterMode == source_pane_mode_a || st->gutterMode == source_pane_mode_h) {
+        if (source_pane_isCpuAsmLikeMode(st->gutterMode)) {
             uint32_t addr = st->gutterAddr;
             machine_breakpoint_t *existing = machine_findBreakpointByAddr(&debugger.machine, addr);
             if (existing) {
@@ -4916,7 +5668,7 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
             if (!path || !path[0] || (!manualView && curLine <= 0)) {
                 return 0;
             }
-            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, padPx);
             if (metrics.innerHeight <= 0) {
                 return 0;
             }
@@ -4975,11 +5727,12 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
             int th = 0;
             TTF_SizeText(useFont, zeros, &gutterW, &th);
             int gutterPad = e9ui_scale_px(ctx, 16);
-            int gutterRight = self->bounds.x + padPx + gutterW + gutterPad;
+            SDL_Rect contentArea = source_pane_getContentArea(self, ctx, padPx);
+            int gutterRight = contentArea.x + padPx + gutterW + gutterPad;
             if (mx >= gutterRight) {
                 return 0;
             }
-            int row = (my - (self->bounds.y + padPx)) / metrics.lineHeight;
+            int row = (my - (contentArea.y + padPx)) / metrics.lineHeight;
             if (row < 0 || row >= count) {
                 return 0;
             }
@@ -4991,8 +5744,8 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
             st->gutterDownY = my;
             return 1;
         }
-        if (mode == source_pane_mode_a || mode == source_pane_mode_h) {
-            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+        if (source_pane_isCpuAsmLikeMode(mode)) {
+            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, padPx);
             if (metrics.innerHeight <= 0) {
                 return 0;
             }
@@ -5023,11 +5776,12 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
             int th = 0;
             TTF_SizeText(useFont, sample, &gutterW, &th);
             int gutterPad = e9ui_scale_px(ctx, 16);
-            int gutterRight = self->bounds.x + padPx + gutterW + gutterPad;
+            SDL_Rect contentArea = source_pane_getContentArea(self, ctx, padPx);
+            int gutterRight = contentArea.x + padPx + gutterW + gutterPad;
             if (mx >= gutterRight) {
                 return 0;
             }
-            int row = (my - (self->bounds.y + padPx)) / metrics.lineHeight;
+            int row = (my - (contentArea.y + padPx)) / metrics.lineHeight;
             if (row < 0 || row >= count) {
                 return 0;
             }
@@ -5044,7 +5798,7 @@ source_pane_handleEventComp(e9ui_component_t *self, e9ui_context_t *ctx, const e
         TTF_Font *useFont = source_pane_resolveFont(ctx);
         int maxLines = 1;
         if (useFont) {
-            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, useFont, padPx);
+            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(self, ctx, useFont, padPx);
             maxLines = metrics.maxLines;
         }
         if (maxLines <= 0) {
@@ -5133,7 +5887,7 @@ source_pane_lockToggle(e9ui_context_t *ctx, void *user)
                 if (function_select) {
                     e9ui_textbox_setText(function_select, "");
                 }
-            } else if (st->viewMode == source_pane_mode_a || st->viewMode == source_pane_mode_h) {
+            } else if (source_pane_isAsmLikeMode(st->viewMode)) {
                 e9ui_component_t *symbol_select = st->asmSymbolSelectMeta ? e9ui_child_find(st->ownerPane, st->asmSymbolSelectMeta) : NULL;
                 e9ui_component_t *address_box = st->asmAddressMeta ? e9ui_child_find(st->ownerPane, st->asmAddressMeta) : NULL;
                 if (symbol_select) {
@@ -5194,7 +5948,7 @@ source_pane_asmSymbolSelectChanged(e9ui_context_t *ctx, e9ui_component_t *comp, 
         (void)base_map_debugToRuntime(BASE_MAP_SECTION_TEXT, runtime, &runtime);
         addr = (uint64_t)runtime;
     }
-    uint64_t resolved = source_pane_resolveAsmAnchorAddr(addr);
+    uint64_t resolved = source_pane_resolveAsmLikeAnchorAddr(st, addr);
     if (st->asmSymbolValues && st->asmSymbolAddrs) {
         for (int i = 0; i < st->asmSymbolCount; ++i) {
             const char *v = st->asmSymbolValues[i];
@@ -5239,7 +5993,7 @@ source_pane_asmAddressSubmitted(e9ui_context_t *ctx, void *user)
     if (!source_pane_parseHex64(text, &addr) || addr == 0) {
         return;
     }
-    uint64_t resolved = source_pane_resolveAsmAnchorAddr(addr);
+    uint64_t resolved = source_pane_resolveAsmLikeAnchorAddr(st, addr);
     int hexw = dasm_getAddrHexWidth();
     if (hexw < 6) {
         hexw = 6;
@@ -5261,7 +6015,7 @@ source_pane_asmAddressSubmitted(e9ui_context_t *ctx, void *user)
                 if (!value || !value[0] || symbol_addr == 0) {
                     continue;
                 }
-                symbol_addr = source_pane_resolveAsmAnchorAddr(symbol_addr);
+                symbol_addr = source_pane_resolveAsmLikeAnchorAddr(st, symbol_addr);
                 if ((symbol_addr & 0x00ffffffull) == (resolved & 0x00ffffffull)) {
                     match_value = value;
                     break;
@@ -5369,7 +6123,7 @@ source_pane_functionSelectChanged(e9ui_context_t *ctx, e9ui_component_t *comp, c
     if (ctx && st->ownerPane) {
         TTF_Font *use_font = source_pane_resolveFont(ctx);
         if (use_font) {
-            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(st->ownerPane, use_font, 10);
+            source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(st->ownerPane, ctx, use_font, 10);
             if (metrics.maxLines > 0) {
                 max_lines = metrics.maxLines;
             }
@@ -5413,11 +6167,6 @@ source_pane_dtor(e9ui_component_t *self, e9ui_context_t *ctx)
 e9ui_component_t *
 source_pane_make(void)
 {
-  static const e9ui_textbox_option_t modeOptions[] = {
-      { .value = "c",   .label = "SRC" },
-      { .value = "asm", .label = "ASM" },
-      { .value = "hex", .label = "HEX" },
-  };
   e9ui_component_t *c = (e9ui_component_t*)alloc_calloc(1, sizeof(*c));
   c->name = "source_pane";
   source_pane_state_t *st = (source_pane_state_t*)alloc_calloc(1, sizeof(source_pane_state_t));
@@ -5440,9 +6189,7 @@ source_pane_make(void)
   if (modeSelect) {
       e9ui_textbox_setFocusBorderVisible(modeSelect, 0);
       e9ui_textbox_setReadOnly(modeSelect, 1);
-      e9ui_textbox_setOptions(modeSelect, modeOptions, (int)(sizeof(modeOptions) / sizeof(modeOptions[0])));
       e9ui_textbox_setOnOptionSelected(modeSelect, source_pane_modeSelectChanged, c);
-      e9ui_textbox_setSelectedValue(modeSelect, source_pane_modeValue(st->viewMode));
       st->toggleBtnMeta = alloc_strdup("toggle");
       e9ui_child_add(c, modeSelect, st->toggleBtnMeta);
   }
@@ -5495,6 +6242,8 @@ source_pane_make(void)
       st->asmAddressMeta = alloc_strdup("asm_address");
       e9ui_child_add(c, asmAddress, st->asmAddressMeta);
   }
+
+  source_pane_refreshModeOptions(c, st);
   
   return c;
 }
@@ -5506,12 +6255,27 @@ source_pane_setModeInternal(e9ui_component_t *comp, source_pane_mode_t mode, int
         return;
     }
     source_pane_state_t *st = (source_pane_state_t*)comp->state;
-    if (mode != source_pane_mode_c && mode != source_pane_mode_a && mode != source_pane_mode_h) {
+    source_pane_mode_t prevMode = st->viewMode;
+    if (mode != source_pane_mode_c &&
+        mode != source_pane_mode_a &&
+        mode != source_pane_mode_h &&
+        mode != source_pane_mode_cpr) {
         mode = source_pane_mode_a;
+    }
+    if (mode == source_pane_mode_cpr && !source_pane_isCprModeAvailable()) {
+        mode = source_pane_mode_h;
     }
     if (enforceElfValid && !debugger.elfValid && mode == source_pane_mode_c) {
         mode = source_pane_mode_a;
     }
+
+    if (prevMode != mode &&
+        (prevMode == source_pane_mode_cpr || mode == source_pane_mode_cpr)) {
+        st->frozenActive = 0;
+        source_pane_freeFrozenAsm(st);
+        st->scrollAnchorValid = 0;
+    }
+
     st->viewMode = mode;
     st->gutterPending = 0;
     st->scrollAnchorValid = 0;
@@ -5524,17 +6288,12 @@ source_pane_setModeInternal(e9ui_component_t *comp, source_pane_mode_t mode, int
         st->manualSrcActive = 0;
     }
 
-    if (mode != source_pane_mode_a && mode != source_pane_mode_h) {
+    if (!source_pane_isAsmLikeMode(mode)) {
         st->frozenActive = 0;
         source_pane_freeFrozenAsm(st);
     }
 
-    if (st->toggleBtnMeta) {
-        e9ui_component_t *select = e9ui_child_find(comp, st->toggleBtnMeta);
-        if (select) {
-            e9ui_textbox_setSelectedValue(select, source_pane_modeValue(mode));
-        }
-    }
+    source_pane_refreshModeOptions(comp, st);
 }
 
 void
@@ -5604,7 +6363,7 @@ source_pane_centerOnAddress(e9ui_component_t *comp, e9ui_context_t *ctx, uint32_
     TTF_Font *useFont = source_pane_resolveFont(ctx);
     int maxLines = 1;
     if (useFont) {
-        source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(comp, useFont, 10);
+        source_pane_line_metrics_t metrics = source_pane_computeLineMetrics(comp, ctx, useFont, 10);
         maxLines = metrics.maxLines > 0 ? metrics.maxLines : 1;
     }
 
@@ -5620,18 +6379,63 @@ source_pane_centerOnAddress(e9ui_component_t *comp, e9ui_context_t *ctx, uint32_
         st->scrollLocked = 1;
     }
 
-    int idx = 0;
-    if (!st->scrollLocked && dasm_findIndexForAddr((uint64_t)addr, &idx)) {
-        int start = idx - (maxLines / 2);
-        if (start < 0 && !(dasm_getFlags() & DASM_IFACE_FLAG_STREAMING)) {
-            start = 0;
+    if (!st->scrollLocked && st->viewMode == source_pane_mode_cpr) {
+        uint64_t startAddr = source_pane_resolveCprAnchorAddr((uint64_t)addr);
+        if (maxLines > 1) {
+            uint64_t back = (uint64_t)(maxLines / 2) * 4ull;
+            if (startAddr > back) {
+                startAddr -= back;
+            } else {
+                startAddr = 0;
+            }
         }
-        st->scrollIndex = start;
+        st->scrollIndex = (int)(startAddr >> 2);
+        st->scrollAnchorAddr = startAddr;
+        st->scrollAnchorValid = 1;
         st->scrollLocked = 1;
-        st->scrollAnchorValid = 0;
+    } else {
+        int idx = 0;
+        if (!st->scrollLocked && dasm_findIndexForAddr((uint64_t)addr, &idx)) {
+            int start = idx - (maxLines / 2);
+            if (start < 0 && !(dasm_getFlags() & DASM_IFACE_FLAG_STREAMING)) {
+                start = 0;
+            }
+            st->scrollIndex = start;
+            st->scrollLocked = 1;
+            st->scrollAnchorValid = 0;
+        }
     }
     st->gutterPending = 0;
     source_pane_syncLockButtonVisual(st);
+}
+
+void
+source_pane_submitAddress(e9ui_component_t *comp, e9ui_context_t *ctx, uint32_t addr)
+{
+    if (!comp || !comp->state) {
+        return;
+    }
+    source_pane_state_t *st = (source_pane_state_t*)comp->state;
+    if (!st->ownerPane || !st->asmAddressMeta) {
+        return;
+    }
+    e9ui_component_t *addr_box = e9ui_child_find(st->ownerPane, st->asmAddressMeta);
+    if (!addr_box) {
+        return;
+    }
+
+    int hexw = dasm_getAddrHexWidth();
+    if (hexw < 6) {
+        hexw = 6;
+    }
+    if (hexw > 16) {
+        hexw = 16;
+    }
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%0*X", hexw, (unsigned)(addr & 0x00ffffffu));
+    e9ui_textbox_setText(addr_box, buf);
+    source_pane_asmAddressSubmitted(ctx, st);
 }
 
 int

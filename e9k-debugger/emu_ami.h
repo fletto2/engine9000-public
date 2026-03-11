@@ -37,3 +37,9 @@ emu_ami_rangeBarSync(size_t index, e9ui_component_t *bar);
 
 int
 emu_ami_getBlitterVisLatestStats(e9k_debug_ami_blitter_vis_stats_t *outStats);
+
+int
+emu_ami_getCopperDebugEnabled(void);
+
+void
+emu_ami_setCopperDebugEnabled(int enabled);

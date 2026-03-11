@@ -31,6 +31,7 @@
 #include "config.h"
 #include "source_pane.h"
 #include "hex_convert.h"
+#include "emu_ami.h"
 
 static int hotkeys_enabled = 1;
 static e9ui_component_t *hotkeys_configModal = NULL;

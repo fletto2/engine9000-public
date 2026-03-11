@@ -33,8 +33,11 @@ typedef struct {
   void (*rangeBarDragging)(size_t index, int dragging, float startPercent, float endPercent);
   void (*rangeBarTooltip)(size_t index, float startPercent, float endPercent, char *out, size_t cap);
   int (*rangeBarSync)(size_t index, e9ui_component_t *bar);
+  int (*handleOverlayEvent)(e9ui_context_t *ctx, const SDL_Rect *dst, const e9ui_event_t *ev);
+  void (*adjustVideoDst)(SDL_Rect *dst);
   void (*createOverlays)(e9ui_component_t* comp, e9ui_component_t* button_stack);
   void (*render)(e9ui_context_t *ctx, SDL_Rect* dst);
+  void (*renderForeground)(e9ui_context_t *ctx, SDL_Rect* dst);
   void (*destroy)(void);
 } emu_system_iface_t;
 

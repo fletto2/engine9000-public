@@ -210,6 +210,9 @@ bool
 libretro_host_debugGetAmigaDebugDmaAddr(int **out_addr);
 
 bool
+libretro_host_debugGetAmigaDebugCopperAddr(int **out_addr);
+
+bool
 libretro_host_debugAmiSetBlitterDebug(int enabled);
 
 bool
@@ -221,16 +224,11 @@ libretro_host_debugAmiReadBlitterVisPoints(e9k_debug_ami_blitter_vis_point_t *ou
 bool
 libretro_host_debugAmiReadBlitterVisStats(e9k_debug_ami_blitter_vis_stats_t *out);
 
-size_t
-libretro_host_debugAmiReadDmaDebugFrame(uint32_t frameSelect,
-                                        e9k_debug_ami_dma_debug_record_t *out,
-                                        size_t cap,
-                                        e9k_debug_ami_dma_debug_frame_info_t *outInfo);
+const e9k_debug_ami_dma_debug_frame_view_t *
+libretro_host_debugAmiGetDmaDebugFrameView(uint32_t frameSelect);
 
-size_t
-libretro_host_debugAmiGetDmaDebugFramePtr(uint32_t frameSelect,
-                                          const e9k_debug_ami_dma_debug_raw_record_t **outRecords,
-                                          e9k_debug_ami_dma_debug_frame_info_t *outInfo);
+const e9k_debug_ami_copper_debug_frame_view_t *
+libretro_host_debugAmiGetCopperDebugFrameView(uint32_t frameSelect);
 
 bool
 libretro_host_debugAmiGetVideoLineCount(int *out_line_count);

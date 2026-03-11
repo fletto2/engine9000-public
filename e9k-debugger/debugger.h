@@ -70,6 +70,7 @@ typedef struct e9k_megadrive_config {
 
 typedef struct amiga_debug {
     int *debugDma;
+    int *debugCopper;
 } amiga_debug_t;
 
 typedef struct e9k_system_config {

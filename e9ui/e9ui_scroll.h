@@ -19,3 +19,8 @@ e9ui_scroll_setContentHeightPx(e9ui_component_t *scroll, int contentHeight_px);
 void
 e9ui_scroll_setContentWidthPx(e9ui_component_t *scroll, int contentWidth_px);
 
+void
+e9ui_scroll_getScrollPx(e9ui_component_t *scroll, int *outScrollX, int *outScrollY);
+
+void
+e9ui_scroll_setScrollPx(e9ui_component_t *scroll, int scrollX, int scrollY);

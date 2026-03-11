@@ -5438,7 +5438,9 @@ static void draw_frame2(struct vidbuffer *vbin, struct vidbuffer *vbout)
 
 static void draw_frame_extras(struct vidbuffer *vb, int y_start, int y_end)
 {
-	if ((debug_dma > 1 && debug_dma != DEBUG_DMA_MODE_COLLECT_ONLY) || debug_heatmap > 1) {
+	if ((debug_dma > 1 &&
+		debug_dma != DEBUG_DMA_MODE_COLLECT_ONLY &&
+		(!E9K_HACK_DMA_DEBUG_VIDEO_SYNC || debug_dma != DEBUG_DMA_MODE_VIDEO_SYNC)) || debug_heatmap > 1) {
 		for (int i = 0; i < vb->outheight; i++) {
 			int line = i;
 			draw_debug_status_line(vb->monitor_id, line);

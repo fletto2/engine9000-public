@@ -386,6 +386,9 @@ void
 e9ui_setTooltip(e9ui_component_t *comp, const char *tooltip);
 
 void
+e9ui_drawTooltip(const e9ui_context_t *ctx, const char *text, int baseX, int baseY);
+
+void
 e9ui_updateStateTree(e9ui_component_t *root);
 
 e9ui_child_iterator*

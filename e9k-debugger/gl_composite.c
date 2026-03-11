@@ -810,6 +810,9 @@ void
 gl_composite_renderFrame(SDL_Renderer *renderer, const uint8_t *data, int width, int height,
                          size_t pitch, const SDL_Rect *dst)
 {
+    SDL_Rect clipRect;
+    SDL_bool clipEnabled = SDL_FALSE;
+
     if (!glc_active || !renderer || !data || !dst || width <= 0 || height <= 0) {
         return;
     }
@@ -864,10 +867,29 @@ gl_composite_renderFrame(SDL_Renderer *renderer, const uint8_t *data, int width,
     if (ww <= 0 || hh <= 0) {
         return;
     }
+    clipEnabled = SDL_RenderIsClipEnabled(renderer);
+    if (clipEnabled) {
+        SDL_RenderGetClipRect(renderer, &clipRect);
+    } else {
+        clipRect.x = 0;
+        clipRect.y = 0;
+        clipRect.w = ww;
+        clipRect.h = hh;
+    }
     float x0 = (2.0f * (float)dst->x / (float)ww) - 1.0f;
     float x1 = (2.0f * (float)(dst->x + dst->w) / (float)ww) - 1.0f;
     float y0 = 1.0f - (2.0f * (float)dst->y / (float)hh);
     float y1 = 1.0f - (2.0f * (float)(dst->y + dst->h) / (float)hh);
+
+    if (clipEnabled && clipRect.w > 0 && clipRect.h > 0) {
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(clipRect.x,
+                  hh - (clipRect.y + clipRect.h),
+                  clipRect.w,
+                  clipRect.h);
+    } else {
+        glDisable(GL_SCISSOR_TEST);
+    }
 
     int useCrt = crt_isEnabled();
     int useAdv = (useCrt && glc_crtShaderAdvanced) ? 1 : 0;

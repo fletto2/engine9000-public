@@ -999,6 +999,10 @@ target_amiga_validateAPI(void)
   if (libretro_host_debugGetAmigaDebugDmaAddr(&debugDma)) {
     debugger.amigaDebug.debugDma = debugDma;
   }
+  int *debugCopper = NULL;
+  if (libretro_host_debugGetAmigaDebugCopperAddr(&debugCopper)) {
+    debugger.amigaDebug.debugCopper = debugCopper;
+  }
 }
 
 
