@@ -1,6 +1,6 @@
 # ENGINE9000 68k Retro Debugger/Profiler
 
-Amiga/Neo Geo/Mega Drive debugger/profiler - under heavy development so likely to be unstable for the time being. 
+Amiga/Neo Geo/Mega Drive/Atari ST debugger/profiler - under heavy development so likely to be unstable for the time being. 
 
 Expect file format changes, regressions and other incompatibilities with new versions. 
 
@@ -35,7 +35,8 @@ Project layout
 - `e9k-debugger` - The debugger project
 - `geo9000` - Neo Geo emulator - (forked from `geolith-libretro` https://github.com/libretro/geolith-libretro)
 - `ami9000` - Amiga emulator - (fored from `libretro-uae` https://github.com/libretro/libretro-uae)
-- `mega9000` - Mega Drive emulator (forked from `picodrive` https://git.libretro.com/libretro/picodrive
+- `mega9000` - Mega Drive emulator (forked from `picodrive` https://git.libretro.com/libretro/picodrive)
+- `st9000` - Atari ST emulator (forked from `hatari` https://github.com/libretro/hatari)
 
 Platform support:
 
@@ -51,7 +52,7 @@ NOTE: Testing on Linux/Windows builds has been minimal at this stage.
 ## Overview
 
 - ASM/C Source level debugger (ELF or stabs (bebbo gcc))
-- Amiga/Neo Geo/Mega Drive emulators with frame level rewind/fast forward and simple CRT shader
+- Amiga/Neo Geo/Mega Drive/Atari ST emulators with frame level rewind/fast forward and simple CRT shader
 - Source level profiler
 - Trainer/cheat mode
 - Smoke tester (record scenarios, replay, check all video frames identical)
@@ -557,6 +558,7 @@ Configure your toolchain for each platform in the settings screen. Currently tes
 - Neo Geo - ngdevkit `m68k-neogeo-elf`
 - Amiga - bebbo's amiga-gcc `m68k-amigaos`
 - Mega Drive - mars/sgdk `m68k-elf`
+- Atari ST - `m68k-atari-mint`
 
 Without these, the debugger can still run, but symbol/source-aware features degrade or become unavailable.
 
@@ -588,6 +590,13 @@ Note: Amiga debugging is complicated by relocation. If your target application i
 - Use `load9000` amiga program to load your hunk based exectuable - see "load9000" section
 
 - An ELF image with dwarf information running on Amiga should technically work but is untested
+
+#### Atari ST
+- An ELF/TOS/PRG compiled with DWARF debug info (`Settings → ELF`, or `--elf PATH`)
+- The toolchain binaries on `PATH`:
+  - `m68k-atari-mint-addr2line`
+  - `m68k-atari-mint-objdump`
+  - `m68k-atari-mint-readelf`
 
 ### load9000
 
@@ -621,7 +630,7 @@ Run `e9k-debugger --help` for the full list. The current options include:
 #### Global options
 - `--help`, `-h`
 - `--reset-cfg` (deletes the saved config file and restarts)
-- `--amiga`, `--neogeo` (sets the active system; affects which config options apply)
+- `--amiga`, `--neogeo`, `--megadrive`, `--atarist` (sets the active system; affects which config options apply)
 - `--core PATH` (applies to the active system)
 - `--system-dir PATH` (applies to the active system)
 - `--save-dir PATH` (applies to the active system)
@@ -658,7 +667,7 @@ Thanks to Frank Wille for the amiga line debug (tools/amiga/v-hunk/addr2line.c)
 
 ## Building
 
-Mega Drive core is in a separate repo (License seems incompatible with GPL/MIT) - so to add the git submodule use:
+Mega Drive core is in a separate repo (License seems incompatible with GPL/MIT) - to clone it use:
 
 - `make mega9000-support`
 
@@ -683,6 +692,7 @@ This should create:
 - `e9k-debugger/system/ami9000.dylib` - Amiga emulator core
 - `e9k-debugger/system/geo9000.dylib` - Neo Geo emulator core
 - `e9k-debugger/system/mega9000.dylib` - Mega Drive emulator core
+- `e9k-debugger/system/st9000.dylib` - Atari ST emulator core
 
 - The macOS build currently links sanitizers (`-fsanitize=address,undefined`) by default; adjust the Makefile if you want a non-sanitized release build.
 
@@ -701,6 +711,7 @@ This should create:
 - `e9k-debugger/system/geo9000.dll`
 - `e9k-debugger/system/ami9000.dll` 
 - `e9k-debugger/system/mega9000.dll`
+- `e9k-debugger/system/st9000.dll`
 
 ### Linux (Ubuntu/Debian)
 
@@ -713,6 +724,7 @@ This should create:
 - `e9k-debugger/system/ami9000.so` - Amiga emulator core
 - `e9k-debugger/system/geo9000.so` - Neo Geo emulator core
 - `e9k-debugger/system/mega9000.so` - Mega Drive emulator core
+- `e9k-debugger/system/st9000.so` - Atari ST emulator core
 
 ### BSD (FreeBSD)
 
@@ -725,3 +737,4 @@ This should create:
 - `e9k-debugger/system/ami9000.so` - Amiga emulator core
 - `e9k-debugger/system/geo9000.so` - Neo Geo emulator core
 - `e9k-debugger/system/mega9000.so` - Mega Drive emulator core
+- `e9k-debugger/system/st9000.so` - Atari ST emulator core
