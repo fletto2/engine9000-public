@@ -52,13 +52,7 @@ test:
 	$(MAKE) -C tools/amiga/adf9000 test
 
 mega9000-support:
-	@if [ -d $(MEGA9000_DIR) ]; then \
-		echo "mega9000 already present"; \
-	else \
-		echo "Cloning mega9000..."; \
-		git clone https://github.com/alpine9000/mega9000.git $(MEGA9000_DIR) && \
-		echo "mega9000 support is ready"; \
-	fi
+	git submodule update --init $(MEGA9000_DIR)
 
 mega9000:
 	@if [ -f $(MEGA9000_MAKEFILE) ]; then \

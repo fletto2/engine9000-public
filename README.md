@@ -659,9 +659,9 @@ Run `e9k-debugger --help` for the full list. The current options include:
 
 e9k-debugger/ Copyright (C) 2026 Enable Software Pty Ltd
 
-This project is licensed under a non-commercial BSD license (see [LICENSE](LICENSE)). This license was chosen to be compatible with picodrive (mega9000/), which uses the same non-commercial BSD license and cannot be relicensed. Since mega9000 is distributed as part of this repository, the overall project license must be at least as restrictive as picodrive's — a GPL or permissive BSD license would conflict with picodrive's non-commercial clause.
+This project is licensed under the GNU General Public License, version 2 (see [LICENSE](LICENSE)), to match the ami9000 (PUAE) and st9000 (hatari) cores which are GPLv2. mega9000 (picodrive) uses a non-commercial BSD license and is kept as a git submodule rather than distributed directly.
 
-Individual components (ami9000, geo9000, st9000) retain their own upstream licenses. See [LICENSE](LICENSE) for details.
+Individual components retain their own upstream licenses. See [LICENSE](LICENSE) for details.
 
 Thanks to Frank Wille for the amiga line debug (tools/amiga/v-hunk/addr2line.c)
 
@@ -669,7 +669,7 @@ Thanks to Frank Wille for the amiga line debug (tools/amiga/v-hunk/addr2line.c)
 
 ## Building
 
-Mega Drive core is in a separate repo (License seems incompatible with GPL/MIT) - to clone it use:
+Mega Drive core is in a separate repo under a non-commercial license (incompatible with GPL) - to init the submodule use:
 
 - `make mega9000-support`
 
