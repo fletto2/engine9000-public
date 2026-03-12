@@ -659,7 +659,9 @@ Run `e9k-debugger --help` for the full list. The current options include:
 
 e9k-debugger/ Copyright (C) 2026 Enable Software Pty Ltd
 
-This project contains files with various licenses, unless otherwise specified assume GNU General Public License, version 2.
+This project is licensed under a non-commercial BSD license (see [LICENSE](LICENSE)). This license was chosen to be compatible with picodrive (mega9000/), which uses the same non-commercial BSD license and cannot be relicensed. Since mega9000 is distributed as part of this repository, the overall project license must be at least as restrictive as picodrive's — a GPL or permissive BSD license would conflict with picodrive's non-commercial clause.
+
+Individual components (ami9000, geo9000, st9000) retain their own upstream licenses. See [LICENSE](LICENSE) for details.
 
 Thanks to Frank Wille for the amiga line debug (tools/amiga/v-hunk/addr2line.c)
 
