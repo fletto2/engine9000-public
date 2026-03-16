@@ -24,6 +24,10 @@
 #include "alloc.h"
 #include "state_wrap.h"
 
+#ifndef E9K_HACK_AMI_SPRITE_VIS
+#define E9K_HACK_AMI_SPRITE_VIS 0
+#endif
+
 
 typedef void (*retro_set_environment_fn_t)(retro_environment_t);
 typedef void (*retro_set_video_refresh_fn_t)(retro_video_refresh_t);
@@ -96,6 +100,11 @@ typedef void (*e9k_debug_ami_set_blitter_debug_fn_t)(int enabled);
 typedef int (*e9k_debug_ami_get_blitter_debug_fn_t)(void);
 typedef size_t (*e9k_debug_ami_blitter_vis_read_points_fn_t)(e9k_debug_ami_blitter_vis_point_t *out, size_t cap, uint32_t *out_width, uint32_t *out_height);
 typedef size_t (*e9k_debug_ami_blitter_vis_read_stats_fn_t)(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap);
+#if E9K_HACK_AMI_SPRITE_VIS
+typedef void (*e9k_debug_ami_set_sprite_vis_fn_t)(int enabled);
+typedef int (*e9k_debug_ami_get_sprite_vis_fn_t)(void);
+typedef size_t (*e9k_debug_ami_sprite_vis_read_points_fn_t)(e9k_debug_ami_sprite_vis_point_t *out, size_t cap, uint32_t *out_width, uint32_t *out_height);
+#endif
 typedef const e9k_debug_ami_dma_debug_frame_view_t *(*e9k_debug_ami_dma_debug_get_frame_view_fn_t)(uint32_t frameSelect);
 typedef const e9k_debug_ami_copper_debug_frame_view_t *(*e9k_debug_ami_copper_debug_get_frame_view_fn_t)(uint32_t frameSelect);
 typedef int (*e9k_debug_ami_get_video_line_count_fn_t)(void);
@@ -121,6 +130,8 @@ typedef struct libretro_option_display {
     char *key;
     int visible;
 } libretro_option_display_t;
+
+#define LIBRETRO_HOST_SAVE_STATE_MAX_BYTES (512u * 1024u * 1024u)
 
 typedef struct  {
     void *lib;
@@ -232,6 +243,11 @@ typedef struct  {
     e9k_debug_ami_get_blitter_debug_fn_t debugAmiGetBlitterDebug;
     e9k_debug_ami_blitter_vis_read_points_fn_t debugAmiBlitterVisReadPoints;
     e9k_debug_ami_blitter_vis_read_stats_fn_t debugAmiBlitterVisReadStats;
+#if E9K_HACK_AMI_SPRITE_VIS
+    e9k_debug_ami_set_sprite_vis_fn_t debugAmiSetSpriteVis;
+    e9k_debug_ami_get_sprite_vis_fn_t debugAmiGetSpriteVis;
+    e9k_debug_ami_sprite_vis_read_points_fn_t debugAmiSpriteVisReadPoints;
+#endif
     e9k_debug_ami_dma_debug_get_frame_view_fn_t debugAmiDmaDebugGetFrameView;
     e9k_debug_ami_copper_debug_get_frame_view_fn_t debugAmiCopperDebugGetFrameView;
     e9k_debug_ami_get_video_line_count_fn_t debugAmiGetVideoLineCount;
@@ -279,6 +295,70 @@ libretro_host_applyOptionOverrides(void);
 
 static bool
 libretro_host_setOptionsV2(const struct retro_core_options_v2 *opts);
+
+static bool
+libretro_host_serializeWithRetry(uint8_t **ioBuffer, size_t *ioSize, size_t payloadOffset, size_t initialPayloadSize, size_t *outPayloadSize)
+{
+    size_t payloadCapacity = 0;
+    size_t payloadSize = 0;
+
+    if (outPayloadSize) {
+        *outPayloadSize = 0;
+    }
+    if (!ioBuffer || !ioSize || !libretro_host.serialize) {
+        return false;
+    }
+
+    payloadCapacity = initialPayloadSize;
+    if (payloadCapacity == 0) {
+        return false;
+    }
+
+    for (;;) {
+        size_t totalSize = payloadOffset + payloadCapacity;
+        uint8_t *buffer = NULL;
+
+        if (totalSize < payloadCapacity || totalSize > LIBRETRO_HOST_SAVE_STATE_MAX_BYTES) {
+            return false;
+        }
+
+        if (!*ioBuffer || *ioSize < totalSize) {
+            buffer = (uint8_t*)alloc_realloc(*ioBuffer, totalSize);
+            if (!buffer) {
+                return false;
+            }
+            *ioBuffer = buffer;
+        }
+
+        if (libretro_host.serialize(*ioBuffer + payloadOffset, payloadCapacity)) {
+            if (!libretro_host.serializeSize) {
+                return false;
+            }
+            payloadSize = libretro_host.serializeSize();
+            if (payloadSize == 0 || payloadSize > payloadCapacity) {
+                return false;
+            }
+            *ioSize = payloadOffset + payloadSize;
+            if (outPayloadSize) {
+                *outPayloadSize = payloadSize;
+            }
+            return true;
+        }
+
+        if (!libretro_host.serializeSize) {
+            return false;
+        }
+        payloadSize = libretro_host.serializeSize();
+        if (payloadSize > payloadCapacity) {
+            payloadCapacity = payloadSize;
+            continue;
+        }
+        if (payloadCapacity > LIBRETRO_HOST_SAVE_STATE_MAX_BYTES / 2u) {
+            return false;
+        }
+        payloadCapacity *= 2u;
+    }
+}
 
 void
 libretro_host_setControllerPortDevice(unsigned port, unsigned device)
@@ -2322,6 +2402,60 @@ libretro_host_debugAmiReadBlitterVisStats(e9k_debug_ami_blitter_vis_stats_t *out
     return libretro_host.debugAmiBlitterVisReadStats(out, sizeof(*out)) == sizeof(*out);
 }
 
+#if E9K_HACK_AMI_SPRITE_VIS
+bool
+libretro_host_debugAmiSetSpriteVis(int enabled)
+{
+    if (!libretro_host.debugAmiSetSpriteVis) {
+        libretro_host.debugAmiSetSpriteVis = (e9k_debug_ami_set_sprite_vis_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_set_sprite_vis");
+    }
+    if (!libretro_host.debugAmiSetSpriteVis) {
+        return false;
+    }
+    libretro_host.debugAmiSetSpriteVis(enabled ? 1 : 0);
+    return true;
+}
+
+bool
+libretro_host_debugAmiGetSpriteVis(int *out_enabled)
+{
+    if (out_enabled) {
+        *out_enabled = 0;
+    }
+    if (!libretro_host.debugAmiGetSpriteVis) {
+        libretro_host.debugAmiGetSpriteVis = (e9k_debug_ami_get_sprite_vis_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_get_sprite_vis");
+    }
+    if (!libretro_host.debugAmiGetSpriteVis) {
+        return false;
+    }
+    if (out_enabled) {
+        *out_enabled = libretro_host.debugAmiGetSpriteVis() ? 1 : 0;
+    }
+    return true;
+}
+
+size_t
+libretro_host_debugAmiReadSpriteVisPoints(e9k_debug_ami_sprite_vis_point_t *out, size_t cap, uint32_t *out_width, uint32_t *out_height)
+{
+    if (out_width) {
+        *out_width = 0u;
+    }
+    if (out_height) {
+        *out_height = 0u;
+    }
+    if (!libretro_host.debugAmiSpriteVisReadPoints) {
+        libretro_host.debugAmiSpriteVisReadPoints = (e9k_debug_ami_sprite_vis_read_points_fn_t)
+            libretro_host_loadSymbol("e9k_debug_ami_sprite_vis_read_points");
+    }
+    if (!libretro_host.debugAmiSpriteVisReadPoints) {
+        return 0u;
+    }
+    return libretro_host.debugAmiSpriteVisReadPoints(out, cap, out_width, out_height);
+}
+#endif
+
 const e9k_debug_ami_dma_debug_frame_view_t *
 libretro_host_debugAmiGetDmaDebugFrameView(uint32_t frameSelect)
 {
@@ -2796,6 +2930,12 @@ libretro_host_setAudioVolume(int volumePercent)
 bool
 libretro_host_saveState(size_t *out_size, size_t *out_diff)
 {
+    size_t headerSize = 0;
+    size_t payloadSize = 0;
+    size_t size = 0;
+    uint8_t *prev = NULL;
+    size_t prevSize = 0;
+
     if (out_size) {
         *out_size = 0;
     }
@@ -2809,38 +2949,46 @@ libretro_host_saveState(size_t *out_size, size_t *out_diff)
     if (rawSize == 0) {
         return false;
     }
-    size_t headerSize = state_wrap_headerSize();
-    size_t size = headerSize + rawSize;
-    uint8_t *prev = NULL;
-    if (libretro_host.stateData && libretro_host.stateSize == size) {
-        prev = (uint8_t*)alloc_alloc(size);
+
+    headerSize = state_wrap_headerSize();
+    if (libretro_host.stateData && libretro_host.stateSize > 0) {
+        prevSize = libretro_host.stateSize;
+        prev = (uint8_t*)alloc_alloc(prevSize);
         if (prev) {
-            memcpy(prev, libretro_host.stateData, size);
+            memcpy(prev, libretro_host.stateData, prevSize);
         }
     }
-    if (!libretro_host.stateData || libretro_host.stateSize != size) {
-        uint8_t *buf = (uint8_t*)alloc_realloc(libretro_host.stateData, size);
-        if (!buf) {
-            alloc_free(prev);
-            return false;
-        }
-        libretro_host.stateData = buf;
-        libretro_host.stateSize = size;
-    }
-    if (!libretro_host.serialize(libretro_host.stateData + headerSize, rawSize)) {
+
+    if (!libretro_host_serializeWithRetry(&libretro_host.stateData,
+                                          &libretro_host.stateSize,
+                                          headerSize,
+                                          rawSize,
+                                          &payloadSize)) {
         alloc_free(prev);
         return false;
     }
-    if (!state_wrap_writeHeader(libretro_host.stateData, libretro_host.stateSize, rawSize, &debugger.machine)) {
+    if (!state_wrap_writeHeader(libretro_host.stateData, libretro_host.stateSize, payloadSize, &debugger.machine)) {
         alloc_free(prev);
         return false;
     }
+    size = libretro_host.stateSize;
     if (out_size) {
-        *out_size = libretro_host.stateSize;
+        *out_size = size;
     }
     if (out_diff && prev) {
+        size_t cmpSize = size;
         size_t diff = 0;
-        for (size_t i = 0; i < size; ++i) {
+        if (prevSize != cmpSize) {
+            if (prevSize > cmpSize) {
+                diff += prevSize - cmpSize;
+            } else {
+                diff += cmpSize - prevSize;
+            }
+            if (prevSize < cmpSize) {
+                cmpSize = prevSize;
+            }
+        }
+        for (size_t i = 0; i < cmpSize; ++i) {
             if (libretro_host.stateData[i] != prev[i]) {
                 diff++;
             }

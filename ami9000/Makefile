@@ -106,10 +106,8 @@ else ifeq ($(platform), osx)
    TARGET := $(TARGET_NAME)_libretro.dylib
    MINVERSION := -mmacosx-version-min=10.6
    fpic := -fPIC
-   CFLAGS += -fno-lto
-   LDFLAGS += -fno-lto
-   CFLAGS += -flto   
-   LDFLAGS := -flto
+   CFLAGS += -flto
+   LDFLAGS += -flto
    SHARED := -dynamiclib
    PLATFLAGS += -DUSE_NAMED_SEMAPHORES
 
@@ -325,6 +323,7 @@ HAVE_MPEG2 = 1
 
 CFLAGS += -std=gnu99 -DINLINE="inline" -D__LIBRETRO__ -MMD
 CFLAGS += -DE9K_HACK_BLITTER_VIS=1
+CFLAGS += -DE9K_HACK_AMI_SPRITE_VIS=1
 CFLAGS += -DE9K_DEBUGGER_CUSTOM_LOGGER=1
 CFLAGS += -DE9K_HACK_DMA_DEBUG_EXPORT=1
 CFLAGS += -DE9K_HACK_DMA_DEBUG_VIDEO_SYNC=1
