@@ -523,8 +523,8 @@ target_atarist_applyCoreOptions(void)
 static void
 target_atarist_validateAPI(void)
 {
-    libretro_host_unbindNeogeoDebugApis();
-    libretro_host_unbindMegaDebugApis();
+    libretro_host_neogeo_unbindApis();
+    libretro_host_megadrive_unbindApis();
 }
 
 static int
