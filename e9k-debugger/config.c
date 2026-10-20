@@ -7,14 +7,28 @@
  */
 
 #include "config.h"
+#include "amiga_blit_info.h"
+#include "amiga_memview.h"
 #include "crt.h"
-#include "custom_log.h"
-#include "custom_ui.h"
+#include "amiga_custom.h"
+#include "amiga_custom_log.h"
+#include "amiga_custom_ui.h"
 #include "debugger.h"
 #include "e9ui.h"
+#include "hex_byte_color.h"
 #include "hex_convert.h"
 #include "hotkeys.h"
-#include "sprite_debug.h"
+#include "neogeo_audio_vis.h"
+#include "neogeo_memview.h"
+#include "neogeo_palette_debug.h"
+#include "neogeo_register_log.h"
+#include "neogeo_sprite_debug.h"
+#include "neogeo_sprite_list.h"
+#include "profile_checkpoints.h"
+#include "mega_audio_vis.h"
+#include "mega_vdp.h"
+#include "mega_memview.h"
+#include "mega_palette_debug.h"
 #include "mega_sprite_debug.h"
 #include "shader_ui.h"
 #include "settings.h"
@@ -118,6 +132,9 @@ config_persistConfig(FILE *f)
     if (debugger.config.neogeo.systemType[0]) {
         fprintf(f, "comp.config.neogeo.system_type=%s\n", debugger.config.neogeo.systemType);
     }
+    if (debugger.config.neogeo.cdSystemType[0]) {
+        fprintf(f, "comp.config.neogeo.cd_system_type=%s\n", debugger.config.neogeo.cdSystemType);
+    }
     if (debugger.config.neogeo.libretro.audioBufferMs > 0) {
         fprintf(f, "comp.config.neogeo.audio_ms=%d\n", debugger.config.neogeo.libretro.audioBufferMs);
     }
@@ -149,6 +166,7 @@ config_persistConfig(FILE *f)
     }
     fprintf(f, "comp.config.megadrive.audio_enabled=%d\n", debugger.config.megadrive.libretro.audioEnabled);
     fprintf(f, "comp.config.crt_enabled=%d\n", debugger.config.crtEnabled ? 1 : 0);
+    fprintf(f, "comp.config.logs_enabled=%d\n", debugger.config.logsEnabled ? 1 : 0);
     fprintf(f, "comp.config.record_enabled=%d\n", debugger.config.recordEnabled ? 1 : 0);
     if (!debugger.config.logosEnabled) {
         fprintf(f, "comp.config.logos_enabled=0\n");
@@ -159,14 +177,30 @@ config_persistConfig(FILE *f)
     if (!debugger.coreOptionsShowHelp) {
         fprintf(f, "comp.config.core_options_show_help=0\n");
     }
+    if (!hex_byte_color_isEnabled()) {
+        fprintf(f, "comp.config.hex_byte_colors=0\n");
+    }
     fprintf(f, "comp.config.transition=%s\n", transition_modeName(e9ui->transition.mode));
     fprintf(f, "comp.config.core_system=%d\n", target->coreIndex);
     hotkeys_persistConfig(f);
     crt_persistConfig(f);
-    sprite_debug_persistConfig(f);
+    neogeo_register_log_persistConfig(f);
+    neogeo_sprite_debug_persistConfig(f);
+    neogeo_sprite_list_persistConfig(f);
+    neogeo_audio_vis_persistConfig(f);
+    neogeo_palette_debug_persistConfig(f);
+    neogeo_memview_persistConfig(f);
+    mega_audio_vis_persistConfig(f);
+    mega_vdp_persistConfig(f);
+    mega_memview_persistConfig(f);
+    mega_palette_debug_persistConfig(f);
     mega_sprite_debug_persistConfig(f);
-    custom_ui_persistConfig(f);
-    custom_log_persistConfig(f);
+    amiga_custom_ui_persistConfig(f);
+    amiga_custom_log_persistConfig(f);
+    amiga_custom_persistConfig(f);
+    amiga_memview_persistConfig(f);
+    amiga_blit_info_persistConfig(f);
+    profile_checkpoints_persistConfig(f);
     shader_ui_persistConfig(f);
     hex_convert_persistConfig(f);
     settings_persistConfig(f);
@@ -255,6 +289,8 @@ config_loadConfigFile(const char *path)
                 config_setConfigValue(debugger.config.neogeo.libretro.sourceDir, sizeof(debugger.config.neogeo.libretro.sourceDir), value);
             } else if (strcmp(prop, "neogeo.system_type") == 0) {
                 config_setConfigValue(debugger.config.neogeo.systemType, sizeof(debugger.config.neogeo.systemType), value);
+            } else if (strcmp(prop, "neogeo.cd_system_type") == 0) {
+                config_setConfigValue(debugger.config.neogeo.cdSystemType, sizeof(debugger.config.neogeo.cdSystemType), value);
             } else if (strcmp(prop, "neogeo.audio_ms") == 0) {
                 char *end = NULL;
                 long ms = strtol(value, &end, 10);
@@ -289,6 +325,8 @@ config_loadConfigFile(const char *path)
                 debugger.config.megadrive.libretro.audioEnabled = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "crt_enabled") == 0) {
                 debugger.config.crtEnabled = atoi(value) ? 1 : 0;
+            } else if (strcmp(prop, "logs_enabled") == 0) {
+                debugger.config.logsEnabled = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "record_enabled") == 0) {
                 debugger.config.recordEnabled = atoi(value) ? 1 : 0;
             } else if (strcmp(prop, "logos_enabled") == 0) {
@@ -299,14 +337,16 @@ config_loadConfigFile(const char *path)
                                       value);
             } else if (strcmp(prop, "core_options_show_help") == 0) {
                 debugger.coreOptionsShowHelp = atoi(value) ? 1 : 0;
+            } else if (strcmp(prop, "hex_byte_colors") == 0) {
+                hex_byte_color_setEnabled(atoi(value) ? 1 : 0);
             } else if (strcmp(prop, "core_system") == 0) {
                 int coreSystem = atoi(value);
-#if !E9K_ENABLE_MEGADRIVE
-                if (coreSystem == TARGET_MEGADRIVE) {
-                    coreSystem = TARGET_NEOGEO;
+                if (!target_getByIndex(coreSystem)) {
+                    coreSystem = target_firstEnabledIndex();
                 }
-#endif
-                target_setTargetIndex(coreSystem);
+                if (coreSystem >= 0) {
+                    target_setTargetIndex(coreSystem);
+                }
             } else if (strcmp(prop, "transition") == 0) {
                 e9k_transition_mode_t mode = e9k_transition_none;
                 if (transition_parseMode(value, &mode)) {
@@ -322,9 +362,54 @@ config_loadConfigFile(const char *path)
             crt_loadConfigProperty(prop, value);
             continue;
         }
+        if (strncmp(key, "comp.register_log.", 18) == 0) {
+            const char *prop = key + 18;
+            neogeo_register_log_loadConfigProperty(prop, value);
+            continue;
+        }
         if (strncmp(key, "comp.sprite_debug.", 18) == 0) {
             const char *prop = key + 18;
-            sprite_debug_loadConfigProperty(prop, value);
+            neogeo_sprite_debug_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.sprite_list.", 17) == 0) {
+            const char *prop = key + 17;
+            neogeo_sprite_list_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.neogeo_audio_vis.", 22) == 0) {
+            const char *prop = key + 22;
+            neogeo_audio_vis_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.neogeo_palette_debug.", 26) == 0) {
+            const char *prop = key + 26;
+            neogeo_palette_debug_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.neogeo_memview.", 20) == 0) {
+            const char *prop = key + 20;
+            neogeo_memview_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.mega_memview.", 18) == 0) {
+            const char *prop = key + 18;
+            mega_memview_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.mega_audio_vis.", 20) == 0) {
+            const char *prop = key + 20;
+            mega_audio_vis_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.mega_vdp.", 14) == 0) {
+            const char *prop = key + 14;
+            mega_vdp_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.mega_palette_debug.", 24) == 0) {
+            const char *prop = key + 24;
+            mega_palette_debug_loadConfigProperty(prop, value);
             continue;
         }
         if (strncmp(key, "comp.mega_sprite_debug.", 23) == 0) {
@@ -334,17 +419,37 @@ config_loadConfigFile(const char *path)
         }
         if (strncmp(key, "comp.custom_ui.", 15) == 0) {
             const char *prop = key + 15;
-            custom_ui_loadConfigProperty(prop, value);
+            amiga_custom_ui_loadConfigProperty(prop, value);
             continue;
         }
         if (strncmp(key, "comp.custom_log.", 16) == 0) {
             const char *prop = key + 16;
-            custom_log_loadConfigProperty(prop, value);
+            amiga_custom_log_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.custom_amiga.", 18) == 0) {
+            const char *prop = key + 18;
+            amiga_custom_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.amiga_memview.", 19) == 0) {
+            const char *prop = key + 19;
+            amiga_memview_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.amiga_blit_info.", 21) == 0) {
+            const char *prop = key + 21;
+            amiga_blit_info_loadConfigProperty(prop, value);
             continue;
         }
         if (strncmp(key, "comp.shader_ui.", 15) == 0) {
             const char *prop = key + 15;
             shader_ui_loadConfigProperty(prop, value);
+            continue;
+        }
+        if (strncmp(key, "comp.profile_checkpoints.", 25) == 0) {
+            const char *prop = key + 25;
+            profile_checkpoints_loadConfigProperty(prop, value);
             continue;
         }
         if (strncmp(key, "comp.hex_convert.", 17) == 0) {

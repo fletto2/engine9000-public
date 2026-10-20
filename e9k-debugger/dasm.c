@@ -7,7 +7,7 @@
  */
 
 #include "dasm.h"
-#include "debugger.h"
+#include "target.h"
 
 static const dasm_iface_t *
 dasm_active(void)
@@ -96,4 +96,3 @@ dasm_getRangeByIndex(int start_index, int end_index,
     }
     return iface->getRangeByIndex(start_index, end_index, out_lines, out_addrs, out_first_index, out_count);
 }
-

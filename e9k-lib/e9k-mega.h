@@ -1,3 +1,11 @@
+/*
+ * COPYRIGHT © 2026 Enable Software Pty Ltd - All Rights Reserved
+ *
+ * https://github.com/alpine9000/engine9000-public
+ *
+ * See COPYING for license details
+ */
+
 #pragma once
 
 #include <stdint.h>
@@ -5,6 +13,9 @@
 
 #define E9K_DEBUG_MEGA_MAX_LINES 240
 #define E9K_DEBUG_MEGA_MAX_FRAME_SPRITES 80
+#define E9K_DEBUG_MEGA_AUDIO_MUTE_FM (1u << 0)
+#define E9K_DEBUG_MEGA_AUDIO_MUTE_PSG (1u << 1)
+#define E9K_DEBUG_MEGA_AUDIO_MUTE_DAC (1u << 2)
 
 #define E9K_DEBUG_MEGA_LINEFLAG_TILE_OVERFLOW   0x01u
 #define E9K_DEBUG_MEGA_LINEFLAG_SPRITE_OVERFLOW 0x02u
@@ -25,6 +36,10 @@ typedef struct e9k_debug_mega_sprite_entry
     uint16_t height;
     uint16_t satIndex;
     uint16_t link;
+    uint16_t tileIndex;
+    uint8_t palette;
+    uint8_t widthTiles;
+    uint8_t heightTiles;
     uint8_t flags;
     uint8_t _reserved[3];
 } e9k_debug_mega_sprite_entry_t;
@@ -42,9 +57,47 @@ typedef struct e9k_debug_mega_sprite_state
     int tileLimitPerLine;
     int frameSpriteUsed;
     int frameSpriteMax;
+    uint8_t vdpRegs[32];
     uint8_t spritesPerLine[E9K_DEBUG_MEGA_MAX_LINES];
     uint8_t tilesPerLine[E9K_DEBUG_MEGA_MAX_LINES];
     uint8_t lineFlags[E9K_DEBUG_MEGA_MAX_LINES];
     int spriteEntryCount;
     e9k_debug_mega_sprite_entry_t spriteEntries[E9K_DEBUG_MEGA_MAX_FRAME_SPRITES];
 } e9k_debug_mega_sprite_state_t;
+
+typedef struct e9k_debug_mega_audio_source
+{
+    int32_t peakL;
+    int32_t peakR;
+} e9k_debug_mega_audio_source_t;
+
+typedef struct e9k_debug_mega_audio_frame
+{
+    uint64_t frameNo;
+    e9k_debug_mega_audio_source_t fm;
+    e9k_debug_mega_audio_source_t psg;
+    e9k_debug_mega_audio_source_t dac;
+    e9k_debug_mega_audio_source_t mixed;
+} e9k_debug_mega_audio_frame_t;
+
+typedef struct e9k_debug_mega_vdp_bandwidth_frame
+{
+    uint64_t frameNo;
+    uint32_t cpuWriteSlots;
+    uint32_t dma68kSlots;
+    uint32_t dmaCopySlots;
+    uint32_t dmaFillSlots;
+    uint32_t readSlots;
+    uint32_t totalSlots;
+    uint32_t estimatedMaxSlots;
+    uint32_t activeLines;
+    uint32_t blankLines;
+    uint32_t dma68kVramBytes;
+    uint32_t dma68kCramBytes;
+    uint32_t dma68kVsramBytes;
+    uint32_t dmaCopyVramBytes;
+    uint32_t dmaFillVramBytes;
+    uint32_t dmaFillCramBytes;
+    uint32_t dmaFillVsramBytes;
+    uint32_t dmaTotalBytes;
+} e9k_debug_mega_vdp_bandwidth_frame_t;

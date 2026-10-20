@@ -1,4 +1,4 @@
-# ENGINE9000 68k Retro Debugger/Profiler
+# ENGINE9000 68k/z80 Retro Debugger/Profiler
 
 Amiga/Neo Geo/Mega Drive/Atari ST debugger/profiler - under heavy development so likely to be unstable for the time being. 
 
@@ -55,9 +55,11 @@ NOTE: Testing on Linux/Windows builds has been minimal at this stage.
 - Amiga/Neo Geo/Mega Drive/Atari ST emulators with frame level rewind/fast forward and simple CRT shader
 - Source level profiler
 - Trainer/cheat mode
-- Smoke tester (record scenarios, replay, check all video frames identical)
+- Smoke tester (record scenarios, replay, check video frames and audio identical)
 - Debug peripherals for debug console and profile checkpoints
-- Neo Geo Sprite debug visualiser
+- Amiga hardware visualisers
+- Neo Geo hardware visualisers
+- Source level z80 debugger (z80) - see readme-z80.md for details
 
 ### Debugging Features
 
@@ -89,8 +91,15 @@ NOTE: Testing on Linux/Windows builds has been minimal at this stage.
 ### Neo Geo Debug Peripherals
 
 - `0xFFFF0` - characters written to this address will be output in the console and terminal
-- `0xFFFEC` - writing a checkpoint slot from 0-64 for checkpoint profiling stats
+- `0xFFFEC` - write checkpoint slot index (`0-63`) for checkpoint profiling
+- `0xFFE00` - checkpoint description array base (`uint32_t[64]`), write `description_ptr` to `0xFFE00 + index*4`
 - These overlay with ROM addresses - other emulators or real neo geo might crash if you use these
+
+### Mega Drive Debug Peripherals
+
+- `0xFFFEC` - write checkpoint slot index (`0-63`) for checkpoint profiling
+- `0xFFE00` - checkpoint description array base (`uint32_t[64]`), write `description_ptr` to `0xFFE00 + index*4`
+- These overlay with ROM addresses - other emulators or real mega drive might crash if you use these
 
 ### Amiga Debug Peripherals
 
@@ -99,9 +108,18 @@ NOTE: Testing on Linux/Windows builds has been minimal at this stage.
 - `0xFC0008` - writing a long word to this address sets this as the base address of the .data section
 - `0xFC000C` - writing a long word to this address sets this as the base address of the .bss section
 - `0xFC0010` - writing a long word to this address sets a breakpoint at the written address
-- These overlay with ROM addresses - other emulators or real Amiga might crash if you use these
-
-Checkpoints are not yet implemented on Amiga.
+- `0xFC0014` - write a long word as the base address of section
+- `0xFC0018` - write a long word as the type of section (`0` = text, `1` = data, `2` = bss)
+- `0xFC001C` - write a long word size of section (commits the section)
+- `0xFC0020` - write checkpoint slot index (`0-63`) for checkpoint profiling
+- `0xFC0024` - write the word `0xDEAD` to this address exits the debugger
+- `0xFC0028` - any write starts a smoke test configured with `--smoke-start-on-write` and/or a profiling session configured with `--profile-start-on-write`; does nothing otherwise
+- `0xB7E900` through `0xB7E924` - read-only 32-bit debug argument registers 0-9, set with `--debug-arg VALUE`
+- `0xB7E928` - read-only 32-bit current processor cycle count divided by 4
+- `0xFC0100` - checkpoint description array base (`uint32_t[64]`), write `description_ptr` to `0xFC0100 + index*4`
+- `0xFC0200` - counter name array base (`uint32_t[64]`), write `name_ptr` to `0xFC0200 + index*4` - counters display in status bar
+- `0xFC0300` - counter value array base (`uint32_t[64]`), write `value` to `0xFC0300 + index*4`
+- `0xFCxxxx` debug registers overlay ROM addresses; the `0xB7E900` argument block is mapped as an e9k-only debug peripheral outside ROM and outside the usual Zorro II fast RAM range. Other emulators or real Amiga might crash if you use these.
 
 ### Profiling Features
 
@@ -114,7 +132,10 @@ There are two complementary profiling mechanisms:
   - Analysis/export can emits a web bases results view.
 - **Checkpoint profiler**: a fixed set of lightweight “checkpoints”.
   - Checkpoints are set by the target by writing to a fake peripheral
-  - Checkpoint execution stats displayed
+  - Captures per-checkpoint cycle segment stats (`current/avg/min/max`)
+  - Captures checkpoint write scanline (`live/avg/min/max`)
+  - Supports segment descriptions via fake register arrays; row N uses checkpoint N+1's description
+  - Optional scanline overlay can be toggled from the checkpoint panel (Neo Geo and Amiga)
 
 ### Timeline / Rewind-Oriented Tools
 
@@ -134,15 +155,33 @@ The debugger keeps a rolling save-state timeline (“state buffer”) implemente
 
 - Input recording to a file (`--record`) and replay (`--playback`)
 - Smoke test recording (`--make-smoke`) and compare mode (`--smoke-test`)
-  - Designed for “record inputs + frames” and later replay/compare
+  - Designed for “record inputs + frames + audio” and later replay/compare
 
-### Neo Geo Sprite Debug Window
+### Neo Geo Debug Features
 
 ![Neo Geo Sprite Debug](assets/sprite_debug.png)
+
+#### Sprite Debug
 
 - Available via a hidden button in the emulator window - hover in top right hand corner to reveal
 - Renders a full view of the Neo Geo coordinate space allowing visualsation of off screen sprites
 - Renders a "sprite-line" histogram showing how close you are to hitting the Neo Geo sprites-per-line limits
+- Displays a mini window showing non empty fix layer sprites
+- Color sprites based on shink factor, palette usage, or sprite chain membership
+
+#### RAM/ROM Visualiser
+
+- View ram/rom as bitplane data
+- Renders with selected palette when visible on screen
+
+#### Palette Visualiser
+
+- View all current palette sets as mini palette swatches
+- Updates live allowing palette effects to be analysed
+
+#### Audio Meter
+
+- Display live audio levels from each audio source
 
 ### Amiga Custom Chipset Controls
 
@@ -298,10 +337,14 @@ Steps a single instruction
 ### `print` (alias: `p`)
 
 SYNOPSIS  
-`print <expr>`
+`print <expr> [size=8|16|32]`  
+`print addr <expr> [size=8|16|32]`
 
 DESCRIPTION  
 Evaluates and prints an expression using DWARF + symbol information from the configured ELF.
+
+- `size=8|16|32` forces the memory read size when reading from a resolved address.
+- `print addr <expr>` prints the resolved runtime address for an expression.
 
 There is also a fast path for simple numeric expressions so that dereferences like `print *0xADDR` work even without an ELF:
 
@@ -312,7 +355,8 @@ There is also a fast path for simple numeric expressions so that dereferences li
 
 EXAMPLES  
 `print playerLives`  
-`print *0x00100000`
+`print *0x00100000 size=16`  
+`print addr playerLives`
 
 ---
 
@@ -345,7 +389,7 @@ EXAMPLES
 ### `watch` (alias: `wa`)
 
 SYNOPSIS  
-`watch [addr] [r|w|rw] [size=8|16|32] [mask=0x...] [val=0x...] [old=0x...] [diff=0x...]`  
+`watch [addr|symbol] [r|w|rw] [size=8|16|32] [mask=0x...] [val=0x...|value=0x...] [old=0x...] [diff=0x...|neq=0x...] [src=...]`  
 `watch del <idx>`  
 `watch clear`
 
@@ -355,20 +399,35 @@ Lists, adds, or removes watchpoints.
 - With no arguments, prints the current watchpoint table plus the enabled mask.
 - `watch clear` resets all watchpoints.
 - `watch del <idx>` removes a watchpoint by index.
-- Otherwise, adds a watchpoint at `<addr>` with the selected options.
+- Otherwise, adds a watchpoint at `<addr|symbol>` with the selected options.
 
 OPTIONS  
 `r`, `w`, `rw` select access type. If omitted, defaults to `rw`.  
 `size=8|16|32` matches access size.  
 `mask=0x...` applies an address compare mask.  
-`val=0x...` matches a value equality operand.  
+`val=0x...` or `value=0x...` matches a value equality operand.  
 `old=0x...` matches an old-value equality operand.  
-`diff=0x...` (or `neq=0x...`) matches “value != old” (with an operand).
+`diff=0x...` or `neq=0x...` matches “value != old” (with an operand).
+`src=...` matches the access source. Valid values depend on the current target:
+
+- Amiga: `cpu`, `blitter`, `copper`
+- Neo Geo: `cpu`
+
+NOTES
+- The debugger only shows and accepts `src=` values that can currently be emitted by the active core.
+- On Amiga, source tagging is not symmetric for all access types:
+  - generic RAM writes are currently tagged as `cpu` or `blitter`
+  - custom-register writes are currently tagged as `cpu`, `copper`, or `blitter`
+  - reads are currently only tagged as `cpu`
+- Some internal paths may still report `unknown`; this is not intended as a user-facing `src=` filter value.
 
 EXAMPLES  
 `watch`  
 `watch 0x0010ABCD rw size=16`  
+`watch playerLives w value=0x00000003`  
 `watch 0x0010ABCD w val=0x00000010`  
+`watch 0x00DFF180 w src=copper`  
+`watch 0x00020000 w src=blitter`  
 `watch del 3`  
 `watch clear`
 
@@ -519,11 +578,11 @@ BIOS files are not included. You must supply a valid Neo Geo BIOS set in the **s
 - Set via Settings UI: `BIOS FOLDER`
 - Or via CLI: `--system-dir PATH` (use `--neogeo` to force Neo Geo mode)
 
-In this repo, the default `./system` directory corresponds to `e9k-debugger/system` when running from the `e9k-debugger` directory. In practice this is typically a BIOS archive such as `neogeo.zip` (MVS / UniBIOS) or `aes.zip` (AES), placed inside the system directory.
+In this repo, the default `./system` directory corresponds to `e9k-debugger/system` when running from the `e9k-debugger` directory. In practice this is typically a BIOS archive such as `neogeo.zip` (MVS / UniBIOS) or `aes.zip` (AES), placed inside the system directory. Neo Geo CD media also requires `neocd.zip` for front/top loader mode or `neocdz.zip` for CDZ/CDZ UniBIOS mode.
 
 ### Game ROMS
 
-`e9k-debugger` can load .neo files or attempt to automatically create a .neo file from a mame style rom set. 
+`e9k-debugger` can load .neo files or attempt to automatically create a .neo file from a mame style rom set. Neo Geo CD `.cue` and `.chd` media can be loaded through the same ROM path setting.
 
 - It uses two naming conventions:
   - the files with a rom specific file extension (.p1, .m1, .v1 etc)
@@ -587,7 +646,7 @@ Note: Amiga debugging is complicated by relocation. If your target application i
 
 - The `base` command - see "base" command documentation
 - Makeing your custom loader use the Amiga fake perphierals - see "Amiga Debug Peripherals" section
-- Use `load9000` amiga program to load your hunk based exectuable - see "load9000" section
+- Use `load9000` or `load9013` amiga programs to load your hunk based exectuable - see "load9000" section
 
 - An ELF image with dwarf information running on Amiga should technically work but is untested
 
@@ -598,18 +657,22 @@ Note: Amiga debugging is complicated by relocation. If your target application i
   - `m68k-atari-mint-objdump`
   - `m68k-atari-mint-readelf`
 
-### load9000
+### load9000 / load9013
 
 A simple Amiga program is available in:
 
 `tools/amiga/load9000`
 
-This program is run on the emulated Amiga and will parse your hunk looking for three sections (.text, .bss, .data). 
+These programs are run on the emulated Amiga and parse the hunk section table before loading the target and informing the debugger of the section base addresses.
 
-`load9000` will load your application, inform the debugger of your section base addresses and then optionally set a breakpoint at the entry point.
+`load9000` targets Kickstart 2.0+ `load9013` targets Kickstart 1.3.
 
 `load9000 <hunk>`
 `load9000 --break <hunk>`
+`load9000 --stack <bytes> <hunk>`
+`load9013 <hunk>`
+`load9013 --break <hunk>`
+`load9013 --stack <bytes> <hunk>`
 
 ### Config file + environment variables
 
@@ -638,7 +701,8 @@ Run `e9k-debugger --help` for the full list. The current options include:
 - `--audio-buffer-ms MS` (currently Neo Geo only)
 - `--window-size WxH`
 - `--record PATH`, `--playback PATH`
-- `--make-smoke PATH`, `--smoke-test PATH`, `--smoke-open`
+- `--make-smoke PATH`, `--smoke-test PATH`, `--smoke-start-on-write`, `--profile-start-on-write`, `--smoke-threshold N`, `--smoke-open`
+- `--debug-arg VALUE` (repeat up to 10; Amiga reads these as 32-bit debug args at `0xB7E900 + index*4`)
 - `--headless` - hide the main window (also disables rolling state recording by default)
 - `--warp` - start in speed multiplier mode
 - `--fullscreen` (alias: `--start-fullscreen`) - start in UI fullscreen mode (ESC toggle)
@@ -646,8 +710,10 @@ Run `e9k-debugger --help` for the full list. The current options include:
 
 #### Neo Geo options (use with `--neogeo`)
 - `--elf PATH`
-- `--rom PATH` (Neo Geo `.neo` file)
+- `--rom PATH` (Neo Geo `.neo`, `.cue`, or `.chd` file)
 - `--rom-folder PATH` (generates a `.neo`)
+- `--aes`, `--mvs`, `--uni` (cartridge system type)
+- `--cdz`, `--cd-front`, `--cd-top`, `--cdz-uni` (CD system type; CD media is selected by loading `.cue` or `.chd`)
 
 #### Amiga options (use with `--amiga`)
 - `--hunk PATH` (Amiga debug binary path)
@@ -657,13 +723,11 @@ Run `e9k-debugger --help` for the full list. The current options include:
 
 ## Copyright/License
 
-e9k-debugger/ Copyright (C) 2026 Enable Software Pty Ltd
+e9k-debugger/ Copyright © 2026 Enable Software Pty Ltd
 
-This project is licensed under the GNU General Public License, version 2 (see [LICENSE](LICENSE)), to match the ami9000 (PUAE) and st9000 (hatari) cores which are GPLv2. mega9000 (picodrive) uses a non-commercial BSD license and is kept as a git submodule rather than distributed directly.
+This project contains files with various licenses, unless otherwise specified (See Additional copyright information below) assume GNU General Public License, version 2.
 
-Individual components retain their own upstream licenses. See [LICENSE](LICENSE) for details.
-
-Thanks to Frank Wille for the amiga line debug (tools/amiga/v-hunk/addr2line.c)
+The ami9000 (PUAE) and st9000 (hatari) cores are GPLv2. mega9000 (picodrive) uses a non-commercial BSD license and is kept as a git submodule rather than distributed directly.
 
 ---
 
@@ -740,3 +804,70 @@ This should create:
 - `e9k-debugger/system/geo9000.so` - Neo Geo emulator core
 - `e9k-debugger/system/mega9000.so` - Mega Drive emulator core
 - `e9k-debugger/system/st9000.so` - Atari ST emulator core
+
+## Additional copyright information
+
+- `geo9000/` Copyright © 2022-2024 Rupert Carmichael - BSD-3-Clause license (see below). See https://github.com/libretro/geolith-libretro
+- `st9000/` Copyright © Hatari team - GNU General Public License version 2 - see https://github.com/hatari/hatari
+- `ami9000/` Copyright © 1995- Bernd Schmidt et al - Various - see https://github.com/libretro/libretro-uae
+- `tools/amiga/v-hunk/addr2line.c` Thanks to Frank Wille for the amiga line debug 
+- `e9k-debugger/deps/miniz/` Copyright © 2010-2014 Rich Geldreich and Tenacious Software LLC and Copyright © 2013-2014 RAD Game Tools and Valve Software - MIT license - see https://github.com/richgel999/miniz
+- `e9k-debugger/deps/tree-sitter*/` Copyright © 2018 Max Brunsfeld - MIT license - see https://github.com/tree-sitter/tree-sitter
+- `e9k-debugger/libretro.h` contains the libretro API header Copyright © 2010-2020 The RetroArch team - MIT. See https://github.com/libretro/libretro-common
+- `e9k-debugger/neogeo_sprite_debug.c` contains adapted MAME code Copyright © (Bryan McPhail, Ernesto Corvi, Andrew Prime, Zsolt Vasvari) - BSD 3 Clause (see below) See https://github.com/mamedev/mame
+- `e9k-debugger/romset.c` contains Neo Geo ROM layout information adapted from MAME's Neo Geo driver Copyright © (Bryan McPhail, Ernesto Corvi, Andrew Prime, Zsolt Vasvari) - BSD-3-Clause (see below), and MAME's Neo Geo software list - CC0-1.0. See https://github.com/mamedev/mame
+- `e9k-debugger/romset_crypto.c` contains adapted MAME Neo Geo CMC42, CMC50, PCM2, and SMA protection code Copyright © (S. Smith, David Haywood, Fabio Priuli, Razoola, Mr.K) - BSD-3-Clause (see below). See https://github.com/mamedev/mame
+- `e9k-debugger/tinyfiledialogs.[ch]` Copyright © 2014 - 2024 Guillaume Vareille - Zlib. See http://tinyfiledialogs.sourceforge.net
+- `e9k-lib/e9k-z80-dasm-data.*`, contains code derived from z80dasm 1.1.6 Copyright © 1994-2007 Jan Panteltje and Copyright (C) 2007-2019 Tomaz Solc - GNU General Public License version 2 or later. See https://www.tablix.org/~avian/blog/archives/2019/06/debian_buster_and_z80dasm/
+
+
+## Additional licenses (other than GPL2)
+
+### BSD 3 Clause
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+### The MIT License (MIT)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+### Zlib license
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.

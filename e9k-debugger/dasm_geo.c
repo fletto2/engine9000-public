@@ -132,7 +132,7 @@ static int
 dasm_preloadFromCore(void)
 {
   e9k_debug_rom_region_t p1 = {0};
-  if (!libretro_host_debugGetP1Rom(&p1)) {
+  if (!libretro_host_neogeo_getP1Rom(&p1)) {
     debug_error("dasm: P1 ROM unavailable from core");
     return 0;
   }
@@ -180,7 +180,7 @@ dasm_geo_preloadText(void)
   if (!elf || !*elf) {
     return dasm_preloadFromCore();
   }
-  if (!elfutil_getTextBounds(elf, &lo, &hi) || lo == 0 || hi <= lo) {
+  if (!elfutil_getTextBounds(elf, &lo, &hi) || hi <= lo) {
     debug_error("dasm: failed to read .text bounds from ELF (%s); falling back to core", elf);
     return dasm_preloadFromCore();
   }

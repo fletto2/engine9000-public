@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <SDL.h>
 
+#include "aux_window.h"
 #include "runtime.h"
 #include "ui.h"
 #include "debug.h"
@@ -17,12 +18,9 @@
 #include "input_record.h"
 #include "libretro_host.h"
 #include "linebuf.h"
-#include "memory_track_ui.h"
 #include "machine.h"
 #include "profile.h"
 #include "protect.h"
-#include "shader_ui.h"
-#include "custom_ui.h"
 #include "smoke_test.h"
 #include "ui_test.h"
 #include "state_buffer.h"
@@ -30,7 +28,44 @@
 #include "debugger_signal.h"
 #include "settings.h"
 #include "debugger.h"
-#include "custom_log.h"
+
+static void
+runtime_executeNextFrame(void);
+
+static const char *
+runtime_watchAccessSourceName(uint32_t accessSource)
+{
+    switch (accessSource) {
+    case E9K_WATCH_ACCESS_SOURCE_CPU:
+        return "cpu";
+    case E9K_WATCH_ACCESS_SOURCE_DMA:
+        return "dma";
+    case E9K_WATCH_ACCESS_SOURCE_BLITTER:
+        return "blitter";
+    case E9K_WATCH_ACCESS_SOURCE_COPPER:
+        return "copper";
+    case E9K_WATCH_ACCESS_SOURCE_AUDIO:
+        return "audio";
+    case E9K_WATCH_ACCESS_SOURCE_VIDEO:
+        return "video";
+    case E9K_WATCH_ACCESS_SOURCE_PERIPHERAL:
+        return "peripheral";
+    case E9K_WATCH_ACCESS_SOURCE_DISK:
+        return "disk";
+    default:
+        return "unknown";
+    }
+}
+
+static void
+runtime_markSmokeTestFailed(void)
+{
+    if (!debugger.smokeTestFailed) {
+        debug_error("*** SMOKE TEST FAILED ***");
+    }
+    debugger.smokeTestFailed = 1;
+    debugger.smokeTestExitCode = 1;
+}
 
 void
 runtime_onVblank(void *user)
@@ -40,16 +75,22 @@ runtime_onVblank(void *user)
         return;
     }
     target->onVblank();
+    if (debugger.suppressVblankFrameCounter) {
+        return;
+    }
     debugger.frameCounter++;
     if (!debugger.smokeTestFailed && !debugger.smokeTestCompleted) {
         int smokeResult = smoke_test_captureFrame(debugger.frameCounter);
         if (smokeResult == 1) {
-            debugger.smokeTestFailed = 1;
-            debugger.smokeTestExitCode = 1;
+            runtime_markSmokeTestFailed();
         } else if (smokeResult == 2) {
-            debugger.smokeTestCompleted = 1;
-            debugger.smokeTestExitCode = 0;
-            debug_printf("*** SMOKE TEST PASSED ***");
+            if (smoke_test_finishAudioCompare() != 0) {
+                runtime_markSmokeTestFailed();
+            } else {
+                debugger.smokeTestCompleted = 1;
+                debugger.smokeTestExitCode = 0;
+                debug_printf("*** SMOKE TEST PASSED ***");
+            }
         }
     }
 }
@@ -66,6 +107,29 @@ runtime_executeFrame(debugger_run_mode_t mode, int restoreFrame)
         state_buffer_restoreFrameNo(restoreFrame);
     }
     _libretro_host_runOnce();
+}
+
+int
+runtime_refreshCurrentFrameFromPrevious(void)
+{
+    uint64_t currentFrame = debugger.frameCounter;
+    uint64_t restoreFrame;
+
+    if (machine_getRunning(debugger.machine) && !debugger.frameStepMode) {
+        return 0;
+    }
+    if (currentFrame < 2 || state_buffer_isRollingPaused()) {
+        return 0;
+    }
+    restoreFrame = currentFrame - 2;
+    if (!state_buffer_hasFrameNo(restoreFrame)) {
+        return 0;
+    }
+    runtime_executeFrame(DEBUGGER_RUNMODE_RESTORE, (int)restoreFrame);
+    debugger.frameCounter -= 2;
+    runtime_executeNextFrame();
+    ui_refreshOnPause();
+    return 1;
 }
 
 static void
@@ -109,6 +173,13 @@ runtime_isBreakpointHit(void)
     return bp->enabled ? 1 : 0;
 }
 
+void
+runtime_resetFrameTiming(void)
+{
+    debugger.frameTimeCounter = SDL_GetPerformanceCounter();
+    debugger.frameTimeAccum = 0.0;
+}
+
 static void
 runtime_executeNextFrame(void)
 {
@@ -145,6 +216,9 @@ runtime_runLoop(void)
         if (debugger.restartRequested) {
             break;
         }
+        if (debugger.exitRequested) {
+            break;
+        }
         if (e9ui->pendingRemove) {
             e9ui_component_t *hostRoot = e9ui_getOverlayHost();
             e9ui_component_t *removeParent = NULL;
@@ -172,6 +246,7 @@ runtime_runLoop(void)
                 int wasRunning = machine_getRunning(debugger.machine);
                 machine_setRunning(&debugger.machine, paused ? 0 : 1);
                 if (paused && wasRunning) {
+                    debugger.suppressVblankFrameCounter = 0;
                     debugger_clearFrameStep();
                     runtime_restoreSuppressedBreakpoint();
                     int watchbreakHit = 0;
@@ -190,14 +265,15 @@ runtime_runLoop(void)
                             continue;
                         }
                         const char *kind = watchbreak.access_kind == E9K_WATCH_ACCESS_WRITE ? "write" : "read";
+                        const char *source = runtime_watchAccessSourceName(watchbreak.access_source);
                         if (watchbreak.old_value_valid) {
-                            debug_printf("watchbreak: wp[%u] %s addr=0x%06X value=0x%08X old=0x%08X\n",
-                                        (unsigned)watchbreak.index, kind,
+                            debug_printf("watchbreak: wp[%u] %s/%s addr=0x%06X value=0x%08X old=0x%08X\n",
+                                        (unsigned)watchbreak.index, kind, source,
                                         (unsigned)(watchbreak.access_addr & 0x00ffffffu),
                                         (unsigned)watchbreak.value, (unsigned)watchbreak.old_value);
                         } else {
-                            debug_printf("watchbreak: wp[%u] %s addr=0x%06X value=0x%08X\n",
-                                        (unsigned)watchbreak.index, kind,
+                            debug_printf("watchbreak: wp[%u] %s/%s addr=0x%06X value=0x%08X\n",
+                                        (unsigned)watchbreak.index, kind, source,
                                         (unsigned)(watchbreak.access_addr & 0x00ffffffu),
                                         (unsigned)watchbreak.value);
                         }
@@ -234,6 +310,7 @@ runtime_runLoop(void)
                             debugger.frameCounter -= 2;
                         }
                         debugger.frameStepPending = 0;
+                        ui_refreshOnPause();
                     }
                 } else if (running) {
                     if (runtime_isUiTestDeterministicMode()) {
@@ -250,6 +327,10 @@ runtime_runLoop(void)
                         } else {
                             double fps = libretro_host_getTimingFps();
                             double frameTime = (fps > 1e-3) ? (1.0 / fps) : (1.0 / 60.0);
+                            if (dt > frameTime * 4.0) {
+                                debugger.frameTimeAccum = 0.0;
+                                dt = 0.0;
+                            }
                             debugger.frameTimeAccum += dt;
                             if (debugger.frameTimeAccum >= frameTime) {
                                 runtime_executeNextFrame();
@@ -305,10 +386,7 @@ runtime_runLoop(void)
         ui_updateSourceTitle();
         ui_updateWindowTitle();
         e9ui_renderFrame();
-        custom_ui_render();
-        custom_log_render();
-        shader_ui_render();
-        memory_track_ui_render();
+        aux_window_render();
         if (debugger.smokeTestCompleted) {
             break;
         }
@@ -321,9 +399,20 @@ runtime_runLoop(void)
         if (debugger.smokeTestMode != SMOKE_TEST_MODE_NONE &&
             debugger.smokeTestMode != SMOKE_TEST_MODE_RECORD &&
             input_record_isPlaybackComplete()) {
-            debugger.smokeTestCompleted = 1;
-            debugger.smokeTestExitCode = 0;
-            if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
+            if (!smoke_test_hasStarted()) {
+                debug_error("smoke-test: playback completed before smoke-start-on-write");
+                runtime_markSmokeTestFailed();
+            } else if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE &&
+                (smoke_test_finishScreenCompare() != 0 ||
+                 smoke_test_finishAudioCompare() != 0)) {
+                runtime_markSmokeTestFailed();
+            } else {
+                debugger.smokeTestCompleted = 1;
+                debugger.smokeTestExitCode = 0;
+            }
+            if (debugger.smokeTestFailed) {
+                break;
+            } else if (debugger.smokeTestMode == SMOKE_TEST_MODE_COMPARE) {
                 debug_printf("*** SMOKE TEST PASSED ***");
             } else if (debugger.smokeTestMode == SMOKE_TEST_MODE_REMAKE) {
                 debug_printf("*** REMAKE SMOKE COMPLETE ***");

@@ -28,13 +28,17 @@
 #include "libretro.h"
 #include "libretro_host.h"
 #include "machine.h"
+#include "symbol_text_map.h"
+#include "source_z80.h"
 #include "strutil.h"
 
 typedef struct print_value {
     print_type_t *type;
     uint32_t address;
+    uint32_t processorId;
     uint64_t immediate;
     int hasAddress;
+    int hasProcessorMemory;
     int hasImmediate;
 } print_value_t;
 
@@ -47,13 +51,28 @@ static print_value_t
 print_eval_makeAddressValue(print_type_t *type, uint32_t addr);
 
 static print_value_t
+print_eval_makeProcessorAddressValue(print_type_t *type, uint32_t processorId, uint32_t addr);
+
+static print_value_t
 print_eval_makeImmediateValue(print_type_t *type, uint64_t immediate);
+
+static void
+print_eval_setAddressValue(print_value_t *out, print_type_t *type, uint32_t addr, int typeOnly);
+
+static void
+print_eval_setImmediateValue(print_value_t *out, print_type_t *type, uint64_t immediate, int typeOnly);
 
 static print_type_t *
 print_eval_getType(print_index_t *index, uint32_t offset);
 
 static print_type_t *
 print_eval_defaultU32(print_index_t *index);
+
+static uint32_t
+print_eval_hashString(const char *s);
+
+static void
+print_eval_buildDwarfLocalLookup(print_index_t *index);
 
 static print_index_t print_eval_index = {0};
 static char *print_eval_captureBuffer = NULL;
@@ -311,6 +330,35 @@ print_eval_resolveAbstractOrigin(print_index_t *index, const print_dwarf_node_t 
     return 1;
 }
 
+static const char *
+print_eval_dwarfNodeNameAndType(print_index_t *index, const print_dwarf_node_t *node, uint32_t *outTypeRef)
+{
+    if (outTypeRef) {
+        *outTypeRef = 0;
+    }
+    if (!index || !node) {
+        return NULL;
+    }
+    const char *name = node->name;
+    uint32_t typeRef = node->hasTypeRef ? node->typeRef : 0;
+    if ((!name || !*name) && node->hasAbstractOrigin) {
+        const char *originName = NULL;
+        uint32_t originType = 0;
+        if (print_eval_resolveAbstractOrigin(index, node, &originName, &originType)) {
+            if (originName && *originName) {
+                name = originName;
+            }
+            if (typeRef == 0 && originType != 0) {
+                typeRef = originType;
+            }
+        }
+    }
+    if (outTypeRef) {
+        *outTypeRef = typeRef;
+    }
+    return name;
+}
+
 static int
 print_eval_resolveLocalDwarf(const char *name, print_index_t *index, print_value_t *out, int typeOnly)
 {
@@ -326,145 +374,128 @@ print_eval_resolveLocalDwarf(const char *name, print_index_t *index, print_value
     }
     uint32_t pc = (uint32_t)pcRaw & 0x00ffffffu;
 
-    uint32_t cfa = 0;
-    if (!print_eval_computeCfa(index, pc, &cfa)) {
-        return 0;
-    }
-
     print_dwarf_node_t *scope = print_eval_findScopeForPc(index, pc);
     if (!scope) {
         return 0;
     }
 
     uint32_t chain[64];
+    print_dwarf_node_t *chainNodes[64];
     int chainCount = 0;
     for (const print_dwarf_node_t *cur = scope; cur && chainCount < (int)(sizeof(chain) / sizeof(chain[0]));) {
-        chain[chainCount++] = cur->offset;
+        chain[chainCount] = cur->offset;
+        chainNodes[chainCount] = (print_dwarf_node_t *)cur;
+        ++chainCount;
         if (cur->parentOffset == 0) {
             break;
         }
         cur = print_eval_findNode(index, cur->parentOffset);
     }
 
-    // Nearest subprogram in the chain provides frame base.
-    print_dwarf_node_t *subp = NULL;
-    for (int i = 0; i < chainCount; ++i) {
-        print_dwarf_node_t *n = print_eval_findNode(index, chain[i]);
-        if (n && n->tag == print_dwarf_tag_subprogram) {
-            subp = n;
-            break;
-        }
+    print_dwarf_node_t *bestNode = NULL;
+    uint32_t bestTypeRef = 0;
+    int bestChainIndex = INT_MAX;
+    if (!index->dwarfLocalLookup || index->dwarfLocalLookupMask == 0 || !index->dwarfLocalNext) {
+        print_eval_buildDwarfLocalLookup(index);
     }
-    uint32_t frameBase = cfa;
-    if (subp && subp->hasFrameBase && subp->frameBaseKind == print_dwarf_location_cfa) {
-        frameBase = cfa;
-    }
-
-    for (int c = 0; c < chainCount; ++c) {
-        uint32_t scopeOff = chain[c];
-        for (int i = 0; i < index->nodeCount; ++i) {
-            print_dwarf_node_t *n = &index->nodes[i];
-            if (n->parentOffset != scopeOff) {
+    if (index->dwarfLocalLookup && index->dwarfLocalLookupMask != 0 && index->dwarfLocalNext) {
+        uint32_t h = print_eval_hashString(name);
+        uint32_t pos = h & index->dwarfLocalLookupMask;
+        for (uint32_t slot = index->dwarfLocalLookup[pos]; slot != 0; slot = index->dwarfLocalNext[slot - 1u]) {
+            uint32_t nodeIndex = slot - 1u;
+            if (nodeIndex >= (uint32_t)index->nodeCount) {
                 continue;
             }
-            if (n->tag != print_dwarf_tag_variable && n->tag != print_dwarf_tag_formal_parameter) {
-                continue;
-            }
-            const char *nName = n->name;
-            uint32_t typeRef = n->hasTypeRef ? n->typeRef : 0;
-            if ((!nName || !*nName) && n->hasAbstractOrigin) {
-                const char *originName = NULL;
-                uint32_t originType = 0;
-                if (print_eval_resolveAbstractOrigin(index, n, &originName, &originType)) {
-                    if (originName && *originName) {
-                        nName = originName;
-                    }
-                    if (typeRef == 0 && originType != 0) {
-                        typeRef = originType;
-                    }
-                }
-            }
+            print_dwarf_node_t *n = &index->nodes[nodeIndex];
+            uint32_t typeRef = 0;
+            const char *nName = print_eval_dwarfNodeNameAndType(index, n, &typeRef);
             if (!nName || strcmp(nName, name) != 0) {
                 continue;
             }
 
-            print_type_t *type = NULL;
-            if (typeRef != 0) {
-                type = print_eval_getType(index, typeRef);
+            for (int c = 0; c < chainCount; ++c) {
+                if (n->parentOffset != chain[c]) {
+                    continue;
+                }
+                if (c < bestChainIndex) {
+                    bestNode = n;
+                    bestTypeRef = typeRef;
+                    bestChainIndex = c;
+                }
+                break;
             }
-            if (!type) {
-                type = print_eval_defaultU32(index);
-            }
+        }
+    }
+    if (!bestNode) {
+        return 0;
+    }
 
-            if (n->locationKind == print_dwarf_location_fbreg) {
-                int64_t addr64 = (int64_t)(uint64_t)frameBase + (int64_t)n->locationOffset;
-                uint32_t addr = (uint32_t)addr64 & 0x00ffffffu;
-                if (typeOnly) {
-                    *out = print_eval_makeAddressValue(type, 0);
-                    out->hasAddress = 0;
-                } else {
-                    *out = print_eval_makeAddressValue(type, addr);
-                }
-                return 1;
-            }
-            if (n->locationKind == print_dwarf_location_breg) {
-                uint32_t regVal = 0;
-                if (!print_eval_getRegValueByDwarfReg(n->locationReg, &regVal)) {
-                    return 0;
-                }
-                int64_t addr64 = (int64_t)(uint64_t)regVal + (int64_t)n->locationOffset;
-                uint32_t addr = (uint32_t)addr64 & 0x00ffffffu;
-                if (typeOnly) {
-                    *out = print_eval_makeAddressValue(type, 0);
-                    out->hasAddress = 0;
-                } else {
-                    *out = print_eval_makeAddressValue(type, addr);
-                }
-                return 1;
-            }
-            if (n->locationKind == print_dwarf_location_addr && n->hasAddr) {
-                uint32_t addr = (uint32_t)n->addr & 0x00ffffffu;
-                if (typeOnly) {
-                    *out = print_eval_makeAddressValue(type, 0);
-                    out->hasAddress = 0;
-                } else {
-                    *out = print_eval_makeAddressValue(type, addr);
-                }
-                return 1;
-            }
-            if (n->locationKind == print_dwarf_location_const && n->hasConstValue) {
-                if (typeOnly) {
-                    *out = print_eval_makeImmediateValue(type, 0);
-                    out->hasImmediate = 0;
-                } else {
-                    *out = print_eval_makeImmediateValue(type, n->constValue);
-                }
-                return 1;
-            }
-            if (n->locationKind == print_dwarf_location_reg) {
-                uint32_t regVal = 0;
-                if (!print_eval_getRegValueByDwarfReg(n->locationReg, &regVal)) {
-                    return 0;
-                }
-                if (typeOnly) {
-                    *out = print_eval_makeImmediateValue(type, 0);
-                    out->hasImmediate = 0;
-                } else {
-                    *out = print_eval_makeImmediateValue(type, (uint64_t)regVal);
-                }
-                return 1;
-            }
-            if (n->locationKind == print_dwarf_location_cfa) {
-                if (typeOnly) {
-                    *out = print_eval_makeAddressValue(type, 0);
-                    out->hasAddress = 0;
-                } else {
-                    *out = print_eval_makeAddressValue(type, cfa & 0x00ffffffu);
-                }
-                return 1;
-            }
+    print_dwarf_node_t *n = bestNode;
+
+    uint32_t cfa = 0;
+    uint32_t frameBase = 0;
+    if (n->locationKind == print_dwarf_location_fbreg || n->locationKind == print_dwarf_location_cfa) {
+        if (!print_eval_computeCfa(index, pc, &cfa)) {
             return 0;
         }
+
+        print_dwarf_node_t *subp = NULL;
+        for (int i = 0; i < chainCount; ++i) {
+            if (chainNodes[i] && chainNodes[i]->tag == print_dwarf_tag_subprogram) {
+                subp = chainNodes[i];
+                break;
+            }
+        }
+        frameBase = cfa;
+        if (subp && subp->hasFrameBase && subp->frameBaseKind == print_dwarf_location_cfa) {
+            frameBase = cfa;
+        }
+    }
+
+    print_type_t *type = NULL;
+    if (bestTypeRef != 0) {
+        type = print_eval_getType(index, bestTypeRef);
+    }
+    if (!type) {
+        type = print_eval_defaultU32(index);
+    }
+
+    if (n->locationKind == print_dwarf_location_fbreg) {
+        int64_t addr64 = (int64_t)(uint64_t)frameBase + (int64_t)n->locationOffset;
+        uint32_t addr = (uint32_t)addr64 & 0x00ffffffu;
+        print_eval_setAddressValue(out, type, addr, typeOnly);
+        return 1;
+    }
+    if (n->locationKind == print_dwarf_location_breg) {
+        uint32_t regVal = 0;
+        if (!print_eval_getRegValueByDwarfReg(n->locationReg, &regVal)) {
+            return 0;
+        }
+        int64_t addr64 = (int64_t)(uint64_t)regVal + (int64_t)n->locationOffset;
+        uint32_t addr = (uint32_t)addr64 & 0x00ffffffu;
+        print_eval_setAddressValue(out, type, addr, typeOnly);
+        return 1;
+    }
+    if (n->locationKind == print_dwarf_location_addr && n->hasAddr) {
+        uint32_t addr = (uint32_t)n->addr & 0x00ffffffu;
+        print_eval_setAddressValue(out, type, addr, typeOnly);
+        return 1;
+    }
+    if (n->locationKind == print_dwarf_location_const && n->hasConstValue) {
+        print_eval_setImmediateValue(out, type, n->constValue, typeOnly);
+        return 1;
+    }
+    if (n->locationKind == print_dwarf_location_reg) {
+        uint32_t regVal = 0;
+        if (!print_eval_getRegValueByDwarfReg(n->locationReg, &regVal)) {
+            return 0;
+        }
+        print_eval_setImmediateValue(out, type, (uint64_t)regVal, typeOnly);
+        return 1;
+    }
+    if (n->locationKind == print_dwarf_location_cfa) {
+        print_eval_setAddressValue(out, type, cfa & 0x00ffffffu, typeOnly);
+        return 1;
     }
     return 0;
 }
@@ -933,12 +964,7 @@ print_eval_resolveLocalStabs(const char *name, print_index_t *index, print_value
             if (var->kind == print_stabs_var_stack) {
                 int64_t addr64 = (int64_t)(uint64_t)stackBase + (int64_t)var->stackOffset;
                 uint32_t addr = (uint32_t)addr64 & 0x00ffffffu;
-                if (typeOnly) {
-                    *out = print_eval_makeAddressValue(type, 0);
-                    out->hasAddress = 0;
-                } else {
-                    *out = print_eval_makeAddressValue(type, addr);
-                }
+                print_eval_setAddressValue(out, type, addr, typeOnly);
                 return 1;
             }
             if (var->kind == print_stabs_var_reg) {
@@ -946,21 +972,11 @@ print_eval_resolveLocalStabs(const char *name, print_index_t *index, print_value
                 if (!print_eval_getRegValueByDwarfReg(var->reg, &regVal)) {
                     return 0;
                 }
-                if (typeOnly) {
-                    *out = print_eval_makeImmediateValue(type, 0);
-                    out->hasImmediate = 0;
-                } else {
-                    *out = print_eval_makeImmediateValue(type, (uint64_t)regVal);
-                }
+                print_eval_setImmediateValue(out, type, (uint64_t)regVal, typeOnly);
                 return 1;
             }
             if (var->kind == print_stabs_var_const && var->hasConstValue) {
-                if (typeOnly) {
-                    *out = print_eval_makeImmediateValue(type, 0);
-                    out->hasImmediate = 0;
-                } else {
-                    *out = print_eval_makeImmediateValue(type, var->constValue);
-                }
+                print_eval_setImmediateValue(out, type, var->constValue, typeOnly);
                 return 1;
             }
             return 0;
@@ -977,6 +993,29 @@ print_eval_resolveLocal(const char *name, print_index_t *index, print_value_t *o
         return 1;
     }
     return print_eval_resolveLocalStabs(name, index, out, typeOnly);
+}
+
+static int
+print_eval_addSymbol(print_index_t *index, const char *name, uint32_t addr)
+{
+    if (!index || !name || !*name) {
+        return 0;
+    }
+    if (index->symbolCount >= index->symbolCap) {
+        int next = index->symbolCap ? index->symbolCap * 2 : 128;
+        print_symbol_t *nextSymbols =
+            (print_symbol_t *)alloc_realloc(index->symbols, sizeof(*nextSymbols) * (size_t)next);
+        if (!nextSymbols) {
+            return 0;
+        }
+        index->symbols = nextSymbols;
+        index->symbolCap = next;
+    }
+    print_symbol_t *symbol = &index->symbols[index->symbolCount++];
+    memset(symbol, 0, sizeof(*symbol));
+    symbol->name = print_eval_strdup(name);
+    symbol->addr = addr & 0x00ffffffu;
+    return symbol->name != NULL;
 }
 
 static int
@@ -1039,6 +1078,11 @@ print_eval_clearIndex(print_index_t *index)
     alloc_free(index->symbolLookup);
     index->symbolLookup = NULL;
     index->symbolLookupMask = 0;
+    alloc_free(index->dwarfLocalLookup);
+    index->dwarfLocalLookup = NULL;
+    index->dwarfLocalLookupMask = 0;
+    alloc_free(index->dwarfLocalNext);
+    index->dwarfLocalNext = NULL;
     for (int i = 0; i < index->varCount; ++i) {
         print_eval_freeString(index->vars[i].name);
     }
@@ -1156,6 +1200,74 @@ print_eval_buildSymbolLookup(print_index_t *index)
 
     index->symbolLookup = table;
     index->symbolLookupMask = mask;
+}
+
+static void
+print_eval_buildDwarfLocalLookup(print_index_t *index)
+{
+    if (!index) {
+        return;
+    }
+    alloc_free(index->dwarfLocalLookup);
+    index->dwarfLocalLookup = NULL;
+    index->dwarfLocalLookupMask = 0;
+    alloc_free(index->dwarfLocalNext);
+    index->dwarfLocalNext = NULL;
+
+    if (index->nodeCount <= 0) {
+        return;
+    }
+
+    int localCount = 0;
+    for (int i = 0; i < index->nodeCount; ++i) {
+        print_dwarf_node_t *node = &index->nodes[i];
+        if (node->tag != print_dwarf_tag_variable && node->tag != print_dwarf_tag_formal_parameter) {
+            continue;
+        }
+        const char *name = print_eval_dwarfNodeNameAndType(index, node, NULL);
+        if (name && *name) {
+            ++localCount;
+        }
+    }
+    if (localCount <= 0) {
+        return;
+    }
+
+    uint32_t need = (uint32_t)localCount * 2u;
+    if (need < 16u) {
+        need = 16u;
+    }
+    uint32_t cap = 1u;
+    while (cap < need && cap < (1u << 30)) {
+        cap <<= 1u;
+    }
+
+    uint32_t *table = (uint32_t *)alloc_calloc((size_t)cap, sizeof(*table));
+    uint32_t *next = (uint32_t *)alloc_calloc((size_t)index->nodeCount, sizeof(*next));
+    if (!table || !next) {
+        alloc_free(table);
+        alloc_free(next);
+        return;
+    }
+
+    uint32_t mask = cap - 1u;
+    for (int i = 0; i < index->nodeCount; ++i) {
+        print_dwarf_node_t *node = &index->nodes[i];
+        if (node->tag != print_dwarf_tag_variable && node->tag != print_dwarf_tag_formal_parameter) {
+            continue;
+        }
+        const char *name = print_eval_dwarfNodeNameAndType(index, node, NULL);
+        if (!name || !*name) {
+            continue;
+        }
+        uint32_t pos = print_eval_hashString(name) & mask;
+        next[i] = table[pos];
+        table[pos] = (uint32_t)(i + 1);
+    }
+
+    index->dwarfLocalLookup = table;
+    index->dwarfLocalLookupMask = mask;
+    index->dwarfLocalNext = next;
 }
 
 static uint32_t
@@ -1417,23 +1529,23 @@ print_eval_resolveType(print_type_t *type)
 }
 
 static print_type_t *
-print_eval_defaultU8(print_index_t *index)
+print_eval_defaultUnsigned(print_index_t *index, print_type_t **slot, size_t byteSize, const char *name)
 {
-    if (!index) {
+    if (!index || !slot) {
         return NULL;
     }
-    if (index->defaultU8) {
-        return index->defaultU8;
+    if (*slot) {
+        return *slot;
     }
     print_type_t *type = (print_type_t *)alloc_calloc(1, sizeof(*type));
     if (!type) {
         return NULL;
     }
     type->kind = print_type_base;
-    type->byteSize = 1;
+    type->byteSize = byteSize;
     type->encoding = print_base_encoding_unsigned;
-    type->name = print_eval_strdup("uint8_t");
-    index->defaultU8 = type;
+    type->name = print_eval_strdup(name);
+    *slot = type;
     if (index->typeCount >= index->typeCap) {
         int next = index->typeCap ? index->typeCap * 2 : 128;
         print_type_t **nextTypes = (print_type_t **)alloc_realloc(index->types, sizeof(*nextTypes) * (size_t)next);
@@ -1445,99 +1557,53 @@ print_eval_defaultU8(print_index_t *index)
     }
     index->types[index->typeCount++] = type;
     return type;
+}
+
+static print_type_t *
+print_eval_defaultU8(print_index_t *index)
+{
+    return print_eval_defaultUnsigned(index, &index->defaultU8, 1, "uint8_t");
 }
 
 static print_type_t *
 print_eval_defaultU16(print_index_t *index)
 {
-    if (!index) {
-        return NULL;
-    }
-    if (index->defaultU16) {
-        return index->defaultU16;
-    }
-    print_type_t *type = (print_type_t *)alloc_calloc(1, sizeof(*type));
-    if (!type) {
-        return NULL;
-    }
-    type->kind = print_type_base;
-    type->byteSize = 2;
-    type->encoding = print_base_encoding_unsigned;
-    type->name = print_eval_strdup("uint16_t");
-    index->defaultU16 = type;
-    if (index->typeCount >= index->typeCap) {
-        int next = index->typeCap ? index->typeCap * 2 : 128;
-        print_type_t **nextTypes = (print_type_t **)alloc_realloc(index->types, sizeof(*nextTypes) * (size_t)next);
-        if (!nextTypes) {
-            return type;
-        }
-        index->types = nextTypes;
-        index->typeCap = next;
-    }
-    index->types[index->typeCount++] = type;
-    return type;
+    return print_eval_defaultUnsigned(index, &index->defaultU16, 2, "uint16_t");
 }
 
 static print_type_t *
 print_eval_defaultU32(print_index_t *index)
 {
-    if (!index) {
-        return NULL;
-    }
-    if (index->defaultU32) {
-        return index->defaultU32;
-    }
-    print_type_t *type = (print_type_t *)alloc_calloc(1, sizeof(*type));
-    if (!type) {
-        return NULL;
-    }
-    type->kind = print_type_base;
-    type->byteSize = 4;
-    type->encoding = print_base_encoding_unsigned;
-    type->name = print_eval_strdup("uint32_t");
-    index->defaultU32 = type;
-    if (index->typeCount >= index->typeCap) {
-        int next = index->typeCap ? index->typeCap * 2 : 128;
-        print_type_t **nextTypes = (print_type_t **)alloc_realloc(index->types, sizeof(*nextTypes) * (size_t)next);
-        if (!nextTypes) {
-            return type;
-        }
-        index->types = nextTypes;
-        index->typeCap = next;
-    }
-    index->types[index->typeCount++] = type;
-    return type;
+    return print_eval_defaultUnsigned(index, &index->defaultU32, 4, "uint32_t");
 }
 
 static print_type_t *
 print_eval_defaultU64(print_index_t *index)
 {
-    if (!index) {
-        return NULL;
+    return print_eval_defaultUnsigned(index, &index->defaultU64, 8, "uint64_t");
+}
+
+static int
+print_eval_loadTextMap(print_index_t *index, const char *elfPath)
+{
+    const symbol_text_map_entry_t *entries = NULL;
+    int count = 0;
+    if (!index || !elfPath || !*elfPath) {
+        return 0;
     }
-    if (index->defaultU64) {
-        return index->defaultU64;
+    if (!symbol_text_map_getEntries(elfPath, &entries, &count) || !entries || count <= 0) {
+        return 0;
     }
-    print_type_t *type = (print_type_t *)alloc_calloc(1, sizeof(*type));
-    if (!type) {
-        return NULL;
-    }
-    type->kind = print_type_base;
-    type->byteSize = 8;
-    type->encoding = print_base_encoding_unsigned;
-    type->name = print_eval_strdup("uint64_t");
-    index->defaultU64 = type;
-    if (index->typeCount >= index->typeCap) {
-        int next = index->typeCap ? index->typeCap * 2 : 128;
-        print_type_t **nextTypes = (print_type_t **)alloc_realloc(index->types, sizeof(*nextTypes) * (size_t)next);
-        if (!nextTypes) {
-            return type;
+
+    for (int i = 0; i < count; ++i) {
+        const symbol_text_map_entry_t *entry = &entries[i];
+        if (entry->kind == SYMBOL_TEXT_MAP_SYMBOL_KIND_VARIABLE) {
+            (void)print_eval_addVariable(index, entry->name, entry->addr, 0, 4, 1);
+        } else {
+            (void)print_eval_addSymbol(index, entry->name, entry->addr);
         }
-        index->types = nextTypes;
-        index->typeCap = next;
     }
-    index->types[index->typeCount++] = type;
-    return type;
+    return 1;
 }
 
 static int
@@ -1579,6 +1645,13 @@ print_eval_loadIndex(print_index_t *index)
     index->cacheDataBaseAddr = curData;
     index->cacheBssBaseAddr = curBss;
     index->cacheBaseMapSignature = curBaseMapSignature;
+    if (debugger.symbolFileKind == DEBUGGER_SYMBOL_FILE_KIND_TEXT_MAP) {
+        (void)print_eval_loadTextMap(index, elfPath);
+        print_eval_buildSymbolLookup(index);
+        print_eval_buildVariables(index);
+        print_eval_defaultU32(index);
+        return 1;
+    }
     print_debuginfo_readelf_loadSymbols(elfPath, index);
     uint64_t tSymbols = 0;
     if (print_eval_perfEnabled()) {
@@ -1659,10 +1732,37 @@ print_eval_findSymbol(print_index_t *index, const char *name)
 }
 
 static int
-print_eval_readMemory(uint32_t addr, void *out, size_t size)
+print_eval_findZ80Symbol(const char *name, uint16_t *outAddr)
+{
+    if (outAddr) {
+        *outAddr = 0;
+    }
+    if (!name || !*name || !outAddr || !source_z80_isModeAvailable()) {
+        return 0;
+    }
+    int count = source_z80_getSymbolCount();
+    for (int i = 0; i < count; ++i) {
+        const char *symbolName = NULL;
+        uint16_t addr = 0;
+        if (!source_z80_getSymbol(i, &symbolName, &addr)) {
+            continue;
+        }
+        if (symbolName && strcmp(symbolName, name) == 0) {
+            *outAddr = addr;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+print_eval_readMemory(uint32_t addr, uint32_t processorId, int hasProcessorMemory, void *out, size_t size)
 {
     if (!out || size == 0) {
         return 0;
+    }
+    if (hasProcessorMemory) {
+        return libretro_host_debugReadProcessorMemory(processorId, addr, out, size) ? 1 : 0;
     }
     if (libretro_host_debugReadMemory(addr, out, size)) {
         return 1;
@@ -1689,7 +1789,7 @@ print_eval_readMemory(uint32_t addr, void *out, size_t size)
 }
 
 static uint64_t
-print_eval_readUnsigned(uint32_t addr, size_t size, int *ok)
+print_eval_readUnsigned(uint32_t addr, uint32_t processorId, int hasProcessorMemory, size_t size, int *ok)
 {
     uint8_t buf[16];
     if (ok) {
@@ -1698,7 +1798,7 @@ print_eval_readUnsigned(uint32_t addr, size_t size, int *ok)
     if (size == 0 || size > sizeof(buf)) {
         return 0;
     }
-    if (!print_eval_readMemory(addr, buf, size)) {
+    if (!print_eval_readMemory(addr, processorId, hasProcessorMemory, buf, size)) {
         return 0;
     }
     uint64_t val = 0;
@@ -1764,7 +1864,8 @@ print_eval_printLine(int indent, const char *fmt, ...)
 }
 
 static void
-print_eval_dumpValueAt(print_type_t *type, uint32_t addr, int indent, const char *label)
+print_eval_dumpValueAt(print_type_t *type, uint32_t addr, uint32_t processorId, int hasProcessorMemory,
+                       int indent, const char *label)
 {
     print_type_t *resolved = print_eval_resolveType(type);
     if (!resolved) {
@@ -1775,7 +1876,7 @@ print_eval_dumpValueAt(print_type_t *type, uint32_t addr, int indent, const char
         case print_type_base: {
             int ok = 0;
             size_t size = resolved->byteSize > 0 ? resolved->byteSize : 4;
-            uint64_t val = print_eval_readUnsigned(addr, size, &ok);
+            uint64_t val = print_eval_readUnsigned(addr, processorId, hasProcessorMemory, size, &ok);
             if (!ok) {
                 if (print_eval_debugEnabled() && label && print_eval_debugWantsSymbol(label)) {
                     debug_printf("print: unreadable addr=0x%08X size=%u kind=base\n", (unsigned)addr, (unsigned)size);
@@ -1816,7 +1917,7 @@ print_eval_dumpValueAt(print_type_t *type, uint32_t addr, int indent, const char
         case print_type_pointer: {
             int ok = 0;
             size_t size = resolved->byteSize > 0 ? resolved->byteSize : 4;
-            uint64_t ptrVal = print_eval_readUnsigned(addr, size, &ok);
+            uint64_t ptrVal = print_eval_readUnsigned(addr, processorId, hasProcessorMemory, size, &ok);
             if (!ok) {
                 if (print_eval_debugEnabled() && label && print_eval_debugWantsSymbol(label)) {
                     debug_printf("print: unreadable addr=0x%08X size=%u kind=ptr\n", (unsigned)addr, (unsigned)size);
@@ -1833,7 +1934,8 @@ print_eval_dumpValueAt(print_type_t *type, uint32_t addr, int indent, const char
                 print_member_t *member = &resolved->members[i];
                 uint32_t memberAddr = addr + member->offset;
                 const char *memberName = member->name ? member->name : "<member>";
-                print_eval_dumpValueAt(member->type, memberAddr, indent + 2, memberName);
+                print_eval_dumpValueAt(member->type, memberAddr, processorId, hasProcessorMemory,
+                                       indent + 2, memberName);
             }
             return;
         }
@@ -1848,14 +1950,15 @@ print_eval_dumpValueAt(print_type_t *type, uint32_t addr, int indent, const char
                 uint32_t elemAddr = addr + (uint32_t)(i * elemSize);
                 char nameBuf[64];
                 snprintf(nameBuf, sizeof(nameBuf), "[%zu]", i);
-                print_eval_dumpValueAt(resolved->targetType, elemAddr, indent + 2, nameBuf);
+                print_eval_dumpValueAt(resolved->targetType, elemAddr, processorId, hasProcessorMemory,
+                                       indent + 2, nameBuf);
             }
             return;
         }
         case print_type_enum: {
             int ok = 0;
             size_t size = resolved->byteSize > 0 ? resolved->byteSize : 4;
-            uint64_t val = print_eval_readUnsigned(addr, size, &ok);
+            uint64_t val = print_eval_readUnsigned(addr, processorId, hasProcessorMemory, size, &ok);
             if (!ok) {
                 if (print_eval_debugEnabled() && label && print_eval_debugWantsSymbol(label)) {
                     debug_printf("print: unreadable addr=0x%08X size=%u kind=enum\n", (unsigned)addr, (unsigned)size);
@@ -1892,7 +1995,11 @@ print_eval_readPointerValue(const print_value_t *value, uint32_t *outAddr)
         size = value->type->byteSize;
     }
     int ok = 0;
-    uint64_t val = print_eval_readUnsigned(value->address, size, &ok);
+    uint64_t val = print_eval_readUnsigned(value->address,
+                                           value->processorId,
+                                           value->hasProcessorMemory,
+                                           size,
+                                           &ok);
     if (!ok) {
         return 0;
     }
@@ -1980,6 +2087,19 @@ print_eval_makeAddressValue(print_type_t *type, uint32_t addr)
 }
 
 static print_value_t
+print_eval_makeProcessorAddressValue(print_type_t *type, uint32_t processorId, uint32_t addr)
+{
+    print_value_t val;
+    memset(&val, 0, sizeof(val));
+    val.type = type;
+    val.address = addr;
+    val.processorId = processorId;
+    val.hasAddress = 1;
+    val.hasProcessorMemory = 1;
+    return val;
+}
+
+static print_value_t
 print_eval_makeImmediateValue(print_type_t *type, uint64_t immediate)
 {
     print_value_t val;
@@ -1988,6 +2108,24 @@ print_eval_makeImmediateValue(print_type_t *type, uint64_t immediate)
     val.immediate = immediate;
     val.hasImmediate = 1;
     return val;
+}
+
+static void
+print_eval_setAddressValue(print_value_t *out, print_type_t *type, uint32_t addr, int typeOnly)
+{
+    *out = print_eval_makeAddressValue(type, typeOnly ? 0 : addr);
+    if (typeOnly) {
+        out->hasAddress = 0;
+    }
+}
+
+static void
+print_eval_setImmediateValue(print_value_t *out, print_type_t *type, uint64_t immediate, int typeOnly)
+{
+    *out = print_eval_makeImmediateValue(type, typeOnly ? 0 : immediate);
+    if (typeOnly) {
+        out->hasImmediate = 0;
+    }
 }
 
 static print_type_t *
@@ -2065,7 +2203,11 @@ print_eval_valueToImmediate(const print_value_t *value, int typeOnly, uint64_t *
         size = resolved->byteSize;
     }
     int ok = 0;
-    uint64_t imm = print_eval_readUnsigned(value->address, size, &ok);
+    uint64_t imm = print_eval_readUnsigned(value->address,
+                                           value->processorId,
+                                           value->hasProcessorMemory,
+                                           size,
+                                           &ok);
     if (!ok) {
         return 0;
     }
@@ -2148,6 +2290,16 @@ print_eval_parsePrimary(const char **cursor, print_index_t *index, print_value_t
             }
             return 1;
         }
+        uint16_t z80Addr = 0;
+        if (print_eval_findZ80Symbol(ident, &z80Addr)) {
+            print_type_t *type = print_eval_defaultU8(index);
+            *out = print_eval_makeProcessorAddressValue(type, source_z80_processorId(), z80Addr);
+            if (print_eval_debugEnabled()) {
+                debug_printf("print: resolved z80 sym '%s' -> addr=0x%04X (processor memory)\n",
+                             ident, (unsigned)z80Addr);
+            }
+            return 1;
+        }
         unsigned long regValue = 0;
         if (machine_findReg(&debugger.machine, ident, &regValue)) {
             print_type_t *type = print_eval_defaultU32(index);
@@ -2215,6 +2367,8 @@ print_eval_parseUnary(const char **cursor, print_index_t *index, print_value_t *
             out->hasImmediate = 0;
         } else {
             *out = print_eval_makeImmediateValue(ptrType, inner.address);
+            out->processorId = inner.processorId;
+            out->hasProcessorMemory = inner.hasProcessorMemory;
         }
         return 1;
     }
@@ -2235,6 +2389,8 @@ print_eval_parseUnary(const char **cursor, print_index_t *index, print_value_t *
                     return 0;
                 }
                 *out = print_eval_makeAddressValue(resolved->targetType, addr);
+                out->processorId = inner.processorId;
+                out->hasProcessorMemory = inner.hasProcessorMemory;
             }
             return 1;
         }
@@ -2252,6 +2408,8 @@ print_eval_parseUnary(const char **cursor, print_index_t *index, print_value_t *
             return 0;
         }
         *out = print_eval_makeAddressValue(print_eval_defaultU32(index), addr);
+        out->processorId = inner.processorId;
+        out->hasProcessorMemory = inner.hasProcessorMemory;
         return 1;
     }
     return print_eval_parsePrimary(cursor, index, out, typeOnly);
@@ -2280,6 +2438,8 @@ print_eval_parsePostfix(const char **cursor, print_index_t *index, print_value_t
             }
             print_type_t *resolved = print_eval_resolveType(out->type);
             uint32_t baseAddr = 0;
+            uint32_t sourceProcessorId = out->processorId;
+            int sourceHasProcessorMemory = out->hasProcessorMemory;
             if (isArrow) {
                 if (!resolved || resolved->kind != print_type_pointer) {
                     return 0;
@@ -2317,6 +2477,8 @@ print_eval_parsePostfix(const char **cursor, print_index_t *index, print_value_t
             } else {
                 uint32_t memberAddr = baseAddr + member->offset;
                 *out = print_eval_makeAddressValue(member->type, memberAddr);
+                out->processorId = sourceProcessorId;
+                out->hasProcessorMemory = sourceHasProcessorMemory;
             }
             continue;
         }
@@ -2337,6 +2499,8 @@ print_eval_parsePostfix(const char **cursor, print_index_t *index, print_value_t
             }
             print_type_t *elemType = NULL;
             uint32_t baseAddr = 0;
+            uint32_t sourceProcessorId = out->processorId;
+            int sourceHasProcessorMemory = out->hasProcessorMemory;
             if (resolved->kind == print_type_array) {
                 elemType = resolved->targetType;
                 if (!out->hasAddress && !typeOnly) {
@@ -2358,6 +2522,8 @@ print_eval_parsePostfix(const char **cursor, print_index_t *index, print_value_t
             } else {
                 uint32_t elemAddr = baseAddr + (uint32_t)(indexVal * elemSize);
                 *out = print_eval_makeAddressValue(elemType, elemAddr);
+                out->processorId = sourceProcessorId;
+                out->hasProcessorMemory = sourceHasProcessorMemory;
             }
             continue;
         }
@@ -2745,7 +2911,19 @@ print_eval_resolveSymbol(const char *name, uint32_t *outAddr, size_t *outSize)
     }
     print_variable_t *var = print_eval_findVariable(&print_eval_index, name);
     if (!var) {
-        return 0;
+        print_symbol_t *sym = print_eval_findSymbol(&print_eval_index, name);
+        if (!sym) {
+            uint16_t z80Addr = 0;
+            if (!print_eval_findZ80Symbol(name, &z80Addr)) {
+                return 0;
+            }
+            *outAddr = z80Addr;
+            *outSize = 1;
+            return 1;
+        }
+        *outAddr = sym->addr;
+        *outSize = 4;
+        return 1;
     }
     print_type_t *type = NULL;
     if (var->typeRef != 0) {
@@ -2770,7 +2948,31 @@ print_eval_resolveSymbol(const char *name, uint32_t *outAddr, size_t *outSize)
 int
 print_eval_resolveAddress(const char *expr, uint32_t *outAddr, size_t *outSize)
 {
-    if (!expr || !*expr || !outAddr || !outSize) {
+    if (outAddr) {
+        *outAddr = 0;
+    }
+    if (outSize) {
+        *outSize = 0;
+    }
+    if (!outAddr || !outSize) {
+        return 0;
+    }
+    print_resolved_address_t address;
+    if (!print_eval_resolveAddressInfo(expr, &address)) {
+        return 0;
+    }
+    *outAddr = address.address;
+    *outSize = address.size;
+    return 1;
+}
+
+int
+print_eval_resolveAddressInfo(const char *expr, print_resolved_address_t *outAddress)
+{
+    if (outAddress) {
+        memset(outAddress, 0, sizeof(*outAddress));
+    }
+    if (!expr || !*expr || !outAddress) {
         return 0;
     }
     if (!print_eval_loadIndex(&print_eval_index)) {
@@ -2798,8 +3000,8 @@ print_eval_resolveAddress(const char *expr, uint32_t *outAddr, size_t *outSize)
             if (sizeImm == 0) {
                 sizeImm = 4;
             }
-            *outAddr = (uint32_t)(value.immediate & 0x00ffffffu);
-            *outSize = sizeImm;
+            outAddress->address = (uint32_t)(value.immediate & 0x00ffffffu);
+            outAddress->size = sizeImm;
             print_eval_freeTempTypes(tempTypes);
             return 1;
         }
@@ -2814,10 +3016,57 @@ print_eval_resolveAddress(const char *expr, uint32_t *outAddr, size_t *outSize)
     if (size == 0) {
         size = 4;
     }
-    *outAddr = value.address;
-    *outSize = size;
+    outAddress->address = value.address;
+    outAddress->processorId = value.processorId;
+    outAddress->size = size;
+    outAddress->hasProcessorMemory = value.hasProcessorMemory;
     print_eval_freeTempTypes(tempTypes);
     return 1;
+}
+
+int
+print_eval_resolveNamedKind(const char *name, int *outIsVariable)
+{
+    if (outIsVariable) {
+        *outIsVariable = 0;
+    }
+    if (!name || !*name || !outIsVariable) {
+        return 0;
+    }
+    if (!print_eval_loadIndex(&print_eval_index)) {
+        return 0;
+    }
+    if (print_eval_findVariable(&print_eval_index, name)) {
+        *outIsVariable = 1;
+        return 1;
+    }
+    if (print_eval_findSymbol(&print_eval_index, name)) {
+        *outIsVariable = 0;
+        return 1;
+    }
+    uint16_t z80Addr = 0;
+    if (print_eval_findZ80Symbol(name, &z80Addr)) {
+        *outIsVariable = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static void
+print_eval_printImmediateValue(const char *expr, const print_value_t *value)
+{
+    print_type_t *resolved = print_eval_resolveType(value->type);
+    if (!resolved || resolved->kind == print_type_base || resolved->kind == print_type_enum) {
+        print_eval_printLine(0, "%s: %llu (0x%llX)", expr,
+                            (unsigned long long)value->immediate,
+                            (unsigned long long)value->immediate);
+        return;
+    }
+    if (resolved->kind == print_type_pointer) {
+        print_eval_printLine(0, "%s: 0x%08llX", expr, (unsigned long long)value->immediate);
+        return;
+    }
+    print_eval_printLine(0, "%s: 0x%llX", expr, (unsigned long long)value->immediate);
 }
 
 int
@@ -2828,7 +3077,7 @@ print_eval_print(const char *expr)
         return 0;
     }
     if (!print_eval_loadIndex(&print_eval_index)) {
-        debug_error("print: failed to load symbols (check --elf)");
+        debug_error("print: failed to load symbols (check the debug symbol file path)");
         return 0;
     }
     print_temp_type_t *tempTypes = NULL;
@@ -2846,22 +3095,9 @@ print_eval_print(const char *expr)
         return 0;
     }
     if (value.hasAddress) {
-        print_eval_dumpValueAt(value.type, value.address, 0, expr);
+        print_eval_dumpValueAt(value.type, value.address, value.processorId, value.hasProcessorMemory, 0, expr);
     } else if (value.hasImmediate) {
-        print_type_t *resolved = print_eval_resolveType(value.type);
-        if (!resolved) {
-            print_eval_printLine(0, "%s: %llu (0x%llX)", expr,
-                                (unsigned long long)value.immediate,
-                                (unsigned long long)value.immediate);
-        } else if (resolved->kind == print_type_pointer) {
-            print_eval_printLine(0, "%s: 0x%08llX", expr, (unsigned long long)value.immediate);
-        } else if (resolved->kind == print_type_base || resolved->kind == print_type_enum) {
-            print_eval_printLine(0, "%s: %llu (0x%llX)", expr,
-                                (unsigned long long)value.immediate,
-                                (unsigned long long)value.immediate);
-        } else {
-            print_eval_printLine(0, "%s: 0x%llX", expr, (unsigned long long)value.immediate);
-        }
+        print_eval_printImmediateValue(expr, &value);
     } else {
         debug_error("print: no value");
     }
@@ -2899,22 +3135,9 @@ print_eval_eval(const char *expr, char *out, size_t cap)
     print_eval_captureLen = 0;
     print_eval_captureEnabled = 1;
     if (value.hasAddress) {
-        print_eval_dumpValueAt(value.type, value.address, 0, expr);
+        print_eval_dumpValueAt(value.type, value.address, value.processorId, value.hasProcessorMemory, 0, expr);
     } else if (value.hasImmediate) {
-        print_type_t *resolved = print_eval_resolveType(value.type);
-        if (!resolved) {
-            print_eval_printLine(0, "%s: %llu (0x%llX)", expr,
-                                 (unsigned long long)value.immediate,
-                                 (unsigned long long)value.immediate);
-        } else if (resolved->kind == print_type_pointer) {
-            print_eval_printLine(0, "%s: 0x%08llX", expr, (unsigned long long)value.immediate);
-        } else if (resolved->kind == print_type_base || resolved->kind == print_type_enum) {
-            print_eval_printLine(0, "%s: %llu (0x%llX)", expr,
-                                 (unsigned long long)value.immediate,
-                                 (unsigned long long)value.immediate);
-        } else {
-            print_eval_printLine(0, "%s: 0x%llX", expr, (unsigned long long)value.immediate);
-        }
+        print_eval_printImmediateValue(expr, &value);
     } else {
         print_eval_captureEnabled = 0;
         print_eval_captureBuffer = NULL;

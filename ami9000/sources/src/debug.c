@@ -40,13 +40,19 @@
 #include "cpummu.h"
 #include "rommgr.h"
 
+#ifndef E9K_HACK_DEBUGGER_RUNTIME
+#define E9K_HACK_DEBUGGER_RUNTIME 0
+#endif
+
+#ifndef E9K_HACK_DEBUGGER_HOST
+#define E9K_HACK_DEBUGGER_HOST 0
+#endif
+
 extern int diwfirstword_total;
 extern int diwlastword_total;
 
-#ifdef __LIBRETRO__
-void e9k_debug_memhook_afterRead(uint32_t addr24, uint32_t value, uint32_t sizeBits);
-int e9k_debug_memhook_filterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldValue, int oldValueValid, uint32_t *inoutValue);
-void e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid);
+#if E9K_HACK_DEBUGGER_RUNTIME
+#include "e9k_debug.h"
 #endif
 #include "inputrecord.h"
 #include "calc.h"
@@ -4520,7 +4526,7 @@ static uae_u32 REGPARAM2 debug_lget(uaecptr addr)
 	uae_u32 v;
 	v = debug_mem_banks[off]->lget(addr);
 	memwatch_func(addr, 1, 4, &v, MW_MASK_CPU_D_R, 0);
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 	e9k_debug_memhook_afterRead((uint32_t)(munge24(addr) & 0x00ffffffu), v, 32u);
 #endif
 	return v;
@@ -4531,7 +4537,7 @@ static uae_u32 REGPARAM2 debug_wget (uaecptr addr)
 	uae_u32 v;
 	v = debug_mem_banks[off]->wget (addr);
 	memwatch_func (addr, 1, 2, &v, MW_MASK_CPU_D_R, 0);
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 	e9k_debug_memhook_afterRead((uint32_t)(munge24(addr) & 0x00ffffffu), v, 16u);
 #endif
 	return v;
@@ -4542,7 +4548,7 @@ static uae_u32 REGPARAM2 debug_bget (uaecptr addr)
 	uae_u32 v;
 	v = debug_mem_banks[off]->bget (addr);
 	memwatch_func (addr, 1, 1, &v, MW_MASK_CPU_D_R, 0);
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 	e9k_debug_memhook_afterRead((uint32_t)(munge24(addr) & 0x00ffffffu), v, 8u);
 #endif
 	return v;
@@ -4566,7 +4572,7 @@ static uae_u32 REGPARAM2 debug_wgeti (uaecptr addr)
 static void REGPARAM2 debug_lput (uaecptr addr, uae_u32 v)
 {
 	int off = debug_mem_off (&addr);
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 	uae_u32 addr24 = (uint32_t)(munge24(addr) & 0x00ffffffu);
 #endif
 	uae_u32 oldv = 0;
@@ -4575,7 +4581,7 @@ static void REGPARAM2 debug_lput (uaecptr addr, uae_u32 v)
 		oldv = debug_mem_banks[off]->lget(addr);
 		oldvalid = 1;
 	}
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 	uae_u32 vv = v;
 	if (!e9k_debug_memhook_filterWrite(addr24, 32u, oldv, oldvalid, &vv)) {
 		return;
@@ -4583,8 +4589,14 @@ static void REGPARAM2 debug_lput (uaecptr addr, uae_u32 v)
 	v = vv;
 #endif
 	if (memwatch_func (addr, 2, 4, &v, MW_MASK_CPU_D_W, 0)) {
+#if E9K_HACK_DEBUGGER_RUNTIME
+		if (!e9k_debug_memhook_beforeWrite(addr24, v, oldv, 32u, oldvalid)) {
+			THROW(E9K_DEBUG_EXCEPTION_WATCH_PREWRITE);
+			return;
+		}
+#endif
 		debug_mem_banks[off]->lput (addr, v);
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 		e9k_debug_memhook_afterWrite(addr24, v, oldv, 32u, oldvalid);
 #endif
 	}
@@ -4592,7 +4604,7 @@ static void REGPARAM2 debug_lput (uaecptr addr, uae_u32 v)
 static void REGPARAM2 debug_wput (uaecptr addr, uae_u32 v)
 {
 	int off = debug_mem_off (&addr);
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 	uae_u32 addr24 = (uint32_t)(munge24(addr) & 0x00ffffffu);
 #endif
 	uae_u32 oldv = 0;
@@ -4601,7 +4613,7 @@ static void REGPARAM2 debug_wput (uaecptr addr, uae_u32 v)
 		oldv = debug_mem_banks[off]->wget(addr);
 		oldvalid = 1;
 	}
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 	uae_u32 vv = v;
 	if (!e9k_debug_memhook_filterWrite(addr24, 16u, oldv, oldvalid, &vv)) {
 		return;
@@ -4609,8 +4621,14 @@ static void REGPARAM2 debug_wput (uaecptr addr, uae_u32 v)
 	v = vv;
 #endif
 	if (memwatch_func (addr, 2, 2, &v, MW_MASK_CPU_D_W, 0)) {
+#if E9K_HACK_DEBUGGER_RUNTIME
+		if (!e9k_debug_memhook_beforeWrite(addr24, v, oldv, 16u, oldvalid)) {
+			THROW(E9K_DEBUG_EXCEPTION_WATCH_PREWRITE);
+			return;
+		}
+#endif
 		debug_mem_banks[off]->wput (addr, v);
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 		e9k_debug_memhook_afterWrite(addr24, v, oldv, 16u, oldvalid);
 #endif
 	}
@@ -4618,7 +4636,7 @@ static void REGPARAM2 debug_wput (uaecptr addr, uae_u32 v)
 static void REGPARAM2 debug_bput (uaecptr addr, uae_u32 v)
 {
 	int off = debug_mem_off (&addr);
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 	uae_u32 addr24 = (uint32_t)(munge24(addr) & 0x00ffffffu);
 #endif
 	uae_u32 oldv = 0;
@@ -4627,7 +4645,7 @@ static void REGPARAM2 debug_bput (uaecptr addr, uae_u32 v)
 		oldv = debug_mem_banks[off]->bget(addr);
 		oldvalid = 1;
 	}
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 	uae_u32 vv = v;
 	if (!e9k_debug_memhook_filterWrite(addr24, 8u, oldv, oldvalid, &vv)) {
 		return;
@@ -4635,8 +4653,14 @@ static void REGPARAM2 debug_bput (uaecptr addr, uae_u32 v)
 	v = vv;
 #endif
 	if (memwatch_func (addr, 2, 1, &v, MW_MASK_CPU_D_W, 0)) {
+#if E9K_HACK_DEBUGGER_RUNTIME
+		if (!e9k_debug_memhook_beforeWrite(addr24, v, oldv, 8u, oldvalid)) {
+			THROW(E9K_DEBUG_EXCEPTION_WATCH_PREWRITE);
+			return;
+		}
+#endif
 		debug_mem_banks[off]->bput (addr, v);
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 		e9k_debug_memhook_afterWrite(addr24, v, oldv, 8u, oldvalid);
 #endif
 	}
@@ -4957,7 +4981,7 @@ static void initialize_memwatch (int mode)
 		memwatch_enabled = 1;
 }
 
-#ifdef __LIBRETRO__
+#if E9K_HACK_DEBUGGER_RUNTIME
 #ifdef JIT
 static int e9k_debug_saved_cachesize = -1;
 #endif
@@ -6863,6 +6887,19 @@ int debug_peek_memory_16 (uaecptr addr)
 	}
 	return -1;
 }
+#if E9K_HACK_DEBUGGER_HOST
+int debug_peek_memory_8 (uaecptr addr)
+{
+	addrbank *ad;
+	
+	ad = &get_mem_bank (addr);
+	if (ad->flags & (ABFLAG_RAM | ABFLAG_ROM | ABFLAG_ROMIN | ABFLAG_SAFE))
+		return ad->bget (addr);
+	if (ad == &custom_bank)
+		return ar_custom[addr & 0x1ff];
+	return -1;
+}
+#endif
 int debug_read_memory_16 (uaecptr addr)
 {
 	addrbank *ad;

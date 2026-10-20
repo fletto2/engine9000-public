@@ -31,11 +31,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "m68k/m68k.h"
 #include "m68k/m68kcpu.h"
 
 #include "geo.h"
+#include "geo_cd.h"
 #include "geo_lspc.h"
 #include "geo_m68k.h"
 #include "geo_rtc.h"
@@ -46,9 +48,26 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "e9k_debugger.h"
 #include "e9k_protect.h"
 
+void geo_irq2_acknowledgePending(void);
+void geo_irq2_deferCounterLoadDisplayCounter(void);
+void geo_irq2_displayCounterSetHigh(uint16_t value);
+void geo_irq2_displayCounterSetLow(uint16_t value);
+
+static unsigned (*m68k_read_8_fn)(unsigned);
+static unsigned (*m68k_read_16_fn)(unsigned);
+static void (*m68k_write_8_fn)(unsigned, unsigned);
+static void (*m68k_write_16_fn)(unsigned, unsigned);
+
+static unsigned geo_m68k_cart_read_8(unsigned address);
+static unsigned geo_m68k_cart_read_16(unsigned address);
+static void geo_m68k_cart_write_8(unsigned address, unsigned value);
+static void geo_m68k_cart_write_16(unsigned address, unsigned value);
+
 #define SMATAP 0x98ec // NEO-SMA Tapped bits - 2, 3, 5, 6, 7, 11, 12, and 15
 #define GEO_DBG_TEXT_ADDR 0xFFFF0 // Fake debug output register
 #define GEO_DBG_CHECKPOINT_ADDR 0xFFFEC // Fake checkpoint register
+#define GEO_DBG_CHECKPOINT_NAME_ADDR 0xFFE00 // Fake checkpoint name base register
+#define GEO_DBG_CHECKPOINT_NAME_SIZE (E9K_CHECKPOINT_COUNT * 4u)
 
 // Game ROM data
 static romdata_t *romdata = NULL;
@@ -132,8 +151,61 @@ static inline void geo_debug_print_byte(uint8_t byte) {
 }
 
 static inline void geo_debug_checkpoint_write(uint8_t index) {
-    e9k_checkpoint_write(index);
+    e9k_checkpoint_write(index, (uint32_t)geo_lspc_getScanline(), LSPC_SCANLINES);
 }
+
+static inline int
+geo_debug_checkpoint_nameAddressToIndex(uint32_t address, uint8_t *indexOut)
+{
+    if (address < GEO_DBG_CHECKPOINT_NAME_ADDR) {
+        return 0;
+    }
+    uint32_t offset = address - GEO_DBG_CHECKPOINT_NAME_ADDR;
+    if (offset >= GEO_DBG_CHECKPOINT_NAME_SIZE) {
+        return 0;
+    }
+    if ((offset & 3u) != 0u) {
+        return 0;
+    }
+    if (!indexOut) {
+        return 0;
+    }
+    *indexOut = (uint8_t)(offset >> 2);
+    return 1;
+}
+
+static inline void
+geo_debug_checkpoint_setNameFromPointer(uint8_t index, uint32_t ptrValue)
+{
+    char name[E9K_CHECKPOINT_NAME_MAX];
+    memset(name, 0, sizeof(name));
+
+    uint32_t ptr24 = ptrValue & 0x00ffffffu;
+    if (ptr24 != 0) {
+        e9k_debugger_watchpoint_suspend();
+        for (size_t i = 0; i + 1 < sizeof(name); ++i) {
+            uint8_t c = (uint8_t)m68k_read_memory_8((unsigned)((ptr24 + (uint32_t)i) & 0x00ffffffu));
+            name[i] = (char)c;
+            if (c == 0) {
+                break;
+            }
+        }
+        e9k_debugger_watchpoint_resume();
+    }
+
+    e9k_checkpoint_setName(index, name);
+}
+
+#ifdef E9K_HACK_REGISTER_LOG
+static inline void geo_m68k_logRegisterWrite(uint32_t reg, uint16_t value) {
+    uint32_t pc = (uint32_t)m68k_get_reg(NULL, M68K_REG_PPC);
+    e9k_debugger_writeRegisterLog((uint16_t)(geo_lspc_getScanline() & 0xffffu),
+        reg,
+        value,
+        E9K_DEBUG_GEO_REGISTER_LOG_SOURCE_68K,
+        pc & 0x00ffffffu);
+}
+#endif
 
 static inline void write08(uint8_t *ptr, uint32_t addr, uint8_t data) {
     ptr[addr] = data;
@@ -789,7 +861,7 @@ static void geo_m68k_write_banksw_16_kof10th(uint32_t addr, uint16_t data) {
  * ---------------------------------------------------------------------
  */
 
-unsigned m68k_read_memory_8(unsigned address) {
+static unsigned geo_m68k_cart_read_8(unsigned address) {
     unsigned result = 0xff;
     uint32_t addr24 = (uint32_t)(address & 0x00ffffffu);
     if (address < 0x000080) { // Vector Table
@@ -886,14 +958,17 @@ unsigned m68k_read_memory_8(unsigned address) {
                 // REG_VRAMMOD, REG_IRQACK
                 break;
             }
-            case 0x3c0006: case 0x3c000e: {
+            case 0x3c0006: case 0x3c0007:
+            case 0x3c000e: case 0x3c000f: {
                 /* REG_LSPCMODE, REG_TIMERSTOP
                    Bits 7-15: Raster line counter (with offset of 0xf8)
                    Bits 4-6:  000
                    Bit 3:     0 = 60Hz, 1 = 50Hz
                    Bits 0-2:  Auto animation counter
                 */
-                break;
+                uint16_t val = geo_lspc_mode_rd();
+                result = (address & 0x01) ? (val & 0xff) : (val >> 8);
+                goto out;
             }
         }
     }
@@ -930,11 +1005,76 @@ out:
     return result;
 }
 
-unsigned m68k_read_memory_16(unsigned address) {
+uint8_t geo_m68k_debug_peek_8(uint32_t address) {
+    address &= 0x00ffffffu;
+    if (address < 0x000080) { // Vector Table
+        return vectable ?
+            geo_m68k_read_fixed_8(address) : read08(romdata->b, address);
+    }
+    else if (address < 0x100000) { // Fixed 1M Program ROM Bank
+        return geo_m68k_read_fixed_8(address);
+    }
+    else if (address < 0x200000) { // RAM - Mirrored every 64K
+        return read08(ram, address & 0xffff);
+    }
+    else if (address < 0x300000) { // Switchable 1M Program ROM Bank
+        return geo_m68k_read_banksw_8(address);
+    }
+    else if (address < 0x400000) { // Memory Mapped Registers
+        switch (address) {
+            case 0x300000: { // REG_P1CNT
+                return geo_input_cb[0](0);
+            }
+            case 0x300001: { // REG_DIPSW
+                return geo_input_sys_cb[3]();
+            }
+            case 0x300081: { // REG_SYSTYPE
+                return geo_input_sys_cb[2]() & ~0x40;
+            }
+            case 0x320000: { // REG_SOUND
+                return ngsys.sound_reply;
+            }
+            case 0x320001: { // REG_STATUS_A
+                return geo_input_sys_cb[0]() | (geo_rtc_rd() << 6);
+            }
+            case 0x340000: { // REG_P2CNT
+                return geo_input_cb[1](1);
+            }
+            case 0x380000: { // REG_STATUS_B
+                return geo_input_sys_cb[1]() |
+                    (geo_get_system() == SYSTEM_AES ? 0x00 : 0x80);
+            }
+            default: {
+                return 0xff;
+            }
+        }
+    }
+    else if (address < 0x800000) { // Palette RAM - Mirrored every 8K
+        return geo_lspc_palram_rd08(address);
+    }
+    else if (address < 0xc00000) { // Memory Card
+        if (address & 0x01) {
+            return ngsys.memcard[(address >> 1) & 0x7ff];
+        }
+        return 0xff;
+    }
+    else if (address < 0xd00000) { // BIOS ROM
+        return read08(romdata->b, address & 0x1ffff);
+    }
+    else if (address < 0xe00000) { // Backup RAM - Mirrored every 64K
+        return read08(ngsys.nvram, address & 0xffff);
+    }
+
+    return 0xff;
+}
+
+static unsigned geo_m68k_cart_read_16(unsigned address) {
     unsigned result = 0xffff;
     uint32_t addr24 = (uint32_t)(address & 0x00ffffffu);
-    if (address & 0x01)
-        geo_log(GEO_LOG_WRN, "Unaligned 16-bit Read: %06x\n", address);
+    if (address & 0x01) {
+        geo_log(GEO_LOG_WRN, "Unaligned 16-bit Read: %06x PC: %06x\n",
+            address, m68k_get_reg(NULL, M68K_REG_PPC) & 0x00ffffffu);
+    }
 
     if (address < 0x000080) { // Vector Table
         m68k_modify_timeslice(1);
@@ -1020,18 +1160,26 @@ out:
     return result;
 }
 
+unsigned m68k_read_memory_8(unsigned address) {
+    return m68k_read_8_fn(address);
+}
+
+unsigned m68k_read_memory_16(unsigned address) {
+    return m68k_read_16_fn(address);
+}
+
 unsigned m68k_read_memory_32(unsigned address) {
     uint32_t addr24 = (uint32_t)(address & 0x00ffffffu);
     e9k_debugger_watchpoint_suspend();
-    unsigned hi = m68k_read_memory_16(address);
-    unsigned lo = m68k_read_memory_16(address + 2);
+    unsigned hi = m68k_read_16_fn(address);
+    unsigned lo = m68k_read_16_fn(address + 2);
     e9k_debugger_watchpoint_resume();
     unsigned result = (hi << 16) | (lo & 0xffffu);
     e9k_debugger_watchpoint_read(addr24, (uint32_t)result, 32);
     return result;
 }
 
-void m68k_write_memory_8(unsigned address, unsigned value) {
+static void geo_m68k_cart_write_8(unsigned address, unsigned value) {
     uint32_t addr24 = (uint32_t)(address & 0x00ffffffu);
     uint32_t old_value = 0;
     int old_value_valid = 0;
@@ -1085,6 +1233,11 @@ void m68k_write_memory_8(unsigned address, unsigned value) {
             }
             case 0x320000: { // REG_SOUND
                 ngsys.sound_code = v8;
+#ifdef E9K_HACK_REGISTER_LOG
+                if (e9k_debugger_isRegisterLogEnabled()) {
+                    geo_m68k_logRegisterWrite(0x320000u, v8);
+                }
+#endif
                 geo_z80_nmi();
                 goto out;
             }
@@ -1239,7 +1392,7 @@ out:
     e9k_debugger_watchpoint_write(addr24, (uint32_t)v8, old_value, 8, old_value_valid);
 }
 
-void m68k_write_memory_16(unsigned address, unsigned value) {
+static void geo_m68k_cart_write_16(unsigned address, unsigned value) {
     if (address & 0x01)
         geo_log(GEO_LOG_WRN, "Unaligned 16-bit Write: %06x %04x\n",
             address, value);
@@ -1288,41 +1441,80 @@ void m68k_write_memory_16(unsigned address, unsigned value) {
         switch (address) {
             case 0x320000: { // REG_SOUND
                 ngsys.sound_code = (v16 >> 8) & 0xff; // Use the upper byte
+#ifdef E9K_HACK_REGISTER_LOG
+                if (e9k_debugger_isRegisterLogEnabled()) {
+                    geo_m68k_logRegisterWrite(0x320000u, (uint16_t)((v16 >> 8) & 0xffu));
+                }
+#endif
                 geo_z80_nmi();
                 goto out;
             }
             case 0x3c0000: { // REG_VRAMADDR
+#ifdef E9K_HACK_REGISTER_LOG
+                if (e9k_debugger_isRegisterLogEnabled()) {
+                    geo_m68k_logRegisterWrite(0x3c0000u, v16);
+                }
+#endif
                 geo_lspc_vramaddr_wr(v16);
                 goto out;
             }
             case 0x3c0002: { // REG_VRAMRW
+#ifdef E9K_HACK_REGISTER_LOG
+                if (e9k_debugger_isRegisterLogEnabled()) {
+                    geo_m68k_logRegisterWrite(0x3c0002u, v16);
+                }
+#endif
                 geo_lspc_vram_wr(v16);
                 goto out;
             }
             case 0x3c0004: { // REG_VRAMMOD
+#ifdef E9K_HACK_REGISTER_LOG
+                if (e9k_debugger_isRegisterLogEnabled()) {
+                    geo_m68k_logRegisterWrite(0x3c0004u, v16);
+                }
+#endif
                 geo_lspc_vrammod_wr((int16_t)v16);
                 goto out;
             }
             case 0x3c0006: { // REG_LSPCMODE
+#ifdef E9K_HACK_REGISTER_LOG
+                if (e9k_debugger_isRegisterLogEnabled()) {
+                    geo_m68k_logRegisterWrite(0x3c0006u, v16);
+                }
+#endif
                 geo_lspc_mode_wr(v16);
                 goto out;
             }
             case 0x3c0008: { // REG_TIMERHIGH
-                ngsys.irq2_reload =
-                    (ngsys.irq2_reload & 0xffff) | ((uint32_t)v16 << 16);
+#ifdef E9K_HACK_REGISTER_LOG
+                if (e9k_debugger_isRegisterLogEnabled()) {
+                    geo_m68k_logRegisterWrite(0x3c0008u, v16);
+                }
+#endif
+                geo_irq2_displayCounterSetHigh((uint16_t)v16);
                 goto out;
             }
             case 0x3c000a: { // REG_TIMERLOW
-                ngsys.irq2_reload =
-                    (ngsys.irq2_reload & 0xffff0000) | ((uint32_t)v16 & 0xffff);
-
-                // Reload counter when REG_TIMERLOW is written
-                if (ngsys.irq2_ctrl & IRQ_TIMER_RELOAD_WRITE)
-                    ngsys.irq2_counter = ngsys.irq2_reload;
+#ifdef E9K_HACK_REGISTER_LOG
+                if (e9k_debugger_isRegisterLogEnabled()) {
+                    geo_m68k_logRegisterWrite(0x3c000au, v16);
+                }
+#endif
+                geo_irq2_displayCounterSetLow((uint16_t)v16);
+                // Arm after the current instruction's elapsed beam time, which
+                // is closer to the 68K bus write phase than reloading early.
+                if (ngsys.irq2_ctrl & IRQ_TIMER_RELOAD_WRITE) {
+                    geo_irq2_deferCounterLoadDisplayCounter();
+                }
 
                 goto out;
             }
             case 0x3c000c: { // REG_IRQACK
+#ifdef E9K_HACK_REGISTER_LOG
+                if (e9k_debugger_isRegisterLogEnabled()) {
+                    geo_m68k_logRegisterWrite(0x3c000cu, v16);
+                }
+#endif
                 /* Bit 2: Ack VBlank
                    Bit 1: Ack HBlank
                    Bit 0: Ack IRQ3 (Reset)
@@ -1330,13 +1522,18 @@ void m68k_write_memory_16(unsigned address, unsigned value) {
                 if (v16 & 0x04) // VBlank
                     m68k_set_virq(IRQ_VBLANK, 0);
                 if (v16 & 0x02) // HBlank/Timer
-                    m68k_set_virq(IRQ_TIMER, 0);
+                    geo_irq2_acknowledgePending();
                 if (v16 & 0x01) // IRQ3 - Pending after reset
                     m68k_set_virq(IRQ_RESET, 0);
 
                 goto out;
             }
             case 0x3c000e: { // REG_TIMERSTOP
+#ifdef E9K_HACK_REGISTER_LOG
+                if (e9k_debugger_isRegisterLogEnabled()) {
+                    geo_m68k_logRegisterWrite(0x3c000eu, v16);
+                }
+#endif
                 /* Bit 0=1: Stop timer counter during first and last 16 lines
                    (32 total) when in PAL mode -- FIXME
                 */
@@ -1367,14 +1564,28 @@ out:
     e9k_debugger_watchpoint_write(addr24, (uint32_t)v16, old_value, 16, old_value_valid);
 }
 
+void m68k_write_memory_8(unsigned address, unsigned value) {
+    m68k_write_8_fn(address, value);
+}
+
+void m68k_write_memory_16(unsigned address, unsigned value) {
+    m68k_write_16_fn(address, value);
+}
+
 void m68k_write_memory_32(unsigned address, unsigned value) {
     uint32_t addr24 = (uint32_t)(address & 0x00ffffffu);
     uint32_t v32 = (uint32_t)value;
+    uint8_t checkpointNameIndex = 0;
+    if (geo_debug_checkpoint_nameAddressToIndex(addr24, &checkpointNameIndex)) {
+        geo_debug_checkpoint_setNameFromPointer(checkpointNameIndex, v32);
+        e9k_debugger_watchpoint_write(addr24, v32, 0, 32, 0);
+        return;
+    }
     e9k_debugger_watchpoint_suspend();
-    unsigned old_hi = m68k_read_memory_16(address);
-    unsigned old_lo = m68k_read_memory_16(address + 2);
-    m68k_write_memory_16(address, (v32 >> 16) & 0xffffu);
-    m68k_write_memory_16(address + 2, v32 & 0xffffu);
+    unsigned old_hi = m68k_read_16_fn(address);
+    unsigned old_lo = m68k_read_16_fn(address + 2);
+    m68k_write_16_fn(address, (v32 >> 16) & 0xffffu);
+    m68k_write_16_fn(address + 2, v32 & 0xffffu);
     e9k_debugger_watchpoint_resume();
     uint32_t old_value = ((uint32_t)old_hi << 16) | ((uint32_t)old_lo & 0xffffu);
     e9k_debugger_watchpoint_write(addr24, v32, old_value, 32, 1);
@@ -1398,10 +1609,27 @@ void geo_m68k_reset(void) {
         banksw_addr = 0;
 }
 
+void geo_m68k_set_memmap_cart(void) {
+    m68k_read_8_fn = &geo_m68k_cart_read_8;
+    m68k_read_16_fn = &geo_m68k_cart_read_16;
+    m68k_write_8_fn = &geo_m68k_cart_write_8;
+    m68k_write_16_fn = &geo_m68k_cart_write_16;
+}
+
+void geo_m68k_set_memmap_cd(void) {
+    m68k_read_8_fn = &geo_cd_m68k_read_8;
+    m68k_read_16_fn = &geo_cd_m68k_read_16;
+    m68k_write_8_fn = &geo_cd_m68k_write_8;
+    m68k_write_16_fn = &geo_cd_m68k_write_16;
+}
+
 void geo_m68k_init(void) {
     // Initialize the 68K CPU
     m68k_init();
     m68k_set_cpu_type(M68K_CPU_TYPE_68000);
+
+    // Default to cartridge memory map
+    geo_m68k_set_memmap_cart();
 
     // Zero the cartridge registers (most games do not use these)
     cartreg[0] = cartreg[1] = 0;
@@ -1417,14 +1645,45 @@ int geo_m68k_run(unsigned cycs) {
 }
 
 void geo_m68k_interrupt(unsigned level) {
-    if ((m68k_get_virq(level)) == 0)
+    if ((m68k_get_virq(level)) == 0) {
         m68k_set_virq(level, 1);
+    }
+}
+
+void
+geo_m68k_setInterruptLine(unsigned level, unsigned state)
+{
+    m68k_set_virq(level, state);
 }
 
 // Acknowledge interrupts
 int geo_m68k_int_ack(int level) {
-    if (level) { }
-    //geo_log(GEO_LOG_INF, "IRQ ACK Level: %02x\n", level);
+    if (ngsys.cdmode) {
+        /* CD Mode Custom Vectoring
+           Level 1: VBLANK vector at offset 0x68 (vector 26)
+           Level 2: CD vector at offset 0x54 or 0x58
+           Level 3: Timer/HBLANK vector at offset 0x64 (vector 25)
+        */
+        switch (level) {
+            case 1:
+                m68k_set_virq(1, 0);
+                return 0x68 / 4; // VBLANK
+            case 2: {
+                m68k_set_virq(2, 0);
+                if (geo_cd_irq_pending() & CD_INT_DECODER) {
+                    geo_cd_irq_clear(CD_INT_DECODER);
+                    return 0x54 / 4; // Vector 21
+                }
+                else {
+                    geo_cd_irq_clear(CD_INT_COMMUNICATION);
+                    return 0x58 / 4; // Vector 22
+                }
+            }
+            case 3:
+                m68k_set_virq(3, 0);
+                return 0x64 / 4; // Timer/HBLANK
+        }
+    }
     return M68K_INT_ACK_AUTOVECTOR;
 }
 
@@ -1537,9 +1796,13 @@ unsigned m68k_read_disassembler_32(unsigned address) {
     return m68k_read_memory_32(address);
 }
 
+void geo_m68k_bios_bswap(void) {
+    swapb16_range(romdata->b, romdata->bsz);
+}
+
 void geo_m68k_postload(void) {
     // Byteswap the BIOS and P ROM
-    swapb16_range(romdata->b, romdata->bsz);
+    geo_m68k_bios_bswap();
     swapb16_range(romdata->p, romdata->psz);
 
     // Calculate the switchable PROM bank mask

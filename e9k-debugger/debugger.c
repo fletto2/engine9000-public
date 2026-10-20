@@ -15,10 +15,17 @@
 #include "libretro_host.h"
 #include "debugger.h"
 #include "profile.h"
-
 #include "analyse.h"
 #include "linebuf.h"
-#include "sprite_debug.h"
+#include "neogeo_memview.h"
+#include "mega_memview.h"
+#include "neogeo_palette_debug.h"
+#include "mega_palette_debug.h"
+#include "neogeo_register_log.h"
+#include "neogeo_sprite_debug.h"
+#include "neogeo_sprite_list.h"
+#include "neogeo_audio_vis.h"
+#include "mega_audio_vis.h"
 #include "machine.h"
 #include "base_map.h"
 #include "source.h"
@@ -36,25 +43,24 @@
 #include "input_record.h"
 #include "smoke_test.h"
 #include "ui_test.h"
+#include "amiga_blit_info.h"
+#include "amiga_custom.h"
 #include "shader_ui.h"
-#include "custom_log.h"
+#include "amiga_custom_log.h"
 #include "hotkeys.h"
-#include "custom_ui.h"
+#include "amiga_custom_ui.h"
+#include "memory.h"
 #include "memory_track_ui.h"
 #include "crt.h"
 #include "settings.h"
 #include "cli.h"
 #include "runtime.h"
 #include "config.h"
-#include "romset.h"
 #include "ui.h"
 #include "emu_geo.h"
-#include "emu_ami.h"
-#include "debugger_platform.h"
-#include "amiga_uae_options.h"
-#include "neogeo_core_options.h"
 #include "breakpoints.h"
 #include "mega_sprite_debug.h"
+#include "symbol_text_map.h"
 
 e9ui_global_t _e9ui;
 e9k_debugger_t debugger;
@@ -91,6 +97,23 @@ int
 debugger_getTestRestartCount(void)
 {
     return debugger_testRestartCount;
+}
+
+int
+debugger_onCoreReset(void)
+{
+    if (base_map_getMode() != BASE_MAP_MODE_STACK) {
+        return 1;
+    }
+
+    base_map_reset();
+    debugger.machine.textBaseAddr = 0;
+    debugger.machine.dataBaseAddr = 0;
+    debugger.machine.bssBaseAddr = 0;
+    print_eval_invalidateCache();
+    hunk_fileline_cache_clear();
+    addr2line_stop();
+    return 0;
 }
 
 void
@@ -157,7 +180,7 @@ debugger_syncCoreBreakpointsForTextBaseChange(uint32_t oldBaseAddr, uint32_t new
     }
 
     for (int i = 0; i < count; ++i) {
-        if (!bps[i].enabled) {
+        if (!bps[i].enabled || bps[i].processorId != MACHINE_PROCESSOR_PRIMARY) {
             continue;
         }
         uint32_t addr = (uint32_t)(bps[i].addr & 0x00ffffffu);
@@ -170,6 +193,9 @@ debugger_syncCoreBreakpointsForTextBaseChange(uint32_t oldBaseAddr, uint32_t new
 
     for (int i = 0; i < count; ++i) {
         machine_breakpoint_t *bp = (machine_breakpoint_t*)&bps[i];
+        if (bp->processorId != MACHINE_PROCESSOR_PRIMARY) {
+            continue;
+        }
         if (!bp->enabled) {
             breakpoints_resolveLocation(bp);
             continue;
@@ -199,7 +225,7 @@ debugger_prepareBreakpointsForBaseMapChange(const machine_breakpoint_t **outBps,
 
     for (int i = 0; i < count; ++i) {
         const machine_breakpoint_t *bp = &bps[i];
-        if (!bp->enabled) {
+        if (!bp->enabled || bp->processorId != MACHINE_PROCESSOR_PRIMARY) {
             continue;
         }
         uint32_t oldAddr = (uint32_t)(bp->addr & 0x00ffffffu);
@@ -208,6 +234,9 @@ debugger_prepareBreakpointsForBaseMapChange(const machine_breakpoint_t **outBps,
 
     for (int i = 0; i < count; ++i) {
         machine_breakpoint_t *bp = (machine_breakpoint_t*)&bps[i];
+        if (bp->processorId != MACHINE_PROCESSOR_PRIMARY) {
+            continue;
+        }
         uint32_t oldAddr = (uint32_t)(bp->addr & 0x00ffffffu);
         uint32_t debugAddr = oldAddr;
         (void)base_map_runtimeToDebug(BASE_MAP_SECTION_TEXT, oldAddr, &debugAddr);
@@ -235,6 +264,9 @@ debugger_finishBreakpointsForBaseMapChange(const machine_breakpoint_t *bps, int 
 
     for (int i = 0; i < count; ++i) {
         machine_breakpoint_t *bp = (machine_breakpoint_t*)&bps[i];
+        if (bp->processorId != MACHINE_PROCESSOR_PRIMARY) {
+            continue;
+        }
         uint32_t debugAddr = (uint32_t)(bp->addr & 0x00ffffffu);
         uint32_t runtimeAddr = debugAddr;
         (void)base_map_debugToRuntime(BASE_MAP_SECTION_TEXT, debugAddr, &runtimeAddr);
@@ -486,15 +518,27 @@ static void
 debugger_captureBootSaveDirs(void)
 {
     // TODO
-    target_iface_t* amiga = target_amiga();  
-    debugger_copyPath(amiga->bootSaveDir, sizeof(amiga->bootSaveDir), debugger.config.amiga.libretro.saveDir);
-    debugger_copyPath(amiga->bootSystemDir, sizeof(amiga->bootSystemDir), debugger.config.amiga.libretro.systemDir);
-    target_iface_t* neogeo = target_neogeo();      
-    debugger_copyPath(neogeo->bootSaveDir, sizeof(neogeo->bootSaveDir), debugger.config.neogeo.libretro.saveDir);
-    debugger_copyPath(neogeo->bootSystemDir, sizeof(neogeo->bootSystemDir), debugger.config.neogeo.libretro.systemDir);
-    target_iface_t* megadrive = target_megadrive();
-    debugger_copyPath(megadrive->bootSaveDir, sizeof(megadrive->bootSaveDir), debugger.config.megadrive.libretro.saveDir);
-    debugger_copyPath(megadrive->bootSystemDir, sizeof(megadrive->bootSystemDir), debugger.config.megadrive.libretro.systemDir);
+#if E9K_ENABLE_AMIGA
+    target_iface_t *amiga = target_getByIndex(TARGET_AMIGA);
+    if (amiga) {
+        debugger_copyPath(amiga->bootSaveDir, sizeof(amiga->bootSaveDir), debugger.config.amiga.libretro.saveDir);
+        debugger_copyPath(amiga->bootSystemDir, sizeof(amiga->bootSystemDir), debugger.config.amiga.libretro.systemDir);
+    }
+#endif
+#if E9K_ENABLE_NEOGEO
+    target_iface_t *neogeo = target_getByIndex(TARGET_NEOGEO);
+    if (neogeo) {
+        debugger_copyPath(neogeo->bootSaveDir, sizeof(neogeo->bootSaveDir), debugger.config.neogeo.libretro.saveDir);
+        debugger_copyPath(neogeo->bootSystemDir, sizeof(neogeo->bootSystemDir), debugger.config.neogeo.libretro.systemDir);
+    }
+#endif
+#if E9K_ENABLE_MEGADRIVE
+    target_iface_t *megadrive = target_getByIndex(TARGET_MEGADRIVE);
+    if (megadrive) {
+        debugger_copyPath(megadrive->bootSaveDir, sizeof(megadrive->bootSaveDir), debugger.config.megadrive.libretro.saveDir);
+        debugger_copyPath(megadrive->bootSystemDir, sizeof(megadrive->bootSystemDir), debugger.config.megadrive.libretro.systemDir);
+    }
+#endif
 }
 
 void
@@ -562,14 +606,26 @@ void
 debugger_refreshElfValid(void)
 {
     debugger.elfValid = 0;
+    debugger.symbolValid = 0;
+    debugger.symbolFileKind = DEBUGGER_SYMBOL_FILE_KIND_NONE;
     const char *rawElf = NULL;
     const char* toolchainPrefix = NULL;
     char elfPath[PATH_MAX];
-    elfPath[0] = '\0';   
+    elfPath[0] = '\0';
     target->pickElfToolchainPaths(&rawElf, &toolchainPrefix);
     debugger_copyPath(elfPath, sizeof(elfPath), rawElf);
-    if (elfPath[0] && debugger_pathExistsFile(elfPath) && toolchainPrefix && toolchainPrefix[0] != 0) {
-      debugger.elfValid = 1;
+    if (symbol_text_map_hasActive()) {
+        debugger.symbolValid = symbol_text_map_isValid(elfPath) ? 1 : 0;
+        debugger.symbolFileKind = DEBUGGER_SYMBOL_FILE_KIND_TEXT_MAP;
+    } else if (elfPath[0] && debugger_pathExistsFile(elfPath)) {
+        if (symbol_text_map_canLoad(elfPath)) {
+            debugger.symbolValid = symbol_text_map_isValid(elfPath) ? 1 : 0;
+            debugger.symbolFileKind = DEBUGGER_SYMBOL_FILE_KIND_TEXT_MAP;
+        } else if (toolchainPrefix && toolchainPrefix[0] != 0) {
+            debugger.elfValid = 1;
+            debugger.symbolValid = 1;
+            debugger.symbolFileKind = DEBUGGER_SYMBOL_FILE_KIND_BINARY;
+        }
     }
     ui_applySourcePaneElfMode();
 }
@@ -581,6 +637,11 @@ debugger_applyCoreOptions(void)
         libretro_host_setCoreOption("geolith_system_type", debugger.config.neogeo.systemType);
     } else {
         libretro_host_setCoreOption("geolith_system_type", NULL);
+    }
+    if (target == target_neogeo() && debugger.config.neogeo.cdSystemType[0]) {
+        libretro_host_setCoreOption("geolith_cd_system_type", debugger.config.neogeo.cdSystemType);
+    } else {
+        libretro_host_setCoreOption("geolith_cd_system_type", NULL);
     }
 
     target->applyCoreOptions();
@@ -604,16 +665,41 @@ debugger_cleanup(void)
   config_saveConfig();
   rom_config_saveOnExit();
   snapshot_saveOnExit();
-  if (sprite_debug_is_open()) {
-    sprite_debug_toggle();
+  if (neogeo_sprite_debug_is_open()) {
+    neogeo_sprite_debug_toggle();
   }
+  if (neogeo_sprite_list_isOpen()) {
+    neogeo_sprite_list_toggle();
+  }
+  if (neogeo_audio_vis_isOpen()) {
+    neogeo_audio_vis_toggle();
+  }
+  if (neogeo_palette_debug_isOpen()) {
+    neogeo_palette_debug_toggle();
+  }
+  if (neogeo_memview_isOpen()) {
+    neogeo_memview_toggle();
+  }
+  neogeo_register_log_shutdown();
   if (mega_sprite_debug_is_open()) {
     mega_sprite_debug_toggle();
   }
-  custom_log_shutdown();
+  if (mega_audio_vis_isOpen()) {
+    mega_audio_vis_toggle();
+  }
+  if (mega_memview_isOpen()) {
+    mega_memview_toggle();
+  }
+  if (mega_palette_debug_isOpen()) {
+    mega_palette_debug_toggle();
+  }
+  amiga_custom_log_shutdown();
+  amiga_custom_shutdown();
+  amiga_blit_info_shutdown();
   libretro_host_shutdown();
   emu_geo_shutdown();
   addr2line_stop();
+  symbol_text_map_clear();
   profile_streamStop();
   state_buffer_shutdown();
   machine_shutdown(&debugger.machine);
@@ -622,7 +708,7 @@ debugger_cleanup(void)
   dasm_shutdown();
   source_shutdown();
   syntax_highlight_shutdown();
-  custom_ui_shutdown();
+  amiga_custom_ui_shutdown();
   shader_ui_shutdown();
   memory_track_ui_shutdown();
   target_releaseUiResources();
@@ -633,11 +719,14 @@ debugger_cleanup(void)
 static void
 debugger_ctor(void)
 {
+  int defaultTargetIndex = target_firstEnabledIndex();
   memset(e9ui, 0, sizeof(*e9ui));
   memset(&debugger, 0, sizeof(debugger));
   srand((unsigned)time(NULL));
   debugger_setArgv0();
-  target_setTargetIndex(TARGET_AMIGA);
+  if (defaultTargetIndex >= 0) {
+    target_setTargetIndex(defaultTargetIndex);
+  }
   debugger.opts.redirectStdout = E9K_DEBUG_PRINTF_STDOUT_DEFAULT;
   debugger.opts.redirectStderr = E9K_DEBUG_ERROR_STDERR_DEFAULT;
   debugger.opts.redirectGdbStdout = E9K_DEBUG_GDB_STDOUT_DEFAULT;
@@ -676,6 +765,7 @@ debugger_ctor(void)
   debugger.uiFrameCounter = 0;
   debugger.uiRefreshHz = 0;
   debugger.config.crtEnabled = 0;
+  debugger.config.logsEnabled = 0;
   debugger.config.recordEnabled = 0;
   debugger.config.logosEnabled = 1;
   snprintf(debugger.config.neogeo.libretro.toolchainPrefix, sizeof(debugger.config.neogeo.libretro.toolchainPrefix), "m68k-neogeo-elf");
@@ -695,7 +785,7 @@ debugger_ctor(void)
   debugger.cliAudioVolume = -1;
   debugger.cliResetCfg = 0;
   debugger.cliCoreSystemOverride = 0;
-  debugger.cliTargetIndex = TARGET_AMIGA;
+  debugger.cliTargetIndex = defaultTargetIndex >= 0 ? defaultTargetIndex : TARGET_AMIGA;
 #if E9K_ENABLE_GL_COMPOSITE
   e9ui->glCompositeEnabled = 1;
 #else
@@ -705,8 +795,8 @@ debugger_ctor(void)
   e9ui->transition.fullscreenMode = e9k_transition_none;
   e9ui->transition.fullscreenModeSet = 0;
   e9ui->transition.cycleIndex = 0;
-  e9ui->layout.memTrackWinX = -1;
-  e9ui->layout.memTrackWinY = -1;
+  e9ui->layout.memTrackWinX = E9UI_WINDOW_COORD_UNSET;
+  e9ui->layout.memTrackWinY = E9UI_WINDOW_COORD_UNSET;
   e9ui->layout.memTrackWinW = 0;
   e9ui->layout.memTrackWinH = 0;
   machine_init(&debugger.machine);
@@ -751,6 +841,9 @@ debugger_main(int argc, char **argv)
     return 2;
   }
 
+  if (!ui_test_prepareSessionConfig()) {
+    return 1;
+  }
   config_loadConfig();
   debugger_captureBootSaveDirs();
 
@@ -812,6 +905,10 @@ debugger_main(int argc, char **argv)
   }  
   debugger_libretroSelectConfig();
   rom_config_loadSettingsForSelectedRom();
+  cli_applyOverrides();
+  debugger_libretroSelectConfig();
+  rom_config_syncActiveFromCurrentSystem();
+  memory_restorePersistentState();
   debugger_refreshElfValid();
   if (debugger.elfValid && debugger_analyseInitFailed) {
     debug_error("profile: aggregator init failed");
@@ -852,10 +949,15 @@ debugger_main(int argc, char **argv)
 	  debug_error("source_location: core does not expose e9k_debug_set_source_location_resolver");
         }
         target->validateAPI();
+        ui_refreshHotkeyTooltips();
+        if (target->onCoreStarted) {
+	  target->onCoreStarted();
+        }
         if (ui_test_getMode() == UI_TEST_MODE_NONE) {
 	  snapshot_loadOnBoot();
         }
         rom_config_loadRuntimeStateOnBoot();
+        memory_restorePersistentState();
       }
     }
   }

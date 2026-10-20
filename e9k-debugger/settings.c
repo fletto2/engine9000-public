@@ -20,21 +20,40 @@
 #include "core_options.h"
 #include "debugger.h"
 #include "config.h"
+#include "cli.h"
 #include "hotkeys.h"
 #include "list.h"
 #include "system_badge.h"
 #include "rom_config.h"
+#include "e9ui_flow.h"
 #include "e9ui_scroll.h"
+#include "strutil.h"
 
-//static
-//TODO    
+#define SETTINGS_ROM_RECENTS_MAX 16
 
+static int settings_pendingRebuild = 0;
+int settings_coreOptionsDirty = 0;
+static int settings_coreOptionsRestartDirty = 0;
+static const char settings_romRecentClearLabel[] = "<CLEAR RECENTS>";
+static const char settings_romRecentClearValue[] = "__e9k_clear_recents__";
+
+typedef struct settings_romrecent_list
+{
+    char entries[SETTINGS_ROM_RECENTS_MAX][PATH_MAX];
+    int count;
+} settings_romrecent_list_t;
+
+static settings_romrecent_list_t settings_romRecents[TARGET_MEGADRIVE + 1];
+static settings_romrecent_list_t settings_romFolderRecents[TARGET_MEGADRIVE + 1];
 
 static void
 settings_rebuildModalBody(e9ui_context_t *ctx);
 
 static e9ui_component_t *
 settings_makeSystemBadge(e9ui_context_t *ctx, target_iface_t* system);
+
+void
+settings_markCoreOptionsDirtyWithRestart(int restartRequired);
 
 static void
 settings_uiDebuggerHotkeys(e9ui_context_t *ctx, void *user)
@@ -106,27 +125,14 @@ settings_enableTextboxEnterNavigation(e9ui_component_t *comp)
     }
 }
 
-static int settings_pendingRebuild = 0;
-int settings_coreOptionsDirty = 0;
-static int settings_coreOptionsRestartDirty = 0;
-
-#define SETTINGS_ROM_RECENTS_MAX 16
-
-static const char settings_romRecentClearLabel[] = "<CLEAR RECENTS>";
-static const char settings_romRecentClearValue[] = "__e9k_clear_recents__";
-
-typedef struct settings_romrecent_list
-{
-    char entries[SETTINGS_ROM_RECENTS_MAX][PATH_MAX];
-    int count;
-} settings_romrecent_list_t;
-
-static settings_romrecent_list_t settings_romRecents[TARGET_MEGADRIVE + 1];
 
 static int
 settings_romRecentsTargetIndexForIface(const target_iface_t *system)
 {
     if (!system) {
+        return -1;
+    }
+    if (!target_getByIndex(system->coreIndex)) {
         return -1;
     }
     if (system->coreIndex < TARGET_AMIGA || system->coreIndex > TARGET_MEGADRIVE) {
@@ -145,15 +151,21 @@ settings_romRecentsCurrentTargetIndex(void)
 static const char *
 settings_romRecentsTargetKeyName(int targetIndex)
 {
+#if E9K_ENABLE_AMIGA
     if (targetIndex == TARGET_AMIGA) {
         return "amiga";
     }
+#endif
+#if E9K_ENABLE_NEOGEO
     if (targetIndex == TARGET_NEOGEO) {
         return "neogeo";
     }
+#endif
+#if E9K_ENABLE_MEGADRIVE
     if (targetIndex == TARGET_MEGADRIVE) {
         return "megadrive";
     }
+#endif
     return NULL;
 }
 
@@ -163,15 +175,21 @@ settings_romRecentsTargetIndexFromKey(const char *name)
     if (!name) {
         return -1;
     }
+#if E9K_ENABLE_AMIGA
     if (strcmp(name, "amiga") == 0) {
         return TARGET_AMIGA;
     }
+#endif
+#if E9K_ENABLE_NEOGEO
     if (strcmp(name, "neogeo") == 0) {
         return TARGET_NEOGEO;
     }
+#endif
+#if E9K_ENABLE_MEGADRIVE
     if (strcmp(name, "megadrive") == 0) {
         return TARGET_MEGADRIVE;
     }
+#endif
     return -1;
 }
 
@@ -184,10 +202,18 @@ settings_romRecentsListForTargetIndex(int targetIndex)
     return &settings_romRecents[targetIndex];
 }
 
-static void
-settings_romRecentsClearTarget(int targetIndex)
+static settings_romrecent_list_t *
+settings_romFolderRecentsListForTargetIndex(int targetIndex)
 {
-    settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
+    if (targetIndex < TARGET_AMIGA || targetIndex > TARGET_MEGADRIVE) {
+        return NULL;
+    }
+    return &settings_romFolderRecents[targetIndex];
+}
+
+static void
+settings_romRecentsClearList(settings_romrecent_list_t *list)
+{
     if (!list) {
         return;
     }
@@ -195,9 +221,8 @@ settings_romRecentsClearTarget(int targetIndex)
 }
 
 static void
-settings_romRecentsAddTargetPath(int targetIndex, const char *path)
+settings_romRecentsAddPath(settings_romrecent_list_t *list, const char *path)
 {
-    settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
     if (!list || !path || !*path) {
         return;
     }
@@ -238,9 +263,22 @@ settings_romRecentsAddTargetPath(int targetIndex, const char *path)
 }
 
 static void
-settings_romRecentsSetLoadedEntry(int targetIndex, int index, const char *value)
+settings_romRecentsAddTargetPath(int targetIndex, const char *path)
 {
     settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
+    settings_romRecentsAddPath(list, path);
+}
+
+static void
+settings_romFolderRecentsAddTargetPath(int targetIndex, const char *path)
+{
+    settings_romrecent_list_t *list = settings_romFolderRecentsListForTargetIndex(targetIndex);
+    settings_romRecentsAddPath(list, path);
+}
+
+static void
+settings_romRecentsSetLoadedListEntry(settings_romrecent_list_t *list, int index, const char *value)
+{
     if (!list || !value || !*value) {
         return;
     }
@@ -254,6 +292,20 @@ settings_romRecentsSetLoadedEntry(int targetIndex, int index, const char *value)
 }
 
 static void
+settings_romRecentsSetLoadedEntry(int targetIndex, int index, const char *value)
+{
+    settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
+    settings_romRecentsSetLoadedListEntry(list, index, value);
+}
+
+static void
+settings_romFolderRecentsSetLoadedEntry(int targetIndex, int index, const char *value)
+{
+    settings_romrecent_list_t *list = settings_romFolderRecentsListForTargetIndex(targetIndex);
+    settings_romRecentsSetLoadedListEntry(list, index, value);
+}
+
+static void
 settings_romRecentsAddFromSettingsSave(target_iface_t *selectedTarget)
 {
     int targetIndex = settings_romRecentsTargetIndexForIface(selectedTarget);
@@ -262,15 +314,51 @@ settings_romRecentsAddFromSettingsSave(target_iface_t *selectedTarget)
     }
 
     const char *romPath = NULL;
+    const char *romFolder = NULL;
+#if E9K_ENABLE_AMIGA
     if (targetIndex == TARGET_AMIGA) {
         romPath = debugger.settingsEdit.amiga.libretro.romPath;
-    } else if (targetIndex == TARGET_NEOGEO) {
+    } else
+#endif
+#if E9K_ENABLE_NEOGEO
+    if (targetIndex == TARGET_NEOGEO) {
         romPath = debugger.settingsEdit.neogeo.libretro.romPath;
-    } else if (targetIndex == TARGET_MEGADRIVE) {
+        romFolder = debugger.settingsEdit.neogeo.romFolder;
+    } else
+#endif
+#if E9K_ENABLE_MEGADRIVE
+    if (targetIndex == TARGET_MEGADRIVE) {
         romPath = debugger.settingsEdit.megadrive.libretro.romPath;
     }
+#endif
 
     settings_romRecentsAddTargetPath(targetIndex, romPath);
+    settings_romFolderRecentsAddTargetPath(targetIndex, romFolder);
+}
+
+static int
+settings_romSelectHandleClearRecentsFor(e9ui_component_t *fileSelect,
+                                        settings_romrecent_list_t *list,
+                                        const char *restorePath,
+                                        const char *text)
+{
+    if (!fileSelect) {
+        return 0;
+    }
+
+    const char *selectedValue = e9ui_fileSelect_getSelectedValue(fileSelect);
+    if (!selectedValue ||
+        strcmp(selectedValue, settings_romRecentClearValue) != 0 ||
+        !text ||
+        (strcmp(text, settings_romRecentClearLabel) != 0 &&
+         strcmp(text, settings_romRecentClearValue) != 0)) {
+        return 0;
+    }
+
+    settings_romRecentsClearList(list);
+    e9ui_fileSelect_setOptions(fileSelect, NULL, 0);
+    e9ui_fileSelect_setText(fileSelect, restorePath ? restorePath : "");
+    return 1;
 }
 
 static int
@@ -280,33 +368,48 @@ settings_romSelectHandleClearRecents(settings_romselect_state_t *st, const char 
         return 0;
     }
 
-    const char *selectedValue = e9ui_fileSelect_getSelectedValue(st->romSelect);
-    if (!selectedValue ||
-        strcmp(selectedValue, settings_romRecentClearValue) != 0 ||
-        !text ||
-        (strcmp(text, settings_romRecentClearLabel) != 0 &&
-         strcmp(text, settings_romRecentClearValue) != 0)) {
-        return 0;
-    }
-
     char restorePath[PATH_MAX];
     settings_config_setPath(restorePath, sizeof(restorePath), st->romPath ? st->romPath : "");
 
     int targetIndex = settings_romRecentsCurrentTargetIndex();
-    if (targetIndex >= 0) {
-        settings_romRecentsClearTarget(targetIndex);
+    settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
+    st->suppress = 1;
+    int handled = settings_romSelectHandleClearRecentsFor(st->romSelect, list, restorePath, text);
+    st->suppress = 0;
+    if (!handled) {
+        return 0;
     }
 
-    e9ui_fileSelect_setOptions(st->romSelect, NULL, 0);
     st->suppress = 1;
-    e9ui_fileSelect_setText(st->romSelect, restorePath);
-    st->suppress = 0;
     settings_romSelectRefreshRecents(st);
+    st->suppress = 0;
     return 1;
 }
 
-void
-settings_markCoreOptionsDirtyWithRestart(int restartRequired);
+static int
+settings_romFolderSelectHandleClearRecents(settings_romselect_state_t *st, const char *text)
+{
+    if (!st || !st->folderSelect) {
+        return 0;
+    }
+
+    char restorePath[PATH_MAX];
+    settings_config_setPath(restorePath, sizeof(restorePath), st->romFolder ? st->romFolder : "");
+
+    int targetIndex = settings_romRecentsCurrentTargetIndex();
+    settings_romrecent_list_t *list = settings_romFolderRecentsListForTargetIndex(targetIndex);
+    st->suppress = 1;
+    int handled = settings_romSelectHandleClearRecentsFor(st->folderSelect, list, restorePath, text);
+    st->suppress = 0;
+    if (!handled) {
+        return 0;
+    }
+
+    st->suppress = 1;
+    settings_romSelectRefreshRecents(st);
+    st->suppress = 0;
+    return 1;
+}
 
 void
 settings_markCoreOptionsDirty(void)
@@ -351,8 +454,6 @@ settings_pathExistsFile(const char *path)
     return S_ISREG(statBuffer.st_mode) ? 1 : 0;
 }
 
-// static
-// TODO
 int
 settings_pathExistsDir(const char *path)
 {
@@ -367,7 +468,6 @@ settings_pathExistsDir(const char *path)
 }
 
 
-//static
 void
 settings_copyPath(char *dest, size_t capacity, const char *src)
 {
@@ -402,8 +502,7 @@ settings_config_setPath(char *dest, size_t capacity, const char *value)
         dest[0] = '\0';
         return;
     }
-    strncpy(dest, value, capacity - 1);
-    dest[capacity - 1] = '\0';
+    strutil_strlcpy(dest, capacity, value);
 }
 
 
@@ -485,12 +584,6 @@ settings_audioBufferNormalized(int value)
 {
     return value > 0 ? value : 50;
 }
-
-// TODO
-//static
-
-// static
-// TODO
 
 static int
 settings_needsRestart(void)
@@ -622,12 +715,6 @@ settings_measureTargetBodyHeight(target_iface_t *system, e9ui_context_t *ctx, in
     target_settings_modal_t modal = {0};
     system->settingsBuildModal(ctx, &modal);
     int height = settings_componentPreferredHeight(modal.body, ctx, availW);
-    if (modal.body) {
-        e9ui_childDestroy(modal.body, ctx);
-    }
-    if (modal.footerWarning) {
-        e9ui_childDestroy(modal.footerWarning, ctx);
-    }
     return height;
 }
 
@@ -668,6 +755,7 @@ settings_save(void)
     settings_applyToolbarMode();
     settings_romRecentsAddFromSettingsSave(selectedTarget);
     config_saveConfig();
+    cli_resetConfigOverrides();
     if (needsRestart) {
         debugger.restartRequested = 1;
     }
@@ -749,17 +837,15 @@ settings_romSelectUpdateAllowEmpty(settings_romselect_state_t *st)
     }
 }
 
-void
-settings_romSelectRefreshRecents(settings_romselect_state_t *st)
+static void
+settings_romSelectRefreshRecentsFor(e9ui_component_t *fileSelect, settings_romrecent_list_t *list)
 {
-    if (!st || !st->romSelect) {
+    if (!fileSelect) {
         return;
     }
 
-    int targetIndex = settings_romRecentsCurrentTargetIndex();
-    settings_romrecent_list_t *list = settings_romRecentsListForTargetIndex(targetIndex);
     if (!list) {
-        e9ui_fileSelect_setOptions(st->romSelect, NULL, 0);
+        e9ui_fileSelect_setOptions(fileSelect, NULL, 0);
         return;
     }
 
@@ -777,7 +863,19 @@ settings_romSelectRefreshRecents(settings_romselect_state_t *st)
     options[optionCount].label = settings_romRecentClearLabel;
     optionCount++;
 
-    e9ui_fileSelect_setOptions(st->romSelect, options, optionCount);
+    e9ui_fileSelect_setOptions(fileSelect, options, optionCount);
+}
+
+void
+settings_romSelectRefreshRecents(settings_romselect_state_t *st)
+{
+    if (!st) {
+        return;
+    }
+
+    int targetIndex = settings_romRecentsCurrentTargetIndex();
+    settings_romSelectRefreshRecentsFor(st->romSelect, settings_romRecentsListForTargetIndex(targetIndex));
+    settings_romSelectRefreshRecentsFor(st->folderSelect, settings_romFolderRecentsListForTargetIndex(targetIndex));
 }
 
 static void
@@ -944,6 +1042,9 @@ settings_romFolderChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const cha
     if (!st->romFolder) {
         return;
     }
+    if (settings_romFolderSelectHandleClearRecents(st, text)) {
+        return;
+    }
     settings_config_setPath(st->romFolder, PATH_MAX, text);
     if (text && *text) {
         st->suppress = 1;
@@ -1016,6 +1117,17 @@ settings_persistConfig(FILE *file)
             }
             fprintf(file, "comp.settings.recent.%s.rom.%d=%s\n", targetName, i, list->entries[i]);
         }
+
+        list = settings_romFolderRecentsListForTargetIndex(targetIndex);
+        if (!list) {
+            continue;
+        }
+        for (int i = 0; i < list->count; ++i) {
+            if (!list->entries[i][0]) {
+                continue;
+            }
+            fprintf(file, "comp.settings.recent.%s.romFolder.%d=%s\n", targetName, i, list->entries[i]);
+        }
     }
 }
 
@@ -1050,11 +1162,13 @@ settings_loadConfigProperty(const char *prop, const char *value)
     }
 
     const char *rest = dot + 1;
-    if (strncmp(rest, "rom.", 4) != 0) {
+    int isRom = strncmp(rest, "rom.", 4) == 0;
+    int isRomFolder = strncmp(rest, "romFolder.", 10) == 0;
+    if (!isRom && !isRomFolder) {
         return 0;
     }
 
-    const char *indexText = rest + 4;
+    const char *indexText = rest + (isRom ? 4 : 10);
     if (!*indexText) {
         return 0;
     }
@@ -1065,65 +1179,12 @@ settings_loadConfigProperty(const char *prop, const char *value)
     }
 
     int index = atoi(indexText);
-    settings_romRecentsSetLoadedEntry(targetIndex, index, value);
-    return 1;
-}
-
-static void
-settings_funChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
-{
-    (void)self;
-    (void)ctx;
-    (void)user;
-    if (selected) {
-        if (e9ui->transition.mode == e9k_transition_none) {
-            e9ui->transition.mode = e9k_transition_random;
-        }
+    if (isRom) {
+        settings_romRecentsSetLoadedEntry(targetIndex, index, value);
     } else {
-        e9ui->transition.mode = e9k_transition_none;
+        settings_romFolderRecentsSetLoadedEntry(targetIndex, index, value);
     }
-    e9ui->transition.fullscreenModeSet = 0;
-    config_saveConfig();
-}
-
-static void
-settings_crtChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
-{
-    (void)self;
-    (void)ctx;
-    int *flag = (int *)user;
-    if (!flag) {
-        return;
-    }
-    *flag = selected ? 1 : 0;
-    settings_updateSaveLabel();
-}
-
-static void
-settings_recordChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
-{
-    (void)self;
-    (void)ctx;
-    int *flag = (int *)user;
-    if (!flag) {
-        return;
-    }
-    *flag = selected ? 1 : 0;
-    settings_updateSaveLabel();
-}
-
-static void
-settings_logosChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
-{
-    (void)self;
-    (void)ctx;
-    int *flag = (int *)user;
-    if (!flag) {
-        return;
-    }
-    *flag = selected ? 1 : 0;
-    settings_markCoreOptionsDirtyWithRestart(1);
-    settings_updateSaveLabel();
+    return 1;
 }
 
 static void
@@ -1140,7 +1201,11 @@ settings_coreSystemSync(settings_coresystem_state_t *st, target_iface_t* system,
 
     system->settingsCoreChanged();
 
+#if E9K_ENABLE_AMIGA
     int amigaSelected = (system == target_amiga());
+#else
+    int amigaSelected = 0;
+#endif
     int neogeoSelected = (system == target_neogeo());
 #if E9K_ENABLE_MEGADRIVE
     int megadriveSelected = (system == target_megadrive());
@@ -1167,6 +1232,7 @@ settings_coreSystemSync(settings_coresystem_state_t *st, target_iface_t* system,
     settings_updateSaveLabel();
 }
 
+#if E9K_ENABLE_NEOGEO
 static void
 settings_coreSystemNeoGeoChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
 {
@@ -1178,10 +1244,12 @@ settings_coreSystemNeoGeoChanged(e9ui_component_t *self, e9ui_context_t *ctx, in
     if (selected) {
         settings_coreSystemSync(st, target_neogeo(), ctx);
     } else if (st->target == target_neogeo()) {
-        settings_coreSystemSync(st, target_amiga(), ctx);
+        settings_coreSystemSync(st, target_neogeo(), ctx);
     }
 }
+#endif
 
+#if E9K_ENABLE_AMIGA
 static void
 settings_coreSystemAmigaChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
 {
@@ -1193,9 +1261,10 @@ settings_coreSystemAmigaChanged(e9ui_component_t *self, e9ui_context_t *ctx, int
     if (selected) {
         settings_coreSystemSync(st, target_amiga(), ctx);
     } else if (st->target == target_amiga()) {
-        settings_coreSystemSync(st, target_neogeo(), ctx);
+        settings_coreSystemSync(st, target_amiga(), ctx);
     }
 }
+#endif
 
 #if E9K_ENABLE_MEGADRIVE
 static void
@@ -1209,7 +1278,7 @@ settings_coreSystemMegaDriveChanged(e9ui_component_t *self, e9ui_context_t *ctx,
     if (selected) {
         settings_coreSystemSync(st, target_megadrive(), ctx);
     } else if (st->target == target_megadrive()) {
-        settings_coreSystemSync(st, target_amiga(), ctx);
+        settings_coreSystemSync(st, target_megadrive(), ctx);
     }
 }
 #endif
@@ -1248,24 +1317,33 @@ settings_buildModalBody(e9ui_context_t *ctx)
     int contentWidth = e9ui_scale_px(ctx, 640);
     int formWidth = e9ui_scale_px(ctx, 600);
     target_iface_t *selectedTarget = debugger.settingsEdit.target ? debugger.settingsEdit.target : target;
-#if !E9K_ENABLE_MEGADRIVE
-    if (selectedTarget == target_megadrive()) {
-        selectedTarget = target_amiga();
+    if (selectedTarget && !target_getByIndex(selectedTarget->coreIndex)) {
+        selectedTarget = NULL;
     }
-#endif
+    if (!selectedTarget) {
+        selectedTarget = target_firstEnabled();
+    }
+#if E9K_ENABLE_AMIGA
     int amigaSelected = (selectedTarget == target_amiga()) ? 1 : 0;
-    int neogeoSelected = (selectedTarget == target_neogeo()) ? 1 : 0;
-    int megadriveSelected = 0;
-#if E9K_ENABLE_MEGADRIVE
-    megadriveSelected = (selectedTarget == target_megadrive()) ? 1 : 0;
 #endif
-    if (!amigaSelected && !neogeoSelected && !megadriveSelected) {
-        amigaSelected = 1;
-    }
+#if E9K_ENABLE_NEOGEO
+    int neogeoSelected = (selectedTarget == target_neogeo()) ? 1 : 0;
+#endif
+#if E9K_ENABLE_MEGADRIVE
+    int megadriveSelected = (selectedTarget == target_megadrive()) ? 1 : 0;
+#endif
 
     settings_coresystem_state_t *coreState = (settings_coresystem_state_t *)alloc_calloc(1, sizeof(*coreState));
+#if E9K_ENABLE_NEOGEO
     e9ui_component_t *cbNeogeo = e9ui_checkbox_make("NEO GEO", neogeoSelected, settings_coreSystemNeoGeoChanged, coreState);
+#else
+    e9ui_component_t *cbNeogeo = NULL;
+#endif
+#if E9K_ENABLE_AMIGA
     e9ui_component_t *cbAmiga = e9ui_checkbox_make("AMIGA", amigaSelected, settings_coreSystemAmigaChanged, coreState);
+#else
+    e9ui_component_t *cbAmiga = NULL;
+#endif
     e9ui_component_t *cbMegaDrive = NULL;
 #if E9K_ENABLE_MEGADRIVE
     cbMegaDrive = e9ui_checkbox_make("MEGA DRIVE", megadriveSelected, settings_coreSystemMegaDriveChanged, coreState);
@@ -1279,33 +1357,11 @@ settings_buildModalBody(e9ui_context_t *ctx)
     e9ui_component_t *rowHeader = NULL;
     int rowHeaderBadgeWPx = e9ui_scale_px(ctx, 139);
     int rowHeaderGapPx = e9ui_scale_px(ctx, 12);
-    if (badge && rowCoreCenter) {
-        rowHeader = e9ui_hstack_make();
-        if (rowHeader) {
-            e9ui_hstack_addFixed(rowHeader, badge, rowHeaderBadgeWPx);
-            e9ui_hstack_addFixed(rowHeader, e9ui_spacer_make(rowHeaderGapPx), rowHeaderGapPx);
-            e9ui_hstack_addFlex(rowHeader, rowCoreCenter);
-        } else {
-            e9ui_childDestroy(badge, ctx);
-            badge = NULL;
-        }
-    }
-
-    int funSelected = (e9ui->transition.mode != e9k_transition_none);
-    e9ui_component_t *cbFun = e9ui_checkbox_make("FUN", funSelected, settings_funChanged, NULL);
-    e9ui_component_t *cbCrt = e9ui_checkbox_make("CRT",
-                                                 debugger.settingsEdit.crtEnabled,
-                                                 settings_crtChanged,
-                                                 &debugger.settingsEdit.crtEnabled);
-    e9ui_component_t *cbRecord = e9ui_checkbox_make("RECORD",
-                                                    debugger.settingsEdit.recordEnabled,
-                                                    settings_recordChanged,
-                                                    &debugger.settingsEdit.recordEnabled);
-    e9ui_component_t *cbLogos = e9ui_checkbox_make("LOGOS",
-                                                   debugger.settingsEdit.logosEnabled,
-                                                   settings_logosChanged,
-                                                   &debugger.settingsEdit.logosEnabled);
-    e9ui_component_t *btnHotkeys = e9ui_button_make("Hotkeys/Controllers", settings_uiDebuggerHotkeys, NULL);
+    rowHeader = e9ui_hstack_make();
+    e9ui_hstack_addFixed(rowHeader, badge, rowHeaderBadgeWPx);
+    e9ui_hstack_addFixed(rowHeader, e9ui_spacer_make(rowHeaderGapPx), rowHeaderGapPx);
+    e9ui_hstack_addFlex(rowHeader, rowCoreCenter);
+    e9ui_component_t *btnHotkeys = e9ui_button_make("Debugger Options", settings_uiDebuggerHotkeys, NULL);
     e9ui_component_t *rowGlobal = e9ui_hstack_make();
     e9ui_component_t *rowGlobalCenter = rowGlobal ? e9ui_center_make(rowGlobal) : NULL;
 
@@ -1317,6 +1373,11 @@ settings_buildModalBody(e9ui_context_t *ctx)
         coreState->allowRebuild = 0;
         settings_coreSystemSync(coreState, selectedTarget ? selectedTarget : target, ctx);
         coreState->allowRebuild = 1;
+    }
+    target_settings_modal_t targetModal = {0};
+    int targetModalFooterInGlobalRow = 0;
+    if (selectedTarget && selectedTarget->settingsBuildModal) {
+        selectedTarget->settingsBuildModal(ctx, &targetModal);
     }
 
     if (rowCore && ctx) {
@@ -1355,6 +1416,8 @@ settings_buildModalBody(e9ui_context_t *ctx)
             if (leftW > 0) {
                 e9ui_hstack_addFlex(rowCore, e9ui_spacer_make(1));
             }
+        }
+        if (btnCoreOptionsTop && wCoreOptions > 0) {
             e9ui_hstack_addFixed(rowCore, btnCoreOptionsTop, wCoreOptions);
         }
         if (rowCoreCenter) {
@@ -1369,76 +1432,32 @@ settings_buildModalBody(e9ui_context_t *ctx)
         }
     }
     if (rowGlobal && ctx) {
-        int gap = e9ui_scale_px(ctx, 8);
-        int wFun = cbFun ? settings_checkboxMeasureWidth(cbFun, ctx) : 0;
-        int wCrt = cbCrt ? settings_checkboxMeasureWidth(cbCrt, ctx) : 0;
-        int wRecord = cbRecord ? settings_checkboxMeasureWidth(cbRecord, ctx) : 0;
-        int wLogos = cbLogos ? settings_checkboxMeasureWidth(cbLogos, ctx) : 0;
+        int gap = e9ui_scale_px(ctx, 40);
         int wHotkeys = 0;
         int hHotkeys = 0;
+        int hasGlobalContent = 0;
         if (btnHotkeys) {
             e9ui_button_measure(btnHotkeys, ctx, &wHotkeys, &hHotkeys);
             (void)hHotkeys;
         }
-        int groupW = 0;
-        if (cbFun) {
-            groupW += wFun;
-        }
-        if (cbCrt) {
-            if (groupW > 0) {
-                groupW += gap;
+        if (selectedTarget == target_neogeo() && targetModal.footerWarning) {
+            int neogeoOptionsW = 0;
+            int neogeoOptionsH = 0;
+            e9ui_flow_measure(targetModal.footerWarning, ctx, &neogeoOptionsW, &neogeoOptionsH);
+            (void)neogeoOptionsH;
+            if (neogeoOptionsW > 0) {
+                hasGlobalContent = 1;
+                targetModalFooterInGlobalRow = 1;
+                e9ui_hstack_addFlex(rowGlobal, e9ui_spacer_make(1));
+                e9ui_hstack_addFixed(rowGlobal, targetModal.footerWarning, neogeoOptionsW);
             }
-            groupW += wCrt;
-        }
-        if (cbRecord) {
-            if (groupW > 0) {
-                groupW += gap;
-            }
-            groupW += wRecord;
-        }
-        if (cbLogos) {
-            if (groupW > 0) {
-                groupW += gap;
-            }
-            groupW += wLogos;
         }
         if (btnHotkeys && wHotkeys > 0) {
-            if (groupW > 0) {
-                groupW += gap;
+            if (!hasGlobalContent) {
+                e9ui_hstack_addFlex(rowGlobal, e9ui_spacer_make(1));
+                hasGlobalContent = 1;
             }
-            groupW += wHotkeys;
-        }
-        if (groupW > 0) {
-            e9ui_hstack_addFlex(rowGlobal, e9ui_spacer_make(1));
-        }
-        int addedAny = 0;
-        if (cbFun) {
-            e9ui_hstack_addFixed(rowGlobal, cbFun, wFun);
-            addedAny = 1;
-        }
-        if (cbCrt) {
-            if (addedAny) {
-                e9ui_hstack_addFixed(rowGlobal, e9ui_spacer_make(gap), gap);
-            }
-            e9ui_hstack_addFixed(rowGlobal, cbCrt, wCrt);
-            addedAny = 1;
-        }
-        if (cbRecord) {
-            if (addedAny) {
-                e9ui_hstack_addFixed(rowGlobal, e9ui_spacer_make(gap), gap);
-            }
-            e9ui_hstack_addFixed(rowGlobal, cbRecord, wRecord);
-            addedAny = 1;
-        }
-        if (cbLogos) {
-            if (addedAny) {
-                e9ui_hstack_addFixed(rowGlobal, e9ui_spacer_make(gap), gap);
-            }
-            e9ui_hstack_addFixed(rowGlobal, cbLogos, wLogos);
-            addedAny = 1;
-        }
-        if (btnHotkeys && wHotkeys > 0) {
-            if (addedAny) {
+            if (targetModalFooterInGlobalRow) {
                 e9ui_hstack_addFixed(rowGlobal, e9ui_spacer_make(gap), gap);
             }
             e9ui_hstack_addFixed(rowGlobal, btnHotkeys, wHotkeys);
@@ -1446,11 +1465,6 @@ settings_buildModalBody(e9ui_context_t *ctx)
         if (rowGlobalCenter) {
             e9ui_center_setSize(rowGlobalCenter, e9ui_unscale_px(ctx, formWidth), 0);
         }
-    }
-
-    target_settings_modal_t targetModal = {0};
-    if (selectedTarget && selectedTarget->settingsBuildModal) {
-        selectedTarget->settingsBuildModal(ctx, &targetModal);
     }
 
     e9ui_component_t *stack = e9ui_stack_makeVertical();
@@ -1471,21 +1485,24 @@ settings_buildModalBody(e9ui_context_t *ctx)
         e9ui_stack_addFixed(stack, e9ui_vspacer_make(12));
         e9ui_stack_addFixed(stack, rowGlobalCenter);
     }
-
     int selectedBodyHeight = settings_componentPreferredHeight(targetModal.body, ctx, contentWidth);
     int maxBodyHeight = selectedBodyHeight;
+#if E9K_ENABLE_AMIGA
     {
         int h = settings_measureTargetBodyHeight(target_amiga(), ctx, contentWidth);
         if (h > maxBodyHeight) {
             maxBodyHeight = h;
         }
     }
+#endif
+#if E9K_ENABLE_NEOGEO
     {
         int h = settings_measureTargetBodyHeight(target_neogeo(), ctx, contentWidth);
         if (h > maxBodyHeight) {
             maxBodyHeight = h;
         }
     }
+#endif
 #if E9K_ENABLE_MEGADRIVE
     {
         int h = settings_measureTargetBodyHeight(target_megadrive(), ctx, contentWidth);
@@ -1549,7 +1566,7 @@ settings_buildModalBody(e9ui_context_t *ctx)
         e9ui_flow_add(buttons, btnCancel);
     }
     e9ui_component_t *footer = e9ui_stack_makeVertical();
-    if (targetModal.footerWarning) {
+    if (targetModal.footerWarning && !targetModalFooterInGlobalRow) {
         e9ui_stack_addFixed(footer, targetModal.footerWarning);
     }
     if (buttons) {

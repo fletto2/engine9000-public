@@ -6,8 +6,6 @@
  * See COPYING for license details
  */
 
-#include "addr2line.h"
-
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -20,6 +18,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "addr2line.h"
 #include "debugger.h"
 #include "base_map.h"
 #include "file.h"
@@ -487,9 +486,6 @@ addr2line_resolveDetailed(uint64_t addr, char *out_file, size_t file_cap, int *o
                     got_addr = (gotIndex == queryIndex && gotAddr == queryAddr) ? 1 : 0;
                 } else {
                     got_addr = (gotAddr == queryAddr) ? 1 : 0;
-                }
-                if (!got_addr) {
-                    got_addr = 1;
                 }
             } else if (addr2line_parseAddressLine(line, &gotAddr, &gotIndex, &hasIndex) &&
                        !hasIndex &&

@@ -47,8 +47,9 @@ static inline uint32_t read32le(uint8_t *ptr, uint32_t addr) {
 }
 
 int geo_neo_load(void *data, size_t size) {
+    (void)size;
     uint8_t *neodata = (uint8_t*)data; // Assign internal pointer to NEO data
-    if (size) { }
+    flags = 0; // Reset flags
 
     // Bytes 0-3 should be 'N' 'E' 'O' 1
     if (neodata[0] != 'N' || neodata[1] != 'E' ||
@@ -187,6 +188,11 @@ int geo_neo_load(void *data, size_t size) {
             break;
         }
         case 0x236: { // The Irritating Maze
+            if (geo_get_system() == SYSTEM_AES) {
+                geo_log(GEO_LOG_ERR, "This title is incompatible with AES"
+                    " systems\n");
+                return 0;
+            }
             flags |= GEO_DB_IRRMAZE;
             break;
         }
@@ -239,6 +245,9 @@ int geo_neo_load(void *data, size_t size) {
             }
             break;
         }
+        case 0x261: { // Sengoku 3
+            break;
+        }
         case 0x257: { // KOF 2000
             geo_lspc_set_fix_banksw(FIX_BANKSW_TILE);
 
@@ -259,6 +268,11 @@ int geo_neo_load(void *data, size_t size) {
                     " Geo MVS and Universe BIOS only\n");
                 return 0;
             }
+            break;
+        }
+        case 0x264: { // Rage of the Dragons
+            geo_log(GEO_LOG_INF, "NGH264 board profile selected; .neo input must contain decrypted CMC50/PCM2 data\n");
+            geo_lspc_set_fix_banksw(FIX_BANKSW_TILE);
             break;
         }
         case 0x266: { // Matrimelee
@@ -311,9 +325,11 @@ int geo_neo_load(void *data, size_t size) {
                 geo_m68k_board_set(BOARD_PVC);
 
             /* This game will trigger watchdog early in some cases before the
-               bonus level.
+               bonus level. Hardware verification or an audit of 68K CPU timing
+               will be required to understand if this is an emulation or game
+               bug.
             */
-            geo_set_watchdog_frames(9);
+            geo_set_watchdog_tolerance(10000); // Allow 10K more cycles
             break;
         }
         case 0x271: { // KOF 2003

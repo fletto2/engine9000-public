@@ -8,19 +8,25 @@ void
 e9k_checkpoint_reset(void);
 
 void
+e9k_checkpoint_resetHard(void);
+
+void
 e9k_checkpoint_setEnabled(int enabled);
 
 int
 e9k_checkpoint_isEnabled(void);
 
 void
-e9k_checkpoint_state_save(uint8_t *st);
+e9k_checkpoint_stateSave(uint8_t *st);
 
 void
-e9k_checkpoint_state_load(uint8_t *st);
+e9k_checkpoint_stateLoad(uint8_t *st);
 
 void
-e9k_checkpoint_write(uint8_t index);
+e9k_checkpoint_write(uint8_t index, uint32_t scanline, uint32_t scanlineCount);
+
+void
+e9k_checkpoint_setName(uint8_t index, const char *name);
 
 void
 e9k_checkpoint_tick(uint64_t ticks);

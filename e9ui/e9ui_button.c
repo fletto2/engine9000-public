@@ -7,6 +7,7 @@
  */
 
 #include "e9ui.h"
+
 #include <string.h>
 
 typedef struct e9ui_button_state {
@@ -454,7 +455,7 @@ e9ui_button_render(e9ui_component_t *self, e9ui_context_t *ctx)
     };
     int radius = theme->borderRadius > 0 ? theme->borderRadius : 6;
     int drew_cached = 0;
-    if (allow_cache && SDL_RenderTargetSupported(ctx->renderer)) {
+    if (allow_cache && e9ui_context_supportsTargetTexture(ctx)) {
         SDL_Rect cache_rect = { 0, 0, r.w, r.h };
         uint64_t key = e9ui_button_backgroundKey(&cache_rect, fillColor, hi, sh, ed, radius);
         if (!st->bgCache || st->bgCacheW != r.w || st->bgCacheH != r.h || st->bgCacheKey != key) {
@@ -504,8 +505,8 @@ e9ui_button_render(e9ui_component_t *self, e9ui_context_t *ctx)
     int iconMargin = 0;
     if (st->icon) {
         int lh = 0;
-        if (theme->font ? theme->font : ctx->font) {
-            TTF_Font *tfm = theme->font ? theme->font : ctx->font;
+        TTF_Font *tfm = e9ui_button_resolveFont(st, ctx);
+        if (tfm) {
             lh = TTF_FontHeight(tfm);
         }
         if (lh <= 0) {

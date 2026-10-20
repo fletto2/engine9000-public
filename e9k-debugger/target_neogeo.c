@@ -1,9 +1,20 @@
+/*
+ * COPYRIGHT © 2026 Enable Software Pty Ltd - All Rights Reserved
+ *
+ * https://github.com/alpine9000/engine9000-public
+ *
+ * See COPYING for license details
+ */
+
 #include "debugger.h"
 #include "target.h"
 #include "emu_geo.h"
 #include "rom_config.h"
 #include "debugger_input_bindings.h"
+#include "neogeo_audio_vis.h"
+#if E9K_ENABLE_AMIGA
 #include "amiga_uae_options.h"
+#endif
 #include "neogeo_core_options.h"
 #include "core_options.h"
 #include "libretro_host.h"
@@ -12,9 +23,88 @@
 #include "alloc.h"
 #include "file.h"
 #include "strutil.h"
+#include <strings.h>
+
+#define TARGET_NEOGEO_Z80_PROCESSOR_ID 1u
+
+typedef struct target_neogeo_systemtype_state {
+    e9ui_component_t *aesCheckbox;
+    e9ui_component_t *mvsCheckbox;
+    e9ui_component_t *uniCheckbox;
+    e9ui_component_t *cdCheckbox;
+    char *systemType;
+    char *cdSystemType;
+    int updating;
+} target_neogeo_systemtype_state_t;
+
+typedef struct target_neogeo_romfolder_cache {
+    char folder[PATH_MAX];
+    char saveDir[PATH_MAX];
+    char systemDir[PATH_MAX];
+    char neoPath[PATH_MAX];
+    int valid;
+} target_neogeo_romfolder_cache_t;
+
+static target_neogeo_romfolder_cache_t target_neogeo_romFolderCache;
+static char target_neogeo_activeRomMemorySpace[16];
+static char target_neogeo_activeRomMemoryAddress[32];
+static char target_neogeo_activeRomMemorySearch[128];
 
 static const char *
 target_neogeo_defaultCorePath(void);
+
+static const char *
+target_neogeo_memorySpaceOptionKey(void)
+{
+    return "e9k_debugger_neogeo_memory_space";
+}
+
+static const char *
+target_neogeo_memoryAddressOptionKey(void)
+{
+    return "e9k_debugger_neogeo_memory_address";
+}
+
+static const char *
+target_neogeo_memorySearchOptionKey(void)
+{
+    return "e9k_debugger_neogeo_memory_search";
+}
+
+static int
+target_neogeo_romPathIsZip(const char *path)
+{
+    const char *dot = strrchr(path, '.');
+    return dot && strcasecmp(dot + 1, "zip") == 0;
+}
+
+static int
+target_neogeo_romFolderCacheMatches(const char *folder, const char *saveDir, const char *systemDir)
+{
+    return target_neogeo_romFolderCache.valid &&
+           strcmp(target_neogeo_romFolderCache.folder, folder ? folder : "") == 0 &&
+           strcmp(target_neogeo_romFolderCache.saveDir, saveDir ? saveDir : "") == 0 &&
+           strcmp(target_neogeo_romFolderCache.systemDir, systemDir ? systemDir : "") == 0 &&
+           target_neogeo_romFolderCache.neoPath[0] != '\0';
+}
+
+static void
+target_neogeo_romFolderCacheStore(const char *folder, const char *saveDir, const char *systemDir, const char *neoPath)
+{
+    strutil_strlcpy(target_neogeo_romFolderCache.folder,
+                    sizeof(target_neogeo_romFolderCache.folder),
+                    folder ? folder : "");
+    strutil_strlcpy(target_neogeo_romFolderCache.saveDir,
+                    sizeof(target_neogeo_romFolderCache.saveDir),
+                    saveDir ? saveDir : "");
+    strutil_strlcpy(target_neogeo_romFolderCache.systemDir,
+                    sizeof(target_neogeo_romFolderCache.systemDir),
+                    systemDir ? systemDir : "");
+    strutil_strlcpy(target_neogeo_romFolderCache.neoPath,
+                    sizeof(target_neogeo_romFolderCache.neoPath),
+                    neoPath ? neoPath : "");
+    target_neogeo_romFolderCache.valid = target_neogeo_romFolderCache.neoPath[0] != '\0';
+}
 
 static void
 target_neogeo_setConfigDefaults(e9k_system_config_t *config)
@@ -30,16 +120,9 @@ target_neogeo_setConfigDefaults(e9k_system_config_t *config)
     config->neogeo.skipBiosLogo = 0;
     strncpy(config->neogeo.systemType, "aes", sizeof(config->neogeo.systemType) - 1);
     config->neogeo.systemType[sizeof(config->neogeo.systemType) - 1] = '\0';
+    config->neogeo.cdSystemType[0] = '\0';
     config->neogeo.libretro.exePath[0] = '\0';
 }
-
-typedef struct target_neogeo_systemtype_state {
-    e9ui_component_t *aesCheckbox;
-    e9ui_component_t *mvsCheckbox;
-    char *systemType;
-    int updating;
-} target_neogeo_systemtype_state_t;
-
 
 static void
 target_neogeo_settingsClearOptions(void)
@@ -57,11 +140,19 @@ target_neogeo_systemTypeSync(target_neogeo_systemtype_state_t *st, const char *v
     settings_config_setValue(st->systemType, 16, value);
     int aesSelected = (strcmp(st->systemType, "aes") == 0);
     int mvsSelected = (strcmp(st->systemType, "mvs") == 0);
+    int uniSelected = (strcmp(st->systemType, "uni") == 0);
+    int cdSelected = (st->cdSystemType && st->cdSystemType[0]);
     if (st->aesCheckbox) {
-        e9ui_checkbox_setSelected(st->aesCheckbox, aesSelected, ctx);
+        e9ui_checkbox_setSelected(st->aesCheckbox, cdSelected ? 0 : aesSelected, ctx);
     }
     if (st->mvsCheckbox) {
-        e9ui_checkbox_setSelected(st->mvsCheckbox, mvsSelected, ctx);
+        e9ui_checkbox_setSelected(st->mvsCheckbox, cdSelected ? 0 : mvsSelected, ctx);
+    }
+    if (st->uniCheckbox) {
+        e9ui_checkbox_setSelected(st->uniCheckbox, cdSelected ? 0 : uniSelected, ctx);
+    }
+    if (st->cdCheckbox) {
+        e9ui_checkbox_setSelected(st->cdCheckbox, cdSelected, ctx);
     }
     st->updating = 0;
     settings_updateSaveLabel();
@@ -76,9 +167,12 @@ target_neogeo_systemTypeAesChanged(e9ui_component_t *self, e9ui_context_t *ctx, 
         return;
     }
     if (selected) {
+        settings_config_setValue(st->cdSystemType, 16, "");
         target_neogeo_systemTypeSync(st, "aes", ctx);
     } else if (st->mvsCheckbox && e9ui_checkbox_isSelected(st->mvsCheckbox)) {
         target_neogeo_systemTypeSync(st, "mvs", ctx);
+    } else if (st->uniCheckbox && e9ui_checkbox_isSelected(st->uniCheckbox)) {
+        target_neogeo_systemTypeSync(st, "uni", ctx);
     } else {
         target_neogeo_systemTypeSync(st, "", ctx);
     }
@@ -93,11 +187,51 @@ target_neogeo_systemTypeMvsChanged(e9ui_component_t *self, e9ui_context_t *ctx, 
         return;
     }
     if (selected) {
+        settings_config_setValue(st->cdSystemType, 16, "");
+        target_neogeo_systemTypeSync(st, "mvs", ctx);
+    } else if (st->aesCheckbox && e9ui_checkbox_isSelected(st->aesCheckbox)) {
+        target_neogeo_systemTypeSync(st, "aes", ctx);
+    } else if (st->uniCheckbox && e9ui_checkbox_isSelected(st->uniCheckbox)) {
+        target_neogeo_systemTypeSync(st, "uni", ctx);
+    } else {
+        target_neogeo_systemTypeSync(st, "", ctx);
+    }
+}
+
+static void
+target_neogeo_systemTypeUniChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    target_neogeo_systemtype_state_t *st = (target_neogeo_systemtype_state_t *)user;
+    if (!st || st->updating) {
+        return;
+    }
+    if (selected) {
+        settings_config_setValue(st->cdSystemType, 16, "");
+        target_neogeo_systemTypeSync(st, "uni", ctx);
+    } else if (st->mvsCheckbox && e9ui_checkbox_isSelected(st->mvsCheckbox)) {
         target_neogeo_systemTypeSync(st, "mvs", ctx);
     } else if (st->aesCheckbox && e9ui_checkbox_isSelected(st->aesCheckbox)) {
         target_neogeo_systemTypeSync(st, "aes", ctx);
     } else {
         target_neogeo_systemTypeSync(st, "", ctx);
+    }
+}
+
+static void
+target_neogeo_systemTypeCdChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    target_neogeo_systemtype_state_t *st = (target_neogeo_systemtype_state_t *)user;
+    if (!st || st->updating || !st->cdSystemType) {
+        return;
+    }
+    if (selected) {
+        settings_config_setValue(st->cdSystemType, 16, "cdz");
+        target_neogeo_systemTypeSync(st, "", ctx);
+    } else {
+        settings_config_setValue(st->cdSystemType, 16, "");
+        target_neogeo_systemTypeSync(st, st->systemType && st->systemType[0] ? st->systemType : "aes", ctx);
     }
 }
 
@@ -114,7 +248,6 @@ target_neogeo_skipBiosChanged(e9ui_component_t *self, e9ui_context_t *ctx, int s
     settings_updateSaveLabel();
 }
 
-
 static void
 target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *out)
 {
@@ -124,8 +257,8 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
     out->body = NULL;
     out->footerWarning = NULL;
 
-    const char *romExts[] = { "*.neo" };
-    const char *elfExts[] = { "*.elf" };
+    const char *romExts[] = { "*.neo", "*.zip", "*.cue", "*.chd" };
+    const char *elfExts[] = { "*.elf", "*.txt" };
 
     settings_romselect_state_t *romState = (settings_romselect_state_t *)alloc_calloc(1, sizeof(*romState));
     if (romState) {
@@ -133,9 +266,9 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
         romState->romFolder = debugger.settingsEdit.neogeo.romFolder;
     }
 
-    e9ui_component_t *fsRom = e9ui_fileSelect_make("ROM", 120, 600, "...", romExts, 1, E9UI_FILESELECT_FILE);
+    e9ui_component_t *fsRom = e9ui_fileSelect_make("ROM", 120, 600, "...", romExts, (int)countof(romExts), E9UI_FILESELECT_FILE);
     e9ui_component_t *fsRomFolder = e9ui_fileSelect_make("ROM FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
-    e9ui_component_t *fsElf = e9ui_fileSelect_make("ELF", 120, 600, "...", elfExts, 1, E9UI_FILESELECT_FILE);
+    e9ui_component_t *fsElf = e9ui_fileSelect_make("ELF", 120, 600, "...", elfExts, (int)countof(elfExts), E9UI_FILESELECT_FILE);
     e9ui_component_t *fsBios = e9ui_fileSelect_make("BIOS FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsSaves = e9ui_fileSelect_make("SAVES FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsSource = e9ui_fileSelect_make("SOURCE FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
@@ -205,20 +338,24 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
         settings_romSelectRefreshRecents(romState);
     }
 
-    // System row: [MVS] [AES] [SKIP BIOS LOGO]
+    // System row: [MVS] [AES] [UNIBIOS] [CD] [SKIP BIOS LOGO]
     e9ui_component_t *rowSystem = e9ui_flow_make();
-    e9ui_component_t *rowSystemCenter = NULL;
     if (rowSystem) {
-        e9ui_flow_setWrap(rowSystem, 1);
+        e9ui_flow_setWrap(rowSystem, 0);
         e9ui_flow_setSpacing(rowSystem, 12);
         target_neogeo_systemtype_state_t *sys = (target_neogeo_systemtype_state_t *)alloc_calloc(1, sizeof(*sys));
         if (sys) {
             sys->systemType = debugger.settingsEdit.neogeo.systemType;
+            sys->cdSystemType = debugger.settingsEdit.neogeo.cdSystemType;
         }
-        int aesSelected = (strcmp(debugger.settingsEdit.neogeo.systemType, "aes") == 0);
-        int mvsSelected = (strcmp(debugger.settingsEdit.neogeo.systemType, "mvs") == 0);
+        int cdSelected = debugger.settingsEdit.neogeo.cdSystemType[0] ? 1 : 0;
+        int aesSelected = !cdSelected && (strcmp(debugger.settingsEdit.neogeo.systemType, "aes") == 0);
+        int mvsSelected = !cdSelected && (strcmp(debugger.settingsEdit.neogeo.systemType, "mvs") == 0);
+        int uniSelected = !cdSelected && (strcmp(debugger.settingsEdit.neogeo.systemType, "uni") == 0);
         e9ui_component_t *cbMvs = e9ui_checkbox_make("MVS", mvsSelected, target_neogeo_systemTypeMvsChanged, sys);
         e9ui_component_t *cbAes = e9ui_checkbox_make("AES", aesSelected, target_neogeo_systemTypeAesChanged, sys);
+        e9ui_component_t *cbUni = e9ui_checkbox_make("UNIBIOS", uniSelected, target_neogeo_systemTypeUniChanged, sys);
+        e9ui_component_t *cbCd = e9ui_checkbox_make("CD", cdSelected, target_neogeo_systemTypeCdChanged, sys);
         e9ui_component_t *cbSkip = e9ui_checkbox_make("SKIP BIOS LOGO",
                                                       debugger.settingsEdit.neogeo.skipBiosLogo,
                                                       target_neogeo_skipBiosChanged,
@@ -226,6 +363,8 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
         if (sys) {
             sys->aesCheckbox = cbAes;
             sys->mvsCheckbox = cbMvs;
+            sys->uniCheckbox = cbUni;
+            sys->cdCheckbox = cbCd;
         }
         if (cbMvs) {
             e9ui_flow_add(rowSystem, cbMvs);
@@ -233,18 +372,14 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
         if (cbAes) {
             e9ui_flow_add(rowSystem, cbAes);
         }
+        if (cbUni) {
+            e9ui_flow_add(rowSystem, cbUni);
+        }
+        if (cbCd) {
+            e9ui_flow_add(rowSystem, cbCd);
+        }
         if (cbSkip) {
             e9ui_flow_add(rowSystem, cbSkip);
-        }
-        rowSystemCenter = e9ui_center_make(rowSystem);
-        if (rowSystemCenter) {
-            int rowW = 0;
-            int rowH = 0;
-            e9ui_flow_measure(rowSystem, ctx, &rowW, &rowH);
-            (void)rowH;
-            if (rowW > 0) {
-                e9ui_center_setSize(rowSystemCenter, e9ui_unscale_px(ctx, rowW), 0);
-            }
         }
     }
 
@@ -304,15 +439,9 @@ target_neogeo_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *o
             e9ui_stack_addFixed(body, ltAudio);
             first = 0;
         }
-        if (rowSystemCenter) {
-            if (!first) {
-                e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
-            }
-            e9ui_stack_addFixed(body, rowSystemCenter);
-            first = 0;
-        }
     }
     out->body = body;
+    out->footerWarning = rowSystem;
 }
 
 static void
@@ -397,10 +526,11 @@ target_negeo_restartNeededForNeogeo(const e9k_neogeo_config_t *before, const e9k
     int savesChanged = strcmp(before->libretro.saveDir, after->libretro.saveDir) != 0;
     int sourceChanged = strcmp(before->libretro.sourceDir, after->libretro.sourceDir) != 0;
     int sysChanged = strcmp(before->systemType, after->systemType) != 0;
+    int cdSysChanged = strcmp(before->cdSystemType, after->cdSystemType) != 0;
     int audioBefore = settings_audioBufferNormalized(before->libretro.audioBufferMs);
     int audioAfter = settings_audioBufferNormalized(after->libretro.audioBufferMs);
     int audioChanged = audioBefore != audioAfter;
-    return romChanged || elfChanged || toolchainChanged || biosChanged || savesChanged || sourceChanged || sysChanged || audioChanged;
+    return romChanged || elfChanged || toolchainChanged || biosChanged || savesChanged || sourceChanged || sysChanged || cdSysChanged || audioChanged;
 }
 
 
@@ -443,37 +573,26 @@ target_neogeo_effectiveRomPath(const e9k_neogeo_config_t *cfg, char *out, size_t
         return 0;
     }
     if (cfg->libretro.romPath[0]) {
-        snprintf(out, cap, "%s", cfg->libretro.romPath);
-        out[cap - 1] = '\0';
+        if (target_neogeo_romPathIsZip(cfg->libretro.romPath)) {
+            return romset_buildNeoOutputPath(cfg->libretro.romPath,
+                                             1,
+                                             cfg->libretro.saveDir,
+                                             cfg->libretro.systemDir,
+                                             out,
+                                             cap);
+        }
+        strutil_strlcpy(out, cap, cfg->libretro.romPath);
         return 1;
     }
     if (!cfg->romFolder[0]) {
         return 0;
     }
-    const char *base = cfg->libretro.saveDir[0] ? cfg->libretro.saveDir : cfg->libretro.systemDir;
-    if (!base || !*base) {
-        return 0;
-    }
-    char sep = '/';
-    if (strchr(base, '\\')) {
-        sep = '\\';
-    }
-    int needsSep = 1;
-    size_t len = strlen(base);
-    if (len > 0 && (base[len - 1] == '/' || base[len - 1] == '\\')) {
-        needsSep = 0;
-    }
-    int written = 0;
-    if (needsSep) {
-        written = snprintf(out, cap, "%s%c%s", base, sep, "e9k-romfolder.neo");
-    } else {
-        written = snprintf(out, cap, "%s%s", base, "e9k-romfolder.neo");
-    }
-    if (written < 0 || (size_t)written >= cap) {
-        out[cap - 1] = '\0';
-        return 0;
-    }
-    return 1;
+    return romset_buildNeoOutputPath(cfg->romFolder,
+                                     0,
+                                     cfg->libretro.saveDir,
+                                     cfg->libretro.systemDir,
+                                     out,
+                                     cap);
 }
 
 
@@ -594,8 +713,9 @@ target_neogeo_settingsFolderChanged(void)
 static void
 target_neogeo_settingsCoreChanged(void)
 {
-    //TODO ??
+#if E9K_ENABLE_AMIGA
     amiga_uaeClearPuaeOptions();
+#endif
     char romPath[PATH_MAX];
     if (target_neogeo_effectiveRomPath(&debugger.settingsEdit.neogeo, romPath, sizeof(romPath))) {
         neogeo_coreOptionsLoadFromFile(debugger.settingsEdit.neogeo.libretro.saveDir, romPath);
@@ -647,6 +767,9 @@ target_neogeo_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_stat
       continue;
     }
     if (strcmp(key, "geolith_system_type") == 0) {
+      continue;
+    }
+    if (strcmp(key, "geolith_cd_system_type") == 0) {
       continue;
     }
     if (debugger_input_bindings_isOptionKey(key)) {
@@ -725,15 +848,30 @@ target_neogeo_getLibretroCliConfig(void)
   return &debugger.cliConfig.neogeo.libretro;
 }
 
+static void
+target_neogeo_onCoreStarted(void)
+{
+}
+
 
 static void
 target_neogeo_onVblank(void)
 {
   e9k_debug_sprite_state_t spriteState;
-  if (libretro_host_debugGetSpriteState(&spriteState) && spriteState.vram && spriteState.vram_words) {
+  if (libretro_host_neogeo_getSpriteState(&spriteState) && spriteState.vram && spriteState.vram_words) {
     emu_geo_setSpriteState(&spriteState, 1);
   } else {
     emu_geo_setSpriteState(NULL, 0);
+  }
+  if (neogeo_audio_vis_isOpen()) {
+    e9k_debug_audio_frame_t audioFrame;
+    if (libretro_host_neogeo_getAudioFrame(&audioFrame)) {
+      emu_geo_setAudioFrame(&audioFrame, 1);
+    } else {
+      emu_geo_setAudioFrame(NULL, 0);
+    }
+  } else {
+    emu_geo_setAudioFrame(NULL, 0);
   }
 }
 
@@ -750,13 +888,37 @@ target_neogeo_libretroSelectConfig(void)
     debugger_copyPath(debugger.libretro.romPath, sizeof(debugger.libretro.romPath), debugger.config.neogeo.libretro.romPath);
     debugger_copyPath(debugger.libretro.systemDir, sizeof(debugger.libretro.systemDir), debugger.config.neogeo.libretro.systemDir);
     debugger_copyPath(debugger.libretro.saveDir, sizeof(debugger.libretro.saveDir), debugger.config.neogeo.libretro.saveDir);
-    if (debugger.config.neogeo.romFolder[0]) {
-        char neo_path[PATH_MAX];
-        if (romset_buildNeoFromFolder(debugger.config.neogeo.romFolder, neo_path, sizeof(neo_path))) {
-            debugger_copyPath(debugger.libretro.romPath, sizeof(debugger.libretro.romPath), neo_path);
+    const char *romInputPath = debugger.config.neogeo.romFolder[0] ? debugger.config.neogeo.romFolder : NULL;
+    int romInputIsZip = 0;
+    if (!romInputPath && target_neogeo_romPathIsZip(debugger.config.neogeo.libretro.romPath)) {
+        romInputPath = debugger.config.neogeo.libretro.romPath;
+        romInputIsZip = 1;
+    }
+    if (romInputPath) {
+        if (target_neogeo_romFolderCacheMatches(romInputPath,
+                                                debugger.config.neogeo.libretro.saveDir,
+                                                debugger.config.neogeo.libretro.systemDir)) {
+            debugger_copyPath(debugger.libretro.romPath,
+                              sizeof(debugger.libretro.romPath),
+                              target_neogeo_romFolderCache.neoPath);
         } else {
-            debugger.libretro.romPath[0] = '\0';
+            char neoPath[PATH_MAX];
+            int built = romInputIsZip ?
+                romset_buildNeoFromZip(romInputPath, neoPath, sizeof(neoPath)) :
+                romset_buildNeoFromFolder(romInputPath, neoPath, sizeof(neoPath));
+            if (built) {
+                target_neogeo_romFolderCacheStore(romInputPath,
+                                                  debugger.config.neogeo.libretro.saveDir,
+                                                  debugger.config.neogeo.libretro.systemDir,
+                                                  neoPath);
+                debugger_copyPath(debugger.libretro.romPath, sizeof(debugger.libretro.romPath), neoPath);
+            } else {
+                target_neogeo_romFolderCache.valid = 0;
+                debugger.libretro.romPath[0] = '\0';
+            }
         }
+    } else {
+        target_neogeo_romFolderCache.valid = 0;
     }
 }
 
@@ -785,8 +947,9 @@ static void
 target_neogeo_validateAPI(void)
 {
   emu_geo_setSpriteState(NULL, 0);
-  libretro_host_unbindMegaDebugApis();
-  libretro_host_bindNeogeoDebugApis();
+  emu_geo_setAudioFrame(NULL, 0);
+  libretro_host_megadrive_unbindApis();
+  libretro_host_neogeo_bindApis();
 }
 
 
@@ -841,10 +1004,43 @@ static int
 target_neogeo_memoryGetLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
 {
     if (outMinAddr) {
-        *outMinAddr = 0x00100000u;
+        *outMinAddr = 0x00000000u;
     }
     if (outMaxAddr) {
-        *outMaxAddr = 0x001fffffu;
+        *outMaxAddr = 0x00ffffffu;
+    }
+    return 1;
+}
+
+static int
+target_neogeo_memoryGetSpaces(target_memory_space_t *outSpaces, size_t cap, size_t *outCount)
+{
+    if (outCount) {
+        *outCount = 2;
+    }
+    if (!outSpaces || cap == 0) {
+        return 1;
+    }
+
+    outSpaces[0] = (target_memory_space_t){
+        .value = "68k",
+        .label = "68K",
+        .minAddr = 0x00000000u,
+        .maxAddr = 0x00ffffffu,
+        .addressDigits = 6,
+        .processorMemory = 0,
+        .processorId = 0
+    };
+    if (cap > 1) {
+        outSpaces[1] = (target_memory_space_t){
+            .value = "z80",
+            .label = "Z80",
+            .minAddr = 0x0000u,
+            .maxAddr = 0xffffu,
+            .addressDigits = 4,
+            .processorMemory = 1,
+            .processorId = TARGET_NEOGEO_Z80_PROCESSOR_ID
+        };
     }
     return 1;
 }
@@ -863,6 +1059,28 @@ target_neogeo_memoryTrackGetRanges(target_memory_range_t *outRanges, size_t cap,
     return 1;
 }
 
+static int
+target_neogeo_registersReadExtra(const char **outTitle, e9k_debug_processor_reg_t *outRegs, size_t cap, size_t *outCount)
+{
+    size_t count = 0;
+
+    if (outTitle) {
+        *outTitle = "Z80";
+    }
+    if (outCount) {
+        *outCount = 0;
+    }
+    if (!outRegs || cap == 0) {
+        return 1;
+    }
+    if (!libretro_host_debugReadProcessorRegs(TARGET_NEOGEO_Z80_PROCESSOR_ID, outRegs, cap, &count)) {
+        return 0;
+    }
+    if (outCount) {
+        *outCount = count;
+    }
+    return 1;
+}
 
 static  int
 target_neogeo_controllerMapButton(SDL_GameControllerButton button, unsigned *outId)
@@ -885,6 +1103,84 @@ target_neogeo_controllerMapButton(SDL_GameControllerButton button, unsigned *out
   }
 
   return 0;
+}
+
+static size_t
+target_neogeo_romConfigCustomOptionCount(void)
+{
+    return 3;
+}
+
+static const char *
+target_neogeo_romConfigCustomOptionKeyAt(size_t index)
+{
+    if (index == 0) {
+        return target_neogeo_memorySpaceOptionKey();
+    }
+    if (index == 1) {
+        return target_neogeo_memoryAddressOptionKey();
+    }
+    if (index == 2) {
+        return target_neogeo_memorySearchOptionKey();
+    }
+    return NULL;
+}
+
+static const char *
+target_neogeo_romConfigGetActiveCustomOptionValue(const char *key)
+{
+    if (!key) {
+        return NULL;
+    }
+    if (strcmp(key, target_neogeo_memorySpaceOptionKey()) == 0) {
+        return target_neogeo_activeRomMemorySpace[0] ? target_neogeo_activeRomMemorySpace : NULL;
+    }
+    if (strcmp(key, target_neogeo_memoryAddressOptionKey()) == 0) {
+        return target_neogeo_activeRomMemoryAddress[0] ? target_neogeo_activeRomMemoryAddress : NULL;
+    }
+    if (strcmp(key, target_neogeo_memorySearchOptionKey()) == 0) {
+        return target_neogeo_activeRomMemorySearch[0] ? target_neogeo_activeRomMemorySearch : NULL;
+    }
+    return NULL;
+}
+
+static void
+target_neogeo_romConfigSetActiveCustomOptionValue(const char *key, const char *value)
+{
+    if (!key) {
+        return;
+    }
+    if (strcmp(key, target_neogeo_memorySpaceOptionKey()) == 0) {
+        strutil_strlcpy(target_neogeo_activeRomMemorySpace, sizeof(target_neogeo_activeRomMemorySpace), value ? value : "");
+        return;
+    }
+    if (strcmp(key, target_neogeo_memoryAddressOptionKey()) == 0) {
+        strutil_strlcpy(target_neogeo_activeRomMemoryAddress, sizeof(target_neogeo_activeRomMemoryAddress), value ? value : "");
+        return;
+    }
+    if (strcmp(key, target_neogeo_memorySearchOptionKey()) == 0) {
+        strutil_strlcpy(target_neogeo_activeRomMemorySearch, sizeof(target_neogeo_activeRomMemorySearch), value ? value : "");
+    }
+}
+
+static void
+target_neogeo_romConfigClearActiveCustomOptions(void)
+{
+    target_neogeo_activeRomMemorySpace[0] = '\0';
+    target_neogeo_activeRomMemoryAddress[0] = '\0';
+    target_neogeo_activeRomMemorySearch[0] = '\0';
+}
+
+static int
+target_neogeo_memoryPanelOptions(target_memory_panel_options_t *outOptions)
+{
+    if (!outOptions) {
+        return 0;
+    }
+    outOptions->spaceKey = target_neogeo_memorySpaceOptionKey();
+    outOptions->addressKey = target_neogeo_memoryAddressOptionKey();
+    outOptions->searchKey = target_neogeo_memorySearchOptionKey();
+    return 1;
 }
 
 static target_iface_t _target_neogeo = {
@@ -913,6 +1209,7 @@ static target_iface_t _target_neogeo = {
     .coreOptionsSaveClicked = target_neogeo_coreOptionsSaveClicked,
     .coreOptionGetValue = target_neogeo_coreOptionGetValue,
     .getLibretroCliConfig = target_neogeo_getLibretroCliConfig,
+    .onCoreStarted = target_neogeo_onCoreStarted,
     .onVblank = target_neogeo_onVblank,
     .coreIndex = TARGET_NEOGEO,
     .libretroSelectConfig = target_neogeo_libretroSelectConfig,
@@ -923,10 +1220,18 @@ static target_iface_t _target_neogeo = {
     .audioEnable = target_neogeo_audioEnable,
     .mousePort = -1,
     .memoryGetLimits = target_neogeo_memoryGetLimits,
+    .memoryGetSpaces = target_neogeo_memoryGetSpaces,
     .memoryTrackGetRanges = target_neogeo_memoryTrackGetRanges,
+    .memoryPanelOptions = target_neogeo_memoryPanelOptions,
+    .registersReadExtra = target_neogeo_registersReadExtra,
     .getBadgeTexture = target_neogeo_getBadgeTexture,
     .configControllerPorts = target_neogeo_configControllerPorts,
     .controllerMapButton = target_neogeo_controllerMapButton,
+    .romConfigCustomOptionCount = target_neogeo_romConfigCustomOptionCount,
+    .romConfigCustomOptionKeyAt = target_neogeo_romConfigCustomOptionKeyAt,
+    .romConfigGetActiveCustomOptionValue = target_neogeo_romConfigGetActiveCustomOptionValue,
+    .romConfigSetActiveCustomOptionValue = target_neogeo_romConfigSetActiveCustomOptionValue,
+    .romConfigClearActiveCustomOptions = target_neogeo_romConfigClearActiveCustomOptions,
 
 };
 

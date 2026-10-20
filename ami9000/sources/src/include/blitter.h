@@ -9,7 +9,13 @@
 #ifndef UAE_BLITTER_H
 #define UAE_BLITTER_H
 
+#include <stddef.h>
+#include <stdint.h>
 #include "uae/types.h"
+
+#ifndef E9K_HACK_MEMVIS
+#define E9K_HACK_MEMVIS 0
+#endif
 
 struct bltinfo {
     int blitzero;
@@ -54,13 +60,12 @@ extern void blitter_setDestinationWriteEnabled(int enabled);
 extern void blitter_setDebugWriteEnabled(int enabled);
 extern int blitter_getDebugWriteEnabled(void);
 extern void blitter_debugFrameTick(void);
+extern void blitter_debugRetireCollectedWrites(void);
 extern void blitter_debugRestoreWritesOlderThan(uint32_t frameAge);
 extern void blitter_setDebugVisDecayFrames(uint32_t frameCount);
 extern uint32_t blitter_getDebugVisDecayFrames(void);
 extern void blitter_setDebugVisMode(int mode);
 extern int blitter_getDebugVisMode(void);
-extern void blitter_setDebugVisBlink(int blink);
-extern int blitter_getDebugVisBlink(void);
 extern uint32_t blitter_getDebugActiveCount(void);
 extern uint32_t blitter_getDebugBlitsThisFrame(void);
 extern uint32_t blitter_getDebugBlitsLastFrame(void);
@@ -69,9 +74,30 @@ extern uint32_t blitter_getDebugWritesLastFrame(void);
 extern uint32_t blitter_getDebugWriteBytesThisFrame(void);
 extern uint32_t blitter_getDebugWriteBytesLastFrame(void);
 extern uint32_t blitter_getDebugFrameCounter(void);
-extern int blitter_getDebugShowLivePhase(void);
-extern uint32_t blitter_getDebugFetchQueriesThisFrame(void);
-extern uint32_t blitter_getDebugFetchHitsThisFrame(void);
+extern int blitter_getDebugBlitInfo(uint32_t blitId,
+	uaecptr *sourceAddr,
+	int *sourceIsCopper,
+	uaecptr *sourceDataAddr,
+	uaecptr *channelAAddr,
+	uaecptr *channelBAddr,
+	uaecptr *channelCAddr,
+	uaecptr *channelDAddr,
+	int16_t *channelAModulo,
+	int16_t *channelBModulo,
+	int16_t *channelCModulo,
+	int16_t *channelDModulo,
+	uint16_t *widthWords,
+	uint16_t *heightLines,
+	uint16_t *sourceRowBytes,
+	int16_t *sourceModulo,
+	uint8_t *sourceChannelsMask,
+	uint8_t *minterm,
+	int *sourceDescending,
+	int *lineMode);
+#if E9K_HACK_MEMVIS
+extern void blitter_debugSnapshotFrame(void);
+extern size_t blitter_debugReadSnapshotBlitIds(uaecptr addr, uint32_t *out, size_t wordCount);
+#endif
 extern int blitter_getDebugVideoOverrideValue(uaecptr addr, uae_u16 *value);
 extern int blitter_getDebugVideoFetchInfo(uaecptr addr, uae_u16 *value, uint32_t *blitId, int *useOverride);
 #endif

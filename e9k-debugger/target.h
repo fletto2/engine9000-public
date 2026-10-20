@@ -1,3 +1,11 @@
+/*
+ * COPYRIGHT © 2026 Enable Software Pty Ltd - All Rights Reserved
+ *
+ * https://github.com/alpine9000/engine9000-public
+ *
+ * See COPYING for license details
+ */
+
 #pragma once
 
 #include <stddef.h>
@@ -6,6 +14,7 @@
 #include "emu.h"
 #include "dasm.h"
 #include "settings.h"
+#include "e9k-lib.h"
 
 #define TARGET_AMIGA  0
 #define TARGET_NEOGEO 1
@@ -27,6 +36,24 @@ typedef struct target_memory_range
     uint32_t baseAddr;
     uint32_t size;
 } target_memory_range_t;
+
+typedef struct target_memory_space
+{
+    const char *value;
+    const char *label;
+    uint32_t minAddr;
+    uint32_t maxAddr;
+    int addressDigits;
+    int processorMemory;
+    uint32_t processorId;
+} target_memory_space_t;
+
+typedef struct target_memory_panel_options
+{
+    const char *spaceKey;
+    const char *addressKey;
+    const char *searchKey;
+} target_memory_panel_options_t;
 
 typedef struct target_iface
 {
@@ -64,6 +91,7 @@ typedef struct target_iface
     void (*coreOptionsSaveClicked)(e9ui_context_t *ctx, struct core_options_modal_state *st);
     const char *(*coreOptionGetValue)(const char *key);
     struct e9k_libretro_config *(*getLibretroCliConfig)(void);
+    void (*onCoreStarted)(void);
     void (*onVblank)(void);
     void (*libretroSelectConfig)(void);
     void (*pickElfToolchainPaths)(const char **rawElf, const char **toolchainPrefix);
@@ -78,7 +106,10 @@ typedef struct target_iface
     int badgeW;
     int badgeH;
     int (*memoryGetLimits)(uint32_t *outMinAddr, uint32_t *outMaxAddr);
+    int (*memoryGetSpaces)(target_memory_space_t *outSpaces, size_t cap, size_t *outCount);
     int (*memoryTrackGetRanges)(target_memory_range_t *outRanges, size_t cap, size_t *outCount);
+    int (*memoryPanelOptions)(target_memory_panel_options_t *outOptions);
+    int (*registersReadExtra)(const char **outTitle, e9k_debug_processor_reg_t *outRegs, size_t cap, size_t *outCount);
     SDL_Texture *(*getBadgeTexture)(SDL_Renderer *renderer, struct target_iface *t, int *outW, int *outH);
     void (*configControllerPorts)(void);
     int (*controllerMapButton)(SDL_GameControllerButton button, unsigned *outId);
@@ -87,11 +118,13 @@ typedef struct target_iface
     const char *(*romConfigGetActiveCustomOptionValue)(const char *key);
     void (*romConfigSetActiveCustomOptionValue)(const char *key, const char *value);
     void (*romConfigClearActiveCustomOptions)(void);
+    int (*coreOptionsHideOptionKey)(const char *key);
     int (*coreOptionsIsSyntheticOptionKey)(const char *key);
     size_t (*coreOptionsSyntheticDefCount)(void);
     const struct retro_core_option_v2_definition *(*coreOptionsSyntheticDefAt)(size_t index);
     size_t (*coreOptionsMapDebuggerInputSpecIndex)(size_t specIndex);
     const char *(*coreOptionsDebuggerInputLabel)(const char *optionKey, const char *defaultLabel);
+    void (*formatStatusBar)(char *out, size_t cap);
 } target_iface_t;
 
 void
@@ -111,6 +144,12 @@ target_setConfigDefaults(void);
 
 target_iface_t *
 target_getByIndex(int index);
+
+int
+target_firstEnabledIndex(void);
+
+target_iface_t *
+target_firstEnabled(void);
 
 int
 target_coreOptionsIsSyntheticOptionKey(const char *key);

@@ -20,12 +20,16 @@
 #include "drawing.h"
 #include "debug.h"
 
+#include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
-
 #define E9K_DEBUG_CALLSTACK_MAX 256
 #define E9K_DEBUG_BREAKPOINT_MAX 4096
+#define E9K_DEBUG_AMI_KNOWN_PC_RING_CAP 256u
+#define E9K_DEBUG_AMI_PROCESSOR_68K 0u
 
 extern bool libretro_frame_end;
+extern bool retro_statusbar;
 
 #define E9K_DEBUG_EXPORT RETRO_API
 
@@ -43,6 +47,12 @@ extern bool libretro_frame_end;
 
 #ifndef E9K_HACK_AMI_SPRITE_VIS
 #define E9K_HACK_AMI_SPRITE_VIS 0
+#endif
+#ifndef E9K_HACK_AMI_STATUSBAR_CONTROL
+#define E9K_HACK_AMI_STATUSBAR_CONTROL 0
+#endif
+#ifndef E9K_HACK_AMI_PALETTE_VIS
+#define E9K_HACK_AMI_PALETTE_VIS 0
 #endif
 
 #if E9K_DEBUGGER_CUSTOM_LOGGER
@@ -75,6 +85,10 @@ typedef struct e9k_debug_blitter_vis_line_stat_s
 static int e9k_debug_paused = 0;
 static uint32_t e9k_debug_callstack[E9K_DEBUG_CALLSTACK_MAX];
 static size_t e9k_debug_callstackDepth = 0;
+static uint32_t e9k_debug_amiKnownPcRing[E9K_DEBUG_AMI_KNOWN_PC_RING_CAP];
+static size_t e9k_debug_amiKnownPcHead = 0;
+static size_t e9k_debug_amiKnownPcCount = 0;
+static uint32_t e9k_debug_amiKnownPcLast = 0xffffffffu;
 
 static int e9k_debug_stepInstr = 0;
 static int e9k_debug_stepInstrAfter = 0;
@@ -102,6 +116,9 @@ static size_t e9k_debug_tempBreakpointCount = 0;
 
 static void (*e9k_debug_vblankCb)(void *) = NULL;
 static void *e9k_debug_vblankUser = NULL;
+#if E9K_HACK_DET_RTC
+static int e9k_debug_deterministic = 0;
+#endif
 
 int debug_enableE9kHooks(void);
 
@@ -113,13 +130,102 @@ static e9k_debug_watchbreak_t e9k_debug_watchbreak = {0};
 static int e9k_debug_watchbreakPending = 0;
 static int e9k_debug_watchpointSuspend = 0;
 
+typedef struct e9k_debug_watch_snapshot
+{
+	newcpu_restart_state_t cpuState;
+	uint32_t callstack[E9K_DEBUG_CALLSTACK_MAX];
+	size_t callstackDepth;
+	int valid;
+} e9k_debug_watch_snapshot_t;
+
+static e9k_debug_watch_snapshot_t e9k_debug_watchSnapshot = {0};
+static int e9k_debug_watchReplayPending = 0;
+static int e9k_debug_watchReplayActive = 0;
+
 static e9k_debug_protect_t e9k_debug_protects[E9K_PROTECT_COUNT];
 static uint64_t e9k_debug_protectEnabledMask = 0;
 
 static int e9k_debug_checkpointEnabled = 0;
 static e9k_debug_checkpoint_t e9k_debug_checkpoints[E9K_CHECKPOINT_COUNT];
+static e9k_debug_checkpoint_t e9k_debug_publishedCheckpoints[E9K_CHECKPOINT_COUNT];
+static int e9k_debug_hasPublishedCheckpoints = 0;
+static e9k_debug_counter_t e9k_debug_counters[E9K_COUNTER_COUNT];
+#if E9K_HACK_CHECKPOINTS
+static int e9k_debug_checkpointActive = -1;
+static uint64_t e9k_debug_checkpointLastCycle = 0;
+#endif
+static e9k_debug_ami_video_line_state_t e9k_debug_amiVideoLineStates[MAXVPOS];
 
 static int e9k_debug_profilerEnabled = 0;
+
+static void
+e9k_debug_publish_checkpoints(void)
+{
+	memcpy(e9k_debug_publishedCheckpoints, e9k_debug_checkpoints, sizeof(e9k_debug_checkpoints));
+	e9k_debug_hasPublishedCheckpoints = 1;
+}
+
+static void
+e9k_debug_recordCheckpointScanline(e9k_debug_checkpoint_t *entry, uint64_t scanline)
+{
+	if (entry->scanlineCount == 0) {
+		entry->scanlineMinimum = scanline;
+		entry->scanlineMaximum = scanline;
+	} else {
+		if (scanline < entry->scanlineMinimum) {
+			entry->scanlineMinimum = scanline;
+		}
+		if (scanline > entry->scanlineMaximum) {
+			entry->scanlineMaximum = scanline;
+		}
+	}
+	entry->scanlineCount += 1;
+	entry->scanlineLast = scanline;
+	entry->scanlineAccumulator += scanline;
+	entry->scanlineAverage = entry->scanlineAccumulator / entry->scanlineCount;
+}
+
+static void
+e9k_debug_recordCheckpointScanlineSpan(e9k_debug_checkpoint_t *entry, uint64_t scanlineSpan)
+{
+	if (entry->scanlineSpanCount == 0) {
+		entry->scanlineSpanMinimum = scanlineSpan;
+		entry->scanlineSpanMaximum = scanlineSpan;
+	} else {
+		if (scanlineSpan < entry->scanlineSpanMinimum) {
+			entry->scanlineSpanMinimum = scanlineSpan;
+		}
+		if (scanlineSpan > entry->scanlineSpanMaximum) {
+			entry->scanlineSpanMaximum = scanlineSpan;
+		}
+	}
+	entry->scanlineSpanCount += 1;
+	entry->scanlineSpanLast = scanlineSpan;
+	entry->scanlineSpanAccumulator += scanlineSpan;
+	entry->scanlineSpanAverage = entry->scanlineSpanAccumulator / entry->scanlineSpanCount;
+}
+
+static uint64_t
+e9k_debug_checkpointScanlineSpan(uint64_t startScanline, uint64_t endScanline, uint64_t scanlineCount)
+{
+	if (scanlineCount == 0) {
+		return 0;
+	}
+	if (endScanline >= startScanline) {
+		return endScanline - startScanline;
+	}
+	return (scanlineCount - startScanline) + endScanline;
+}
+
+static uint64_t
+e9k_debug_checkpointScanlineCount(void)
+{
+	int count = current_maxvpos();
+	if (count <= 0) {
+		return 0;
+	}
+	return (uint64_t)count;
+}
 
 // Minimal PC-sampling profiler used by e9k-debugger. The debugger resolves PCs to symbols/lines.
 // We stream aggregated PC hits as JSON in e9k_debug_profiler_stream_next(), matching geo9000.
@@ -146,6 +252,11 @@ static int e9k_debug_prof_savedCachesize = -1;
 static void (*e9k_debug_setDebugBaseCb)(uint32_t section, uint32_t base) = NULL;
 static void (*e9k_debug_pushDebugBaseCb)(uint32_t section, uint32_t base, uint32_t size) = NULL;
 static void (*e9k_debug_setDebugBreakpointCb)(uint32_t addr) = NULL;
+static void (*e9k_debug_setDebugExitCb)(void) = NULL;
+static void (*e9k_debug_setDebugSmokeStartCb)(void) = NULL;
+static void (*e9k_debug_setDebugProfileStartCb)(void) = NULL;
+static uint32_t e9k_debug_debugArgs[10];
+
 static int (*e9k_debug_sourceLocationResolver)(uint32_t pc24, uint64_t *out_location, void *user) = NULL;
 static void *e9k_debug_sourceLocationResolverUser = NULL;
 static uint32_t e9k_debug_bitplaneMask = 0xffu;
@@ -374,6 +485,42 @@ static uint32_t
 e9k_debug_maskAddr(uaecptr addr)
 {
 	return (uint32_t)addr & 0x00ffffffu;
+}
+
+static void
+e9k_debug_amiRecordKnownPc(uint32_t pc24)
+{
+	pc24 &= 0x00ffffffu;
+	pc24 &= ~1u;
+	if (e9k_debug_amiKnownPcLast == pc24) {
+		return;
+	}
+	e9k_debug_amiKnownPcRing[e9k_debug_amiKnownPcHead] = pc24;
+	e9k_debug_amiKnownPcHead = (e9k_debug_amiKnownPcHead + 1u) % E9K_DEBUG_AMI_KNOWN_PC_RING_CAP;
+	if (e9k_debug_amiKnownPcCount < E9K_DEBUG_AMI_KNOWN_PC_RING_CAP) {
+		e9k_debug_amiKnownPcCount++;
+	}
+	e9k_debug_amiKnownPcLast = pc24;
+}
+
+static void
+e9k_debug_amiResetKnownPcs(void)
+{
+	e9k_debug_amiKnownPcHead = 0;
+	e9k_debug_amiKnownPcCount = 0;
+	e9k_debug_amiKnownPcLast = 0xffffffffu;
+}
+
+static int
+e9k_debug_amiShouldRecordKnownPc(void)
+{
+	if (e9k_debug_stepInstr || e9k_debug_stepInstrAfter) {
+		return 1;
+	}
+	if (e9k_debug_stepLine || e9k_debug_stepNext || e9k_debug_stepOut || e9k_debug_stepIntoPending) {
+		return 1;
+	}
+	return 0;
 }
 
 static uint32_t
@@ -607,7 +754,7 @@ e9k_debug_ensureMemhooks(void)
 
 static int
 e9k_debug_watchpointMatch(const e9k_debug_watchpoint_t *wp, uint32_t accessAddr, uint32_t accessKind,
-                          uint32_t accessSizeBits, uint32_t value, uint32_t oldValue, int oldValueValid)
+                          uint32_t accessSizeBits, uint32_t value, uint32_t oldValue, int oldValueValid, uint32_t accessSource)
 {
 	if (!wp) {
 		return 0;
@@ -648,6 +795,15 @@ e9k_debug_watchpointMatch(const e9k_debug_watchpoint_t *wp, uint32_t accessAddr,
 		}
 	}
 
+	if (op & E9K_WATCH_OP_ACCESS_SOURCE) {
+		if (wp->access_source_operand == E9K_WATCH_ACCESS_SOURCE_UNKNOWN) {
+			return 0;
+		}
+		if (accessSource != wp->access_source_operand) {
+			return 0;
+		}
+	}
+
 	uint32_t v = e9k_debug_maskValue(value, accessSizeBits);
 	uint32_t ov = e9k_debug_maskValue(oldValue, accessSizeBits);
 
@@ -678,7 +834,7 @@ e9k_debug_watchpointMatch(const e9k_debug_watchpoint_t *wp, uint32_t accessAddr,
 
 static void
 e9k_debug_watchbreakRequest(uint32_t index, uint32_t accessAddr, uint32_t accessKind, uint32_t accessSizeBits,
-                            uint32_t value, uint32_t oldValue, int oldValueValid)
+                            uint32_t value, uint32_t oldValue, int oldValueValid, uint32_t accessSource)
 {
 	if (e9k_debug_watchbreakPending) {
 		return;
@@ -698,6 +854,7 @@ e9k_debug_watchbreakRequest(uint32_t index, uint32_t accessAddr, uint32_t access
 	e9k_debug_watchbreak.old_value_operand = wp->old_value_operand;
 	e9k_debug_watchbreak.size_operand = wp->size_operand;
 	e9k_debug_watchbreak.addr_mask_operand = wp->addr_mask_operand;
+	e9k_debug_watchbreak.access_source_operand = wp->access_source_operand;
 
 	e9k_debug_watchbreak.access_addr = accessAddr;
 	e9k_debug_watchbreak.access_kind = accessKind;
@@ -705,9 +862,56 @@ e9k_debug_watchbreakRequest(uint32_t index, uint32_t accessAddr, uint32_t access
 	e9k_debug_watchbreak.value = e9k_debug_maskValue(value, accessSizeBits);
 	e9k_debug_watchbreak.old_value = e9k_debug_maskValue(oldValue, accessSizeBits);
 	e9k_debug_watchbreak.old_value_valid = oldValueValid ? 1u : 0u;
+	e9k_debug_watchbreak.access_source = accessSource;
+	e9k_debug_watchbreak.access_source_detail = 0u;
 
 	e9k_debug_watchbreakPending = 1;
 	e9k_debug_requestBreak();
+}
+
+static void
+e9k_debug_watchSnapshotInvalidate(void)
+{
+	e9k_debug_watchSnapshot.valid = 0;
+}
+
+static void
+e9k_debug_watchSnapshotCapture(void)
+{
+	newcpu_captureRestartState(&e9k_debug_watchSnapshot.cpuState);
+	e9k_debug_watchSnapshot.callstackDepth = e9k_debug_callstackDepth;
+	if (e9k_debug_callstackDepth > 0) {
+		memcpy(e9k_debug_watchSnapshot.callstack, e9k_debug_callstack,
+		       e9k_debug_callstackDepth * sizeof(e9k_debug_callstack[0]));
+	}
+	e9k_debug_watchSnapshot.valid = 1;
+}
+
+static int
+e9k_debug_watchSnapshotRestore(void)
+{
+	if (!e9k_debug_watchSnapshot.valid) {
+		return 0;
+	}
+	newcpu_restoreRestartState(&e9k_debug_watchSnapshot.cpuState);
+	e9k_debug_callstackDepth = e9k_debug_watchSnapshot.callstackDepth;
+	if (e9k_debug_callstackDepth > 0) {
+		memcpy(e9k_debug_callstack, e9k_debug_watchSnapshot.callstack,
+		       e9k_debug_callstackDepth * sizeof(e9k_debug_callstack[0]));
+	}
+	return 1;
+}
+
+static int
+e9k_debug_watchpointsSuppressed(void)
+{
+	if (e9k_debug_watchpointSuspend > 0) {
+		return 1;
+	}
+	if (e9k_debug_watchReplayActive) {
+		return 1;
+	}
+	return 0;
 }
 
 static int
@@ -902,19 +1106,109 @@ e9k_debug_read_regs(uint32_t *out, size_t cap)
 	return count;
 }
 
+static void
+e9k_debug_setProcessorReg(e9k_debug_processor_reg_t *reg, const char *name, uint64_t value, uint8_t bits)
+{
+	memset(reg, 0, sizeof(*reg));
+	strncpy(reg->name, name, sizeof(reg->name) - 1);
+	reg->value = value;
+	reg->bits = bits;
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_read_processors(e9k_debug_processor_info_t *out, size_t cap)
+{
+	static const e9k_debug_processor_info_t processors[] = {
+		{
+			.id = E9K_DEBUG_AMI_PROCESSOR_68K,
+			.name = "M68000",
+			.role = "main",
+			.addressBits = 24,
+			.flags = E9K_DEBUG_PROCESSOR_PRIMARY |
+				E9K_DEBUG_PROCESSOR_CAN_STEP |
+				E9K_DEBUG_PROCESSOR_CAN_BREAKPOINT |
+				E9K_DEBUG_PROCESSOR_CAN_DISASSEMBLE |
+				E9K_DEBUG_PROCESSOR_CAN_WRITE_MEMORY
+		}
+	};
+	size_t count = sizeof(processors) / sizeof(processors[0]);
+
+	if (!out || cap == 0) {
+		return 0;
+	}
+	if (count > cap) {
+		count = cap;
+	}
+	memcpy(out, processors, count * sizeof(processors[0]));
+	return count;
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_read_processor_regs(uint32_t processorId, e9k_debug_processor_reg_t *out, size_t cap)
+{
+	static const char *names[] = {
+		"D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7",
+		"A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7",
+		"SR", "PC"
+	};
+	uint32_t values[18];
+	size_t count = 0;
+
+	if (processorId != E9K_DEBUG_AMI_PROCESSOR_68K || !out || cap == 0) {
+		return 0;
+	}
+	count = e9k_debug_read_regs(values, sizeof(values) / sizeof(values[0]));
+	if (count > cap) {
+		count = cap;
+	}
+	for (size_t i = 0; i < count; ++i) {
+		uint8_t bits = 32;
+		uint32_t value = values[i];
+		if (i == 16u) {
+			value &= 0xffffu;
+			bits = 16;
+		} else if (i == 17u) {
+			value &= 0x00ffffffu;
+			bits = 24;
+		}
+		e9k_debug_setProcessorReg(&out[i], names[i], value, bits);
+	}
+	return count;
+}
+
 E9K_DEBUG_EXPORT size_t
 e9k_debug_read_memory(uint32_t addr, uint8_t *out, size_t cap)
 {
+	size_t readCount = 0;
+
 	if (!out || cap == 0) {
 		return 0;
 	}
 	e9k_debug_watchpointSuspend++;
 	uaecptr base = (uaecptr)addr;
 	for (size_t i = 0; i < cap; ++i) {
+#if E9K_HACK_DEBUGGER_HOST
+		int value = debug_peek_memory_8(munge24(base + (uaecptr)i));
+		if (value < 0) {
+			break;
+		}
+		out[i] = (uint8_t)value;
+#else
 		out[i] = (uint8_t)get_byte_debug(munge24(base + (uaecptr)i));
+#endif
+		readCount = i + 1;
 	}
 	e9k_debug_watchpointSuspend--;
-	return cap;
+	return readCount;
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_read_processor_memory(uint32_t processorId, uint32_t addr, uint8_t *out, size_t cap)
+{
+	if (processorId != E9K_DEBUG_AMI_PROCESSOR_68K) {
+		return 0;
+	}
+	return e9k_debug_read_memory(addr, out, cap);
 }
 
 E9K_DEBUG_EXPORT int
@@ -941,6 +1235,15 @@ e9k_debug_write_memory(uint32_t addr, uint32_t value, size_t size)
 	return 0;
 }
 
+E9K_DEBUG_EXPORT int
+e9k_debug_write_processor_memory(uint32_t processorId, uint32_t addr, uint32_t value, size_t size)
+{
+	if (processorId != E9K_DEBUG_AMI_PROCESSOR_68K) {
+		return 0;
+	}
+	return e9k_debug_write_memory(addr, value, size);
+}
+
 E9K_DEBUG_EXPORT size_t
 e9k_debug_disassemble_quick(uint32_t pc, char *out, size_t cap)
 {
@@ -962,6 +1265,36 @@ e9k_debug_disassemble_quick(uint32_t pc, char *out, size_t cap)
 	return 2;
 }
 
+E9K_DEBUG_EXPORT size_t
+e9k_debug_disassemble_processor_quick(uint32_t processorId, uint32_t pc, char *out, size_t cap)
+{
+	if (processorId != E9K_DEBUG_AMI_PROCESSOR_68K) {
+		return 0;
+	}
+	return e9k_debug_disassemble_quick(pc, out, cap);
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_suppress_processor_breakpoint_at_pc(uint32_t processorId)
+{
+	if (processorId != E9K_DEBUG_AMI_PROCESSOR_68K) {
+		return 0;
+	}
+	e9k_debug_skipBreakpointOnce = 1;
+	e9k_debug_skipBreakpointPc = e9k_debug_maskAddr(m68k_getpc());
+	return 1;
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_step_processor_instr(uint32_t processorId)
+{
+	if (processorId != E9K_DEBUG_AMI_PROCESSOR_68K) {
+		return 0;
+	}
+	e9k_debug_step_instr();
+	return 1;
+}
+
 E9K_DEBUG_EXPORT uint64_t
 e9k_debug_read_cycle_count(void)
 {
@@ -972,6 +1305,56 @@ e9k_debug_read_cycle_count(void)
 		return (uint64_t)(c / (evt_t)CYCLE_UNIT);
 	}
 	return (uint64_t)c;
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_read_known_pcs(uint32_t startAddr, uint32_t endAddr, uint32_t *out, size_t cap)
+{
+	size_t count = 0;
+
+	if (!out || cap == 0) {
+		return 0;
+	}
+
+	startAddr &= 0x00ffffffu;
+	startAddr &= ~1u;
+	endAddr &= 0x00ffffffu;
+	endAddr &= ~1u;
+	if (endAddr < startAddr) {
+		uint32_t tmp = startAddr;
+		startAddr = endAddr;
+		endAddr = tmp;
+	}
+
+	for (size_t i = 0; i < e9k_debug_amiKnownPcCount; ++i) {
+		size_t idx = (e9k_debug_amiKnownPcHead + E9K_DEBUG_AMI_KNOWN_PC_RING_CAP - 1u - i) % E9K_DEBUG_AMI_KNOWN_PC_RING_CAP;
+		uint32_t pc24 = e9k_debug_amiKnownPcRing[idx] & 0x00ffffffu;
+		int exists = 0;
+
+		if (pc24 < startAddr || pc24 > endAddr) {
+			continue;
+		}
+		for (size_t j = 0; j < count; ++j) {
+			if (out[j] == pc24) {
+				exists = 1;
+				break;
+			}
+		}
+		if (exists) {
+			continue;
+		}
+		if (count >= cap) {
+			break;
+		}
+		out[count++] = pc24;
+	}
+	return count;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_reset_known_pcs(void)
+{
+	e9k_debug_amiResetKnownPcs();
 }
 
 E9K_DEBUG_EXPORT void
@@ -1004,6 +1387,24 @@ e9k_debug_remove_breakpoint(uint32_t addr)
 }
 
 E9K_DEBUG_EXPORT void
+e9k_debug_add_processor_breakpoint(uint32_t processorId, uint32_t addr)
+{
+	if (processorId != E9K_DEBUG_AMI_PROCESSOR_68K) {
+		return;
+	}
+	e9k_debug_add_breakpoint(addr);
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_remove_processor_breakpoint(uint32_t processorId, uint32_t addr)
+{
+	if (processorId != E9K_DEBUG_AMI_PROCESSOR_68K) {
+		return;
+	}
+	e9k_debug_remove_breakpoint(addr);
+}
+
+E9K_DEBUG_EXPORT void
 e9k_debug_add_temp_breakpoint(uint32_t addr)
 {
 	uint32_t addr24 = e9k_debug_maskAddr((uaecptr)addr);
@@ -1032,9 +1433,23 @@ e9k_debug_set_vblank_callback(void (*cb)(void *), void *user)
 	e9k_debug_vblankUser = user;
 }
 
+#if E9K_HACK_DET_RTC
+E9K_DEBUG_EXPORT void
+e9k_debug_setDeterministic(int enabled)
+{
+	e9k_debug_deterministic = enabled ? 1 : 0;
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_getDeterministic(void)
+{
+	return e9k_debug_deterministic;
+}
+#endif
+
 #if E9K_DEBUGGER_CUSTOM_LOGGER
 E9K_DEBUG_EXPORT void
-e9k_debug_set_custom_log_frame_callback(e9k_debug_ami_custom_log_frame_callback_t cb, void *user)
+e9k_debug_set_amiga_custom_log_frame_callback(e9k_debug_ami_custom_log_frame_callback_t cb, void *user)
 {
 	e9k_debug_amiCustomLogFrameCb = cb;
 	e9k_debug_amiCustomLogFrameCbUser = user;
@@ -1044,7 +1459,7 @@ e9k_debug_set_custom_log_frame_callback(e9k_debug_ami_custom_log_frame_callback_
 }
 
 void
-e9k_debug_ami_customLogWrite(int vpos, int hpos, uae_u32 reg, uae_u16 value, uae_u32 sourcePc)
+e9k_debug_amiga_customLogWrite(int vpos, int hpos, uae_u32 reg, uae_u16 value, uae_u32 sourcePc)
 {
 	if (e9k_debug_amiCustomLogEntryCount >= E9K_DEBUG_AMI_CUSTOM_LOG_ENTRY_CAP) {
 		if (e9k_debug_amiCustomLogDropped != UINT32_MAX) {
@@ -1071,13 +1486,13 @@ e9k_debug_ami_customLogWrite(int vpos, int hpos, uae_u32 reg, uae_u16 value, uae
 }
 
 void
-e9k_debug_ami_customLogFrameCommit(void)
+e9k_debug_amiga_customLogFrameCommit(void)
 {
 	e9k_debug_ami_customLogFlushFrame();
 }
 #else
 void
-e9k_debug_ami_customLogWrite(int vpos, int hpos, uae_u32 reg, uae_u16 value, uae_u32 sourcePc)
+e9k_debug_amiga_customLogWrite(int vpos, int hpos, uae_u32 reg, uae_u16 value, uae_u32 sourcePc)
 {
 	(void)vpos;
 	(void)hpos;
@@ -1087,7 +1502,7 @@ e9k_debug_ami_customLogWrite(int vpos, int hpos, uae_u32 reg, uae_u16 value, uae
 }
 
 void
-e9k_debug_ami_customLogFrameCommit(void)
+e9k_debug_amiga_customLogFrameCommit(void)
 {
 }
 #endif
@@ -1108,6 +1523,33 @@ E9K_DEBUG_EXPORT void
 e9k_debug_set_debug_breakpoint_callback(void (*cb)(uint32_t addr))
 {
 	e9k_debug_setDebugBreakpointCb = cb;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_set_debug_exit_callback(void (*cb)(void))
+{
+	e9k_debug_setDebugExitCb = cb;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_set_debug_smoke_start_callback(void (*cb)(void))
+{
+	e9k_debug_setDebugSmokeStartCb = cb;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_set_debug_profile_start_callback(void (*cb)(void))
+{
+	e9k_debug_setDebugProfileStartCb = cb;
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_set_debug_args(const uint32_t *args, size_t count)
+{
+	size_t i = 0;
+	for (; i < 10u; ++i) {
+		e9k_debug_debugArgs[i] = (args && i < count) ? args[i] : 0u;
+	}
 }
 
 E9K_DEBUG_EXPORT void
@@ -1202,13 +1644,6 @@ e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *u
 			(void)argument;
 #endif
 			break;
-		case E9K_DEBUG_OPTION_AMIGA_BLITTER_VIS_BLINK:
-#if E9K_HACK_BLITTER_VIS
-			blitter_setDebugVisBlink(argument != 0u);
-#else
-			(void)argument;
-#endif
-			break;
 		case E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_ENABLED:
 			custom_setCopperLineLimitEnabled(argument != 0u);
 			break;
@@ -1250,6 +1685,13 @@ e9k_debug_set_debug_option(e9k_debug_option_t option, uint32_t argument, void *u
 			custom_setCustomLoggerEnabled(argument != 0u);
 			break;
 #endif
+		case E9K_DEBUG_OPTION_AMIGA_PALETTE_VIS:
+#if E9K_HACK_AMI_PALETTE_VIS
+			drawing_setPaletteVisEnabled(argument != 0u);
+#else
+			(void)argument;
+#endif
+			break;
 		default:
 			break;
 	}
@@ -1264,6 +1706,39 @@ e9k_debug_add_breakpoint_fromPeripheral(uint32_t addr)
 	if (!had && e9k_debug_setDebugBreakpointCb) {
 		e9k_debug_setDebugBreakpointCb(addr24);
 	}
+}
+
+void
+e9k_debug_exit_fromPeripheral(void)
+{
+	if (e9k_debug_setDebugExitCb) {
+		e9k_debug_setDebugExitCb();
+	}
+}
+
+void
+e9k_debug_smoke_start_fromPeripheral(void)
+{
+	if (e9k_debug_setDebugSmokeStartCb) {
+		e9k_debug_setDebugSmokeStartCb();
+	}
+}
+
+void
+e9k_debug_profile_start_fromPeripheral(void)
+{
+	if (e9k_debug_setDebugProfileStartCb) {
+		e9k_debug_setDebugProfileStartCb();
+	}
+}
+
+uint32_t
+e9k_debug_arg_read_fromPeripheral(uint32_t index)
+{
+	if (index >= 10u) {
+		return 0u;
+	}
+	return e9k_debug_debugArgs[index];
 }
 
 E9K_DEBUG_EXPORT void
@@ -1289,7 +1764,7 @@ e9k_vblank_notify(void)
 }
 
 E9K_DEBUG_EXPORT void
-e9k_debug_ami_set_blitter_debug(int enabled)
+e9k_debug_amiga_set_blitter_debug(int enabled)
 {
 #if E9K_HACK_BLITTER_VIS
 	blitter_setDebugWriteEnabled(enabled ? 1 : 0);
@@ -1299,7 +1774,7 @@ e9k_debug_ami_set_blitter_debug(int enabled)
 }
 
 E9K_DEBUG_EXPORT int
-e9k_debug_ami_get_blitter_debug(void)
+e9k_debug_amiga_get_blitter_debug(void)
 {
 #if E9K_HACK_BLITTER_VIS
 	return blitter_getDebugWriteEnabled();
@@ -1310,24 +1785,61 @@ e9k_debug_ami_get_blitter_debug(void)
 
 #if E9K_HACK_AMI_SPRITE_VIS
 E9K_DEBUG_EXPORT void
-e9k_debug_ami_set_sprite_vis(int enabled)
+e9k_debug_amiga_set_sprite_vis(int enabled)
 {
 	drawing_setSpriteVisEnabled(enabled ? 1 : 0);
 }
 
 E9K_DEBUG_EXPORT int
-e9k_debug_ami_get_sprite_vis(void)
+e9k_debug_amiga_get_sprite_vis(void)
 {
 	return drawing_getSpriteVisEnabled();
 }
 #endif
 
+#if E9K_HACK_AMI_STATUSBAR_CONTROL
+E9K_DEBUG_EXPORT void
+e9k_debug_amiga_set_statusbar(int enabled)
+{
+	int nextEnabled = enabled ? 1 : 0;
+	if ((retro_statusbar ? 1 : 0) != nextEnabled) {
+		emu_function(EMU_STATUSBAR);
+	}
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_amiga_get_statusbar(void)
+{
+	return retro_statusbar ? 1 : 0;
+}
+#endif
+
 E9K_DEBUG_EXPORT size_t
-e9k_debug_ami_blitter_vis_read_points(e9k_debug_ami_blitter_vis_point_t *out, size_t cap, uint32_t *outWidth, uint32_t *outHeight)
+e9k_debug_amiga_blitter_vis_read_spans(e9k_debug_ami_blitter_vis_span_t *out, size_t cap, uint32_t *outWidth, uint32_t *outHeight)
 {
 #if E9K_HACK_BLITTER_VIS
-	static uint32_t readLogCounter = 0;
 	int collectMode = ((blitter_getDebugVisMode() & E9K_DEBUG_BLITTER_VIS_MODE_COLLECT) != 0) ? 1 : 0;
+	uaecptr lastSourceAddr = 0;
+	uaecptr lastSourceDataAddr = 0;
+	uaecptr lastChannelAAddr = 0;
+	uaecptr lastChannelBAddr = 0;
+	uaecptr lastChannelCAddr = 0;
+	uaecptr lastChannelDAddr = 0;
+	int16_t lastChannelAModulo = 0;
+	int16_t lastChannelBModulo = 0;
+	int16_t lastChannelCModulo = 0;
+	int16_t lastChannelDModulo = 0;
+	uae_u32 lastBlitId = 0;
+	int lastSourceIsCopper = 0;
+	uint16_t lastWidthWords = 0;
+	uint16_t lastHeightLines = 0;
+	uint16_t lastSourceRowBytes = 0;
+	int16_t lastSourceModulo = 0;
+	uint8_t lastSourceChannelsMask = 0;
+	uint8_t lastMinterm = 0;
+	int lastSourceDescending = 0;
+	int lastLineMode = 0;
+	int lastSourceValid = 0;
 	uint32_t width = (uint32_t)retrow_crop;
 	uint32_t height = (uint32_t)retroh_crop;
 	if (outWidth) {
@@ -1338,101 +1850,66 @@ e9k_debug_ami_blitter_vis_read_points(e9k_debug_ami_blitter_vis_point_t *out, si
 	}
 
 	size_t written = 0;
-	size_t drained = 0;
-	uint32_t sampleX = 0;
-	uint32_t sampleY = 0;
-	uint32_t sampleBlitId = 0;
-	int sampleValid = 0;
-	uint32_t minX = 0;
-	uint32_t minY = 0;
-	uint32_t maxX = 0;
-	uint32_t maxY = 0;
-	int boundsValid = 0;
-
 	if (width == 0 || height == 0) {
 		return 0;
 	}
-	if (collectMode) {
-		for (uint32_t y = 0; y < height; y++) {
-			for (uint32_t x = 0; x < width; x++) {
-				uae_u32 blitId = 0;
-				if (!drawing_blitterVisGetNativePixelBlitId((int)y, (int)x, &blitId)) {
-					continue;
-				}
-				if (!sampleValid) {
-					sampleValid = 1;
-					sampleX = x;
-					sampleY = y;
-					sampleBlitId = blitId;
-				}
-				if (!boundsValid) {
-					boundsValid = 1;
-					minX = maxX = x;
-					minY = maxY = y;
-				} else {
-					if (x < minX) {
-						minX = x;
-					}
-					if (x > maxX) {
-						maxX = x;
-					}
-					if (y < minY) {
-						minY = y;
-					}
-					if (y > maxY) {
-						maxY = y;
-					}
-				}
-				drained++;
-				if (out && written < cap) {
-					out[written].x = (uint16_t)x;
-					out[written].y = (uint16_t)y;
-					out[written].blitId = blitId;
-					written++;
-				}
+	if (!collectMode) {
+		return 0;
+	}
+	size_t spanCount = 0u;
+	const drawing_blitter_vis_native_span_t *spans = drawing_blitterVisGetSnapshotSpans(&spanCount);
+	for (size_t i = 0u; i < spanCount; ++i) {
+		uae_u32 blitId = spans[i].blitId;
+		if (out && written < cap) {
+			if (blitId != lastBlitId) {
+				lastSourceValid = blitter_getDebugBlitInfo(blitId,
+					&lastSourceAddr,
+					&lastSourceIsCopper,
+					&lastSourceDataAddr,
+					&lastChannelAAddr,
+					&lastChannelBAddr,
+					&lastChannelCAddr,
+					&lastChannelDAddr,
+					&lastChannelAModulo,
+					&lastChannelBModulo,
+					&lastChannelCModulo,
+					&lastChannelDModulo,
+					&lastWidthWords,
+					&lastHeightLines,
+					&lastSourceRowBytes,
+					&lastSourceModulo,
+					&lastSourceChannelsMask,
+					&lastMinterm,
+					&lastSourceDescending,
+					&lastLineMode);
+				lastBlitId = blitId;
 			}
-		}
-	} else {
-		for (uint32_t y = 0; y < height; y++) {
-			for (uint32_t x = 0; x < width; x++) {
-				uae_u32 blitId = 0;
-				if (!drawing_blitterVisGetNativePixelBlitId((int)y, (int)x, &blitId)) {
-					continue;
-				}
-				if (!sampleValid) {
-					sampleValid = 1;
-					sampleX = x;
-					sampleY = y;
-					sampleBlitId = blitId;
-				}
-				if (!boundsValid) {
-					boundsValid = 1;
-					minX = maxX = x;
-					minY = maxY = y;
-				} else {
-					if (x < minX) {
-						minX = x;
-					}
-					if (x > maxX) {
-						maxX = x;
-					}
-					if (y < minY) {
-						minY = y;
-					}
-					if (y > maxY) {
-						maxY = y;
-					}
-				}
-				if (out && written < cap) {
-					out[written].x = (uint16_t)x;
-					out[written].y = (uint16_t)y;
-					out[written].blitId = blitId;
-				}
-				written++;
-			}
+			out[written].x = spans[i].x;
+			out[written].y = spans[i].y;
+			out[written].xEnd = spans[i].xEnd;
+			out[written].widthWords = lastSourceValid ? lastWidthWords : 0u;
+			out[written].heightLines = lastSourceValid ? lastHeightLines : 0u;
+			out[written].sourceRowBytes = lastSourceValid ? lastSourceRowBytes : 0u;
+			out[written].sourceModulo = lastSourceValid ? lastSourceModulo : 0;
+			out[written].blitId = blitId;
+			out[written].sourceAddr = lastSourceValid ? e9k_debug_maskAddr(lastSourceAddr) : 0u;
+			out[written].sourceDataAddr = lastSourceValid ? e9k_debug_maskAddr(lastSourceDataAddr) : 0u;
+			out[written].channelAAddr = lastSourceValid ? e9k_debug_maskAddr(lastChannelAAddr) : 0u;
+			out[written].channelBAddr = lastSourceValid ? e9k_debug_maskAddr(lastChannelBAddr) : 0u;
+			out[written].channelCAddr = lastSourceValid ? e9k_debug_maskAddr(lastChannelCAddr) : 0u;
+			out[written].channelDAddr = lastSourceValid ? e9k_debug_maskAddr(lastChannelDAddr) : 0u;
+			out[written].channelAModulo = lastSourceValid ? lastChannelAModulo : 0;
+			out[written].channelBModulo = lastSourceValid ? lastChannelBModulo : 0;
+			out[written].channelCModulo = lastSourceValid ? lastChannelCModulo : 0;
+			out[written].channelDModulo = lastSourceValid ? lastChannelDModulo : 0;
+			out[written].sourceChannelsMask = lastSourceValid ? lastSourceChannelsMask : 0u;
+			out[written].minterm = lastSourceValid ? lastMinterm : 0u;
+			out[written].sourceIsCopper = lastSourceValid && lastSourceIsCopper ? 1u : 0u;
+			out[written].sourceDescending = lastSourceValid && lastSourceDescending ? 1u : 0u;
+			out[written].lineMode = lastSourceValid && lastLineMode ? 1u : 0u;
+			written++;
 		}
 	}
-	readLogCounter++;
 	return written;
 #else
 	(void)out;
@@ -1447,9 +1924,15 @@ e9k_debug_ami_blitter_vis_read_points(e9k_debug_ami_blitter_vis_point_t *out, si
 #endif
 }
 
+E9K_DEBUG_EXPORT size_t
+e9k_debug_amiga_blitter_vis_read_points(e9k_debug_ami_blitter_vis_point_t *out, size_t cap, uint32_t *outWidth, uint32_t *outHeight)
+{
+	return e9k_debug_amiga_blitter_vis_read_spans(out, cap, outWidth, outHeight);
+}
+
 #if E9K_HACK_AMI_SPRITE_VIS
 E9K_DEBUG_EXPORT size_t
-e9k_debug_ami_sprite_vis_read_points(e9k_debug_ami_sprite_vis_point_t *out, size_t cap, uint32_t *outWidth, uint32_t *outHeight)
+e9k_debug_amiga_sprite_vis_read_points(e9k_debug_ami_sprite_vis_point_t *out, size_t cap, uint32_t *outWidth, uint32_t *outHeight)
 {
 	uint32_t width = (uint32_t)retrow_crop;
 	uint32_t height = (uint32_t)retroh_crop;
@@ -1485,7 +1968,7 @@ e9k_debug_ami_sprite_vis_read_points(e9k_debug_ami_sprite_vis_point_t *out, size
 #endif
 
 E9K_DEBUG_EXPORT size_t
-e9k_debug_ami_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap)
+e9k_debug_amiga_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, size_t cap)
 {
 #if E9K_HACK_BLITTER_VIS
 	uint32_t maxWriteBytesEstimateFrame = 0u;
@@ -1495,16 +1978,12 @@ e9k_debug_ami_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, siz
 	maxWriteBytesEstimateFrame = custom_blitterVisGetMaxWriteBytesLastFrame();
 	out->enabled = blitter_getDebugWriteEnabled() ? 1u : 0u;
 	out->mode = (uint32_t)blitter_getDebugVisMode();
-	out->blink = blitter_getDebugVisBlink() ? 1u : 0u;
-	out->livePhase = blitter_getDebugShowLivePhase() ? 1u : 0u;
 	out->activeCount = blitter_getDebugActiveCount();
 	out->blitsThisFrame = blitter_getDebugBlitsLastFrame();
 	out->writesThisFrame = blitter_getDebugWritesLastFrame();
 	out->writeBytesThisFrame = blitter_getDebugWriteBytesLastFrame();
 	out->writeBytesMaxEstimateFrame = maxWriteBytesEstimateFrame;
 	out->frameCounter = blitter_getDebugFrameCounter();
-	out->fetchQueriesThisFrame = blitter_getDebugFetchQueriesThisFrame();
-	out->fetchHitsThisFrame = blitter_getDebugFetchHitsThisFrame();
 	out->drawMarkCallsFrame = drawing_blitterVisGetNativeMarkCallsFrame();
 	out->drawMarkCallsSnapshot = drawing_blitterVisGetNativeMarkCallsSnapshot();
 	return sizeof(*out);
@@ -1515,11 +1994,27 @@ e9k_debug_ami_blitter_vis_read_stats(e9k_debug_ami_blitter_vis_stats_t *out, siz
 #endif
 }
 
+E9K_DEBUG_EXPORT size_t
+e9k_debug_amiga_blitter_vis_read_word_tags(uint32_t addr, uint32_t *out, size_t cap)
+{
+#if E9K_HACK_BLITTER_VIS && E9K_HACK_MEMVIS
+	if (!out || cap == 0u) {
+		return 0u;
+	}
+	return blitter_debugReadSnapshotBlitIds((uaecptr)(addr & 0x00fffffeu), out, cap);
+#else
+	(void)addr;
+	(void)out;
+	(void)cap;
+	return 0u;
+#endif
+}
+
 static e9k_debug_ami_dma_debug_frame_view_t e9k_debug_dmaDebugFrameViews[2];
 static e9k_debug_ami_copper_debug_frame_view_t e9k_debug_copperDebugFrameViews[2];
 
 E9K_DEBUG_EXPORT const e9k_debug_ami_dma_debug_frame_view_t *
-e9k_debug_ami_dma_debug_get_frame_view(uint32_t frameSelect)
+e9k_debug_amiga_dma_debug_get_frame_view(uint32_t frameSelect)
 {
 #if E9K_HACK_DMA_DEBUG_EXPORT
 	const struct dma_rec *records = NULL;
@@ -1600,7 +2095,7 @@ e9k_debug_ami_dma_debug_get_frame_view(uint32_t frameSelect)
 
 #if E9K_HACK_COPPER_DEBUG_EXPORT
 E9K_DEBUG_EXPORT const e9k_debug_ami_copper_debug_frame_view_t *
-e9k_debug_ami_copper_debug_get_frame_view(uint32_t frameSelect)
+e9k_debug_amiga_copper_debug_get_frame_view(uint32_t frameSelect)
 {
 	const struct cop_rec *records = NULL;
 	int recordCount = 0;
@@ -1641,7 +2136,7 @@ e9k_debug_ami_copper_debug_get_frame_view(uint32_t frameSelect)
 #endif
 
 E9K_DEBUG_EXPORT int
-e9k_debug_ami_get_video_line_count(void)
+e9k_debug_amiga_get_video_line_count(void)
 {
 	if (retroh_crop <= 0) {
 		return 0;
@@ -1650,9 +2145,19 @@ e9k_debug_ami_get_video_line_count(void)
 }
 
 E9K_DEBUG_EXPORT int
-e9k_debug_ami_video_line_to_core_line(int videoLine)
+e9k_debug_amiga_get_raster_line_count(void)
 {
-	int lineCount = e9k_debug_ami_get_video_line_count();
+	uint64_t count = e9k_debug_checkpointScanlineCount();
+	if (count > (uint64_t)INT_MAX) {
+		return INT_MAX;
+	}
+	return (int)count;
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_amiga_video_line_to_core_line(int videoLine)
+{
+	int lineCount = e9k_debug_amiga_get_video_line_count();
 	if (videoLine < 0 || videoLine >= lineCount) {
 		return -1;
 	}
@@ -1670,19 +2175,19 @@ e9k_debug_absInt(int value)
 }
 
 E9K_DEBUG_EXPORT int
-e9k_debug_ami_core_line_to_video_line(int coreLine)
+e9k_debug_amiga_core_line_to_video_line(int coreLine)
 {
 	if (coreLine < 0) {
 		return -1;
 	}
-	int lineCount = e9k_debug_ami_get_video_line_count();
+	int lineCount = e9k_debug_amiga_get_video_line_count();
 	if (lineCount <= 0) {
 		return -1;
 	}
 	int bestVideoLine = -1;
 	int bestDelta = 0x7fffffff;
 	for (int videoLine = 0; videoLine < lineCount; ++videoLine) {
-		int mappedCoreLine = e9k_debug_ami_video_line_to_core_line(videoLine);
+		int mappedCoreLine = e9k_debug_amiga_video_line_to_core_line(videoLine);
 		if (mappedCoreLine < 0) {
 			continue;
 		}
@@ -1698,15 +2203,53 @@ e9k_debug_ami_core_line_to_video_line(int coreLine)
 	return bestVideoLine;
 }
 
+static void
+e9k_debug_amiFillVideoLineState(int coreLine, e9k_debug_ami_video_line_state_t *out)
+{
+	if (!out || coreLine < 0 || coreLine >= MAXVPOS) {
+		return;
+	}
+
+	memset(out, 0, sizeof(*out));
+	for (int i = 0; i < 8; ++i) {
+		out->ptr[i] = E9K_DEBUG_AMI_VIDEO_LINE_INVALID_PTR;
+	}
+
+	struct decision *decision = &line_decisions[coreLine];
+#if E9K_HACK_MEMVIS
+	(void)custom_readFirstBitplanePointers(coreLine, (uae_u32 *)out->ptr, 8);
+#endif
+	out->bplres = decision->bplres;
+}
+
+static void
+e9k_debug_amiSyncVideoLineStates(void)
+{
+	for (int coreLine = 0; coreLine < MAXVPOS; ++coreLine) {
+		e9k_debug_amiFillVideoLineState(coreLine, &e9k_debug_amiVideoLineStates[coreLine]);
+	}
+}
+
+E9K_DEBUG_EXPORT const e9k_debug_ami_video_line_state_t *
+e9k_debug_amiga_get_video_line_states(void)
+{
+	e9k_debug_amiSyncVideoLineStates();
+	return e9k_debug_amiVideoLineStates;
+}
+
 void
-e9k_debug_ami_on_video_presented(void)
+e9k_debug_amiga_on_video_presented(void)
 {
 #if E9K_HACK_BLITTER_VIS
 	uint32_t decayFrames = blitter_getDebugVisDecayFrames();
 	int collectMode = ((blitter_getDebugVisMode() & E9K_DEBUG_BLITTER_VIS_MODE_COLLECT) != 0) ? 1 : 0;
 	if (blitter_getDebugWriteEnabled()) {
 		drawing_blitterVisSnapshotFrame();
+#if E9K_HACK_MEMVIS
+		blitter_debugSnapshotFrame();
+#endif
 		if (collectMode) {
+			blitter_debugRetireCollectedWrites();
 			drawing_blitterVisClearFrame();
 		}
 	}
@@ -1749,9 +2292,9 @@ e9k_debug_requestBreak(void)
 }
 
 static void
-e9k_debug_watchpointRead(uint32_t addr24, uint32_t value, uint32_t sizeBits)
+e9k_debug_watchpointReadWithSource(uint32_t addr24, uint32_t value, uint32_t sizeBits, uint32_t accessSource)
 {
-	if (e9k_debug_watchpointSuspend > 0) {
+	if (e9k_debug_watchpointsSuppressed()) {
 		return;
 	}
 	if (e9k_debug_paused) {
@@ -1765,17 +2308,18 @@ e9k_debug_watchpointRead(uint32_t addr24, uint32_t value, uint32_t sizeBits)
 		if ((e9k_debug_watchpointEnabledMask & (1ull << index)) == 0ull) {
 			continue;
 		}
-		if (e9k_debug_watchpointMatch(&e9k_debug_watchpoints[index], addr24, E9K_WATCH_ACCESS_READ, sizeBits, value, value, 1)) {
-			e9k_debug_watchbreakRequest(index, addr24, E9K_WATCH_ACCESS_READ, sizeBits, value, value, 1);
+		if (e9k_debug_watchpointMatch(&e9k_debug_watchpoints[index], addr24, E9K_WATCH_ACCESS_READ, sizeBits, value, value, 1, accessSource)) {
+			e9k_debug_watchbreakRequest(index, addr24, E9K_WATCH_ACCESS_READ, sizeBits, value, value, 1, accessSource);
 			return;
 		}
 	}
 }
 
 static void
-e9k_debug_watchpointWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid)
+e9k_debug_watchpointWriteWithSource(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid,
+                                    uint32_t accessSource)
 {
-	if (e9k_debug_watchpointSuspend > 0) {
+	if (e9k_debug_watchpointsSuppressed()) {
 		return;
 	}
 	if (e9k_debug_paused) {
@@ -1789,11 +2333,45 @@ e9k_debug_watchpointWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, ui
 		if ((e9k_debug_watchpointEnabledMask & (1ull << index)) == 0ull) {
 			continue;
 		}
-		if (e9k_debug_watchpointMatch(&e9k_debug_watchpoints[index], addr24, E9K_WATCH_ACCESS_WRITE, sizeBits, value, oldValue, oldValueValid)) {
-			e9k_debug_watchbreakRequest(index, addr24, E9K_WATCH_ACCESS_WRITE, sizeBits, value, oldValue, oldValueValid);
+		if (e9k_debug_watchpointMatch(&e9k_debug_watchpoints[index], addr24, E9K_WATCH_ACCESS_WRITE, sizeBits, value, oldValue, oldValueValid, accessSource)) {
+			e9k_debug_watchbreakRequest(index, addr24, E9K_WATCH_ACCESS_WRITE, sizeBits, value, oldValue, oldValueValid, accessSource);
 			return;
 		}
 	}
+}
+
+static int
+e9k_debug_watchpointWriteBreakBeforeWriteWithSource(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits,
+                                                    int oldValueValid, uint32_t accessSource)
+{
+	if (e9k_debug_watchpointsSuppressed()) {
+		return 1;
+	}
+	if (e9k_debug_paused) {
+		return 1;
+	}
+	if (e9k_debug_watchpointEnabledMask == 0) {
+		return 1;
+	}
+
+	for (uint32_t index = 0; index < E9K_WATCHPOINT_COUNT; ++index) {
+		if ((e9k_debug_watchpointEnabledMask & (1ull << index)) == 0ull) {
+			continue;
+		}
+		if (!e9k_debug_watchpointMatch(&e9k_debug_watchpoints[index], addr24, E9K_WATCH_ACCESS_WRITE,
+		                               sizeBits, value, oldValue, oldValueValid, accessSource)) {
+			continue;
+		}
+		if (!e9k_debug_watchSnapshotRestore()) {
+			return 1;
+		}
+		e9k_debug_watchReplayPending = 1;
+		e9k_debug_skipBreakpointOnce = 1;
+		e9k_debug_skipBreakpointPc = e9k_debug_maskAddr(regs.instruction_pc);
+		e9k_debug_watchbreakRequest(index, addr24, E9K_WATCH_ACCESS_WRITE, sizeBits, value, oldValue, oldValueValid, accessSource);
+		return 0;
+	}
+	return 1;
 }
 
 static int
@@ -1899,8 +2477,14 @@ next_write_byte:
 E9K_DEBUG_EXPORT void
 e9k_debug_memhook_afterRead(uint32_t addr24, uint32_t value, uint32_t sizeBits)
 {
+	e9k_debug_memhook_afterReadWithSource(addr24, value, sizeBits, E9K_WATCH_ACCESS_SOURCE_CPU);
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_memhook_afterReadWithSource(uint32_t addr24, uint32_t value, uint32_t sizeBits, uint32_t accessSource)
+{
 	addr24 &= 0x00ffffffu;
-	e9k_debug_watchpointRead(addr24, value, sizeBits);
+	e9k_debug_watchpointReadWithSource(addr24, value, sizeBits, accessSource);
 }
 
 E9K_DEBUG_EXPORT int
@@ -1910,17 +2494,53 @@ e9k_debug_memhook_filterWrite(uint32_t addr24, uint32_t sizeBits, uint32_t oldVa
 	return e9k_debug_protectFilterWrite(addr24, sizeBits, oldValue, oldValueValid, inoutValue);
 }
 
+E9K_DEBUG_EXPORT int
+e9k_debug_memhook_beforeWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid)
+{
+	return e9k_debug_memhook_beforeWriteWithSource(addr24, value, oldValue, sizeBits, oldValueValid, E9K_WATCH_ACCESS_SOURCE_CPU);
+}
+
+E9K_DEBUG_EXPORT int
+e9k_debug_memhook_beforeWriteWithSource(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid,
+                                        uint32_t accessSource)
+{
+	addr24 &= 0x00ffffffu;
+	return e9k_debug_watchpointWriteBreakBeforeWriteWithSource(addr24, value, oldValue, sizeBits, oldValueValid, accessSource);
+}
+
 E9K_DEBUG_EXPORT void
 e9k_debug_memhook_afterWrite(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid)
 {
+	e9k_debug_memhook_afterWriteWithSource(addr24, value, oldValue, sizeBits, oldValueValid, E9K_WATCH_ACCESS_SOURCE_CPU);
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_memhook_afterWriteWithSource(uint32_t addr24, uint32_t value, uint32_t oldValue, uint32_t sizeBits, int oldValueValid,
+                                       uint32_t accessSource)
+{
 	addr24 &= 0x00ffffffu;
-	e9k_debug_watchpointWrite(addr24, value, oldValue, sizeBits, oldValueValid);
+	e9k_debug_watchpointWriteWithSource(addr24, value, oldValue, sizeBits, oldValueValid, accessSource);
 }
 
 E9K_DEBUG_EXPORT int
 e9k_debug_instructionHook(uaecptr pc, uae_u16 opcode)
 {
 	uint32_t pc24 = e9k_debug_maskAddr(pc);
+	if (e9k_debug_amiShouldRecordKnownPc()) {
+		e9k_debug_amiRecordKnownPc(pc24);
+	}
+
+	if (e9k_debug_watchReplayActive) {
+		e9k_debug_watchReplayActive = 0;
+	} else if (e9k_debug_watchReplayPending) {
+		e9k_debug_watchReplayPending = 0;
+		e9k_debug_watchReplayActive = 1;
+	}
+	if (e9k_debug_watchpointEnabledMask != 0) {
+		e9k_debug_watchSnapshotCapture();
+	} else {
+		e9k_debug_watchSnapshotInvalidate();
+	}
 
 	e9k_debug_profiler_instrHook(pc24);
 
@@ -2052,11 +2672,14 @@ e9k_debug_reset_watchpoints(void)
 	memset(&e9k_debug_watchbreak, 0, sizeof(e9k_debug_watchbreak));
 	e9k_debug_watchbreakPending = 0;
 	e9k_debug_watchpointSuspend = 0;
+	e9k_debug_watchSnapshotInvalidate();
+	e9k_debug_watchReplayPending = 0;
+	e9k_debug_watchReplayActive = 0;
 }
 
 E9K_DEBUG_EXPORT int
 e9k_debug_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand,
-                         uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand)
+                         uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand, uint32_t access_source_operand)
 {
 	e9k_debug_ensureMemhooks();
 	if (!e9k_debug_memhooksEnabled) {
@@ -2077,6 +2700,7 @@ e9k_debug_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand,
 		e9k_debug_watchpoints[i].old_value_operand = old_value_operand;
 		e9k_debug_watchpoints[i].size_operand = size_operand;
 		e9k_debug_watchpoints[i].addr_mask_operand = addr_mask_operand;
+		e9k_debug_watchpoints[i].access_source_operand = access_source_operand;
 		e9k_debug_watchpointEnabledMask |= bit;
 		return (int)i;
 	}
@@ -2091,6 +2715,11 @@ e9k_debug_remove_watchpoint(uint32_t index)
 	}
 	e9k_debug_watchpointEnabledMask &= ~(1ull << index);
 	memset(&e9k_debug_watchpoints[index], 0, sizeof(e9k_debug_watchpoints[index]));
+	if (e9k_debug_watchpointEnabledMask == 0) {
+		e9k_debug_watchSnapshotInvalidate();
+		e9k_debug_watchReplayPending = 0;
+		e9k_debug_watchReplayActive = 0;
+	}
 }
 
 E9K_DEBUG_EXPORT size_t
@@ -2123,6 +2752,11 @@ e9k_debug_set_watchpoint_enabled_mask(uint64_t mask)
 		}
 	}
 	e9k_debug_watchpointEnabledMask = mask;
+	if (mask == 0) {
+		e9k_debug_watchSnapshotInvalidate();
+		e9k_debug_watchReplayPending = 0;
+		e9k_debug_watchReplayActive = 0;
+	}
 }
 
 E9K_DEBUG_EXPORT int
@@ -2383,12 +3017,6 @@ e9k_debug_neogeo_get_sprite_state(e9k_debug_sprite_state_t *out, size_t cap)
 }
 
 E9K_DEBUG_EXPORT size_t
-e9k_debug_get_sprite_state(e9k_debug_sprite_state_t *out, size_t cap)
-{
-	return e9k_debug_neogeo_get_sprite_state(out, cap);
-}
-
-E9K_DEBUG_EXPORT size_t
 e9k_debug_neogeo_get_p1_rom(e9k_debug_rom_region_t *out, size_t cap)
 {
 	(void)out;
@@ -2397,29 +3025,73 @@ e9k_debug_neogeo_get_p1_rom(e9k_debug_rom_region_t *out, size_t cap)
 }
 
 E9K_DEBUG_EXPORT size_t
-e9k_debug_get_p1_rom(e9k_debug_rom_region_t *out, size_t cap)
-{
-	return e9k_debug_neogeo_get_p1_rom(out, cap);
-}
-
-E9K_DEBUG_EXPORT size_t
 e9k_debug_read_checkpoints(e9k_debug_checkpoint_t *out, size_t cap)
 {
+	size_t count = 0;
+	size_t maxEntries = 0;
+
 	if (!out || cap == 0) {
 		return 0;
 	}
-	size_t count = E9K_CHECKPOINT_COUNT;
-	if (count > cap) {
-		count = cap;
+
+	maxEntries = cap / sizeof(out[0]);
+	if (maxEntries == 0) {
+		return 0;
 	}
-	memcpy(out, e9k_debug_checkpoints, count * sizeof(out[0]));
-	return count;
+
+	count = E9K_CHECKPOINT_COUNT;
+	if (count > maxEntries) {
+		count = maxEntries;
+	}
+
+	if (e9k_debug_hasPublishedCheckpoints) {
+		memcpy(out, e9k_debug_publishedCheckpoints, count * sizeof(out[0]));
+	} else {
+		memcpy(out, e9k_debug_checkpoints, count * sizeof(out[0]));
+	}
+	return count * sizeof(out[0]);
 }
 
 E9K_DEBUG_EXPORT void
 e9k_debug_reset_checkpoints(void)
 {
 	memset(e9k_debug_checkpoints, 0, sizeof(e9k_debug_checkpoints));
+	memset(e9k_debug_publishedCheckpoints, 0, sizeof(e9k_debug_publishedCheckpoints));
+	e9k_debug_hasPublishedCheckpoints = 0;
+#if E9K_HACK_CHECKPOINTS
+	e9k_debug_checkpointActive = -1;
+	e9k_debug_checkpointLastCycle = 0;
+#endif
+}
+
+E9K_DEBUG_EXPORT size_t
+e9k_debug_read_counters(e9k_debug_counter_t *out, size_t cap)
+{
+	size_t count = 0;
+	size_t maxEntries = 0;
+
+	if (!out || cap == 0) {
+		return 0;
+	}
+
+	maxEntries = cap / sizeof(out[0]);
+	if (maxEntries == 0) {
+		return 0;
+	}
+
+	count = E9K_COUNTER_COUNT;
+	if (count > maxEntries) {
+		count = maxEntries;
+	}
+
+	memcpy(out, e9k_debug_counters, count * sizeof(out[0]));
+	return count * sizeof(out[0]);
+}
+
+E9K_DEBUG_EXPORT void
+e9k_debug_reset_counters(void)
+{
+	memset(e9k_debug_counters, 0, sizeof(e9k_debug_counters));
 }
 
 E9K_DEBUG_EXPORT void
@@ -2434,16 +3106,144 @@ e9k_debug_get_checkpoint_enabled(void)
 	return e9k_debug_checkpointEnabled;
 }
 
+#if E9K_HACK_CHECKPOINTS
+void
+e9k_debug_checkpoint_write(uint8_t index)
+{
+	int previousIndex = e9k_debug_checkpointActive;
+	uint64_t sample = 0;
+	uint64_t now = 0;
+	uint64_t scanline = 0;
+
+	if (!e9k_debug_checkpointEnabled) {
+		return;
+	}
+	if (index >= E9K_CHECKPOINT_COUNT) {
+		return;
+	}
+
+	now = e9k_debug_read_cycle_count();
+	scanline = (uint64_t)(vpos & 0xffff);
+
+	if (previousIndex >= 0 && index != 0) {
+		e9k_debug_checkpoint_t *prev = &e9k_debug_checkpoints[previousIndex];
+		uint64_t scanlineCount = e9k_debug_checkpointScanlineCount();
+		uint64_t span = e9k_debug_checkpointScanlineSpan(prev->scanlineLast, scanline, scanlineCount);
+		e9k_debug_recordCheckpointScanlineSpan(prev, span);
+		if (now >= e9k_debug_checkpointLastCycle) {
+			sample = now - e9k_debug_checkpointLastCycle;
+		}
+		prev->current = sample;
+		if (prev->count == 0) {
+			prev->minimum = sample;
+			prev->maximum = sample;
+		} else {
+			if (sample < prev->minimum) {
+				prev->minimum = sample;
+			}
+			if (sample > prev->maximum) {
+				prev->maximum = sample;
+			}
+		}
+		prev->count += 1;
+		prev->accumulator += sample;
+		prev->average = prev->count ? (prev->accumulator / prev->count) : 0;
+	}
+
+	if (index == 0 && previousIndex >= 0) {
+		e9k_debug_publish_checkpoints();
+	}
+
+	{
+		e9k_debug_checkpoint_t *cur = &e9k_debug_checkpoints[index];
+		e9k_debug_recordCheckpointScanline(cur, scanline);
+		cur->current = 0;
+	}
+
+	e9k_debug_checkpointActive = (int)index;
+	e9k_debug_checkpointLastCycle = now;
+}
+
+void
+e9k_debug_checkpoint_set_name_from_pointer(uint8_t index, uint32_t ptrValue)
+{
+	char name[E9K_CHECKPOINT_NAME_MAX];
+	uint32_t ptrAddr = 0;
+
+	if (index >= E9K_CHECKPOINT_COUNT) {
+		return;
+	}
+
+	memset(name, 0, sizeof(name));
+	ptrAddr = ptrValue;
+	if (ptrAddr != 0) {
+		size_t readCount = e9k_debug_read_memory(ptrAddr, (uint8_t *)name, sizeof(name) - 1);
+		if (readCount < sizeof(name)) {
+			name[readCount] = '\0';
+		}
+		name[sizeof(name) - 1] = '\0';
+	}
+
+	memcpy(e9k_debug_checkpoints[index].name, name, sizeof(name));
+	memcpy(e9k_debug_publishedCheckpoints[index].name, name, sizeof(name));
+}
+#endif
+
+void
+e9k_debug_counter_write(uint8_t index, uint32_t value)
+{
+	if (index >= E9K_COUNTER_COUNT) {
+		return;
+	}
+
+	e9k_debug_counter_t *counter = &e9k_debug_counters[index];
+	counter->current = value;
+	counter->count = 1;
+	counter->accumulator = value;
+	counter->average = value;
+	counter->minimum = value;
+	counter->maximum = value;
+}
+
+void
+e9k_debug_counter_set_name_from_pointer(uint8_t index, uint32_t ptrValue)
+{
+	char name[E9K_COUNTER_NAME_MAX];
+	uint32_t ptrAddr = 0;
+
+	if (index >= E9K_COUNTER_COUNT) {
+		return;
+	}
+
+	memset(name, 0, sizeof(name));
+	ptrAddr = ptrValue;
+	if (ptrAddr != 0) {
+		size_t readCount = e9k_debug_read_memory(ptrAddr, (uint8_t *)name, sizeof(name) - 1);
+		if (readCount < sizeof(name)) {
+			name[readCount] = '\0';
+		}
+		name[sizeof(name) - 1] = '\0';
+	}
+
+	memcpy(e9k_debug_counters[index].name, name, sizeof(name));
+}
+
 E9K_DEBUG_EXPORT int *
-e9k_debug_amiga_get_debug_dma_addr(void)
+e9k_debug_amiga_get_dma_addr(void)
 {
 	return &debug_dma;
 }
 
 #if E9K_HACK_COPPER_DEBUG_EXPORT
 E9K_DEBUG_EXPORT int *
-e9k_debug_amiga_get_debug_copper_addr(void)
+e9k_debug_amiga_get_copper_addr(void)
 {
 	return &debug_copper;
 }
 #endif
+
+E9K_DEBUG_EXPORT const e9k_debug_ami_custom_reg_state_t *
+e9k_debug_amiga_get_custom_regs(void)
+{
+	return (const e9k_debug_ami_custom_reg_state_t *)custom_storage;
+}

@@ -1,5 +1,17 @@
+/*
+ * COPYRIGHT © 2026 Enable Software Pty Ltd - All Rights Reserved
+ *
+ * https://github.com/alpine9000/engine9000-public
+ *
+ * See COPYING for license details
+ */
+
 #include "debugger.h"
 #include "settings.h"
+
+typedef struct settings_uae_extension_warning_state {
+    SDL_Color color;
+} settings_uae_extension_warning_state_t;
 
 int
 settings_validateUaeConfig(e9ui_context_t *ctx, e9ui_component_t *comp, const char *text, void *user)
@@ -38,7 +50,6 @@ settings_pathHasUaeExtension(const char *path)
 static int
 settings_shouldShowUaeExtensionWarning(void)
 {
-  // TODO
   if (debugger.settingsEdit.target != target_amiga()) {
         return 0;
     }
@@ -52,9 +63,6 @@ settings_shouldShowUaeExtensionWarning(void)
     return 1;
 }
 
-typedef struct settings_uae_extension_warning_state {
-    SDL_Color color;
-} settings_uae_extension_warning_state_t;
 
 static int
 settings_uaeExtensionWarning_preferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)

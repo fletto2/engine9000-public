@@ -1,0 +1,54 @@
+/*
+ * COPYRIGHT © 2026 Enable Software Pty Ltd - All Rights Reserved
+ *
+ * https://github.com/alpine9000/engine9000-public
+ *
+ * See COPYING for license details
+ */
+
+#pragma once
+
+#include <stdint.h>
+#include <stddef.h>
+
+#include "source_pane_internal.h"
+
+int
+source_z80_isModeAvailable(void);
+
+uint32_t
+source_z80_processorId(void);
+
+uint64_t
+source_z80_resolveAnchorAddr(uint64_t addr);
+
+uint64_t
+source_z80_getCurrentAddr(source_pane_state_t *st);
+
+int
+source_z80_getWindow(source_pane_state_t *st, int maxLines, uint64_t *outCurAddr,
+                     const char ***outLines, const uint64_t **outAddrs, int *outCount);
+
+void
+source_z80_copySymbolBaseDir(char *out, size_t cap);
+
+int
+source_z80_getSymbolCount(void);
+
+int
+source_z80_getSymbol(int index, const char **outName, uint16_t *outAddr);
+
+int
+source_z80_resolveSourceLocation(uint16_t addr, char *outPath, size_t pathCap, int *outLine);
+
+int
+source_z80_resolveSourceLineAddress(const char *path, int line, uint16_t *outAddr);
+
+int
+source_z80_getSourceLocationCount(void);
+
+int
+source_z80_getSourceLocation(int index, uint16_t *outAddr, const char **outPath, int *outLine);
+
+uint64_t
+source_z80_getSourceMapRevision(void);

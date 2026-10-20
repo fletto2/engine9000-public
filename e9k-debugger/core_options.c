@@ -19,9 +19,7 @@
 #include "debugger.h"
 #include "e9ui.h"
 #include "e9ui_scroll.h"
-#include "e9ui_text.h"
 #include "libretro_host.h"
-#include "neogeo_core_options.h"
 #include "settings.h"
 #include "system_badge.h"
 
@@ -84,9 +82,6 @@ core_options_makeSystemBadge(e9ui_context_t *ctx, target_iface_t* system)
         return NULL;
     }
     e9ui_component_t *box = e9ui_box_make(img);
-    if (!box) {
-        return img;
-    }
     e9ui_box_setWidth(box, e9ui_dim_fixed, 139);
     e9ui_box_setHeight(box, e9ui_dim_fixed, 48);
     return box;
@@ -830,6 +825,7 @@ core_options_cloneWithDebuggerInput(int targetIndex,
     const char *requestedInputKey = debugger_input_bindings_categoryKey();
     const char *resolvedInputCategoryKey = requestedInputKey;
     target_iface_t *targetIface = target_getByIndex(targetIndex);
+    size_t visibleBaseDefCount = 0;
     int hasInputCategory = 0;
     for (size_t i = 0; i < baseCatCount; ++i) {
         const struct retro_core_option_v2_category *cat = &baseCats[i];
@@ -841,6 +837,17 @@ core_options_cloneWithDebuggerInput(int targetIndex,
             hasInputCategory = 1;
             break;
         }
+    }
+
+    for (size_t i = 0; i < baseDefCount; ++i) {
+        const struct retro_core_option_v2_definition *def = &baseDefs[i];
+        if (!def->key || !*def->key) {
+            continue;
+        }
+        if (targetIface && targetIface->coreOptionsHideOptionKey && targetIface->coreOptionsHideOptionKey(def->key)) {
+            continue;
+        }
+        visibleBaseDefCount++;
     }
 
     size_t syntheticDefCount = 0;
@@ -869,7 +876,7 @@ core_options_cloneWithDebuggerInput(int targetIndex,
     }
 
     size_t outCatsNeeded = baseCatCount + (hasInputCategory ? 0u : 1u);
-    size_t outDefsNeeded = baseDefCount + syntheticDefCount;
+    size_t outDefsNeeded = visibleBaseDefCount + syntheticDefCount;
 
     struct retro_core_option_v2_category *cats =
         (struct retro_core_option_v2_category *)alloc_calloc(outCatsNeeded + 1, sizeof(*cats));
@@ -893,11 +900,19 @@ core_options_cloneWithDebuggerInput(int targetIndex,
         resolvedInputCategoryKey = debugger_input_bindings_categoryKey();
     }
 
+    size_t nextBaseDef = 0;
     for (size_t i = 0; i < baseDefCount; ++i) {
-        core_options_cloneDefinition(&defs[i], &baseDefs[i]);
+        const struct retro_core_option_v2_definition *def = &baseDefs[i];
+        if (!def->key || !*def->key) {
+            continue;
+        }
+        if (targetIface && targetIface->coreOptionsHideOptionKey && targetIface->coreOptionsHideOptionKey(def->key)) {
+            continue;
+        }
+        core_options_cloneDefinition(&defs[nextBaseDef++], def);
     }
 
-    size_t nextDef = baseDefCount;
+    size_t nextDef = visibleBaseDefCount;
     for (size_t i = 0; i < debugger_input_bindings_specCount(); ++i) {
         size_t specIndex = i;
         if (targetIface && targetIface->coreOptionsMapDebuggerInputSpecIndex) {
@@ -1244,21 +1259,19 @@ core_options_makeKeybindRow(core_options_modal_state_t *st,
     rowSt->totalWidthPx = totalWidthPx;
 
     e9ui_component_t *button = e9ui_button_make("Unbound", core_options_keybindButtonClicked, cb);
-    if (button) {
-        cb->button = button;
-        cb->focusComp = button;
-        cb->origHandleEvent = button->handleEvent;
-        button->handleEvent = core_options_optionFocusHandleEvent;
-        rowSt->button = button;
-        e9ui_button_setLeftJustify(button, 16);
-        e9ui_button_setLargestLabel(button, "Press key...");
-        core_options_keybindUpdateButtonLabel(cb);
-        if (def->info && *def->info) {
-            e9ui_setTooltip(button, def->info);
-            e9ui_setTooltip(row, def->info);
-        }
-        e9ui_child_add(row, button, 0);
+    cb->button = button;
+    cb->focusComp = button;
+    cb->origHandleEvent = button->handleEvent;
+    button->handleEvent = core_options_optionFocusHandleEvent;
+    rowSt->button = button;
+    e9ui_button_setLeftJustify(button, 16);
+    e9ui_button_setLargestLabel(button, "Press key...");
+    core_options_keybindUpdateButtonLabel(cb);
+    if (def->info && *def->info) {
+        e9ui_setTooltip(button, def->info);
+        e9ui_setTooltip(row, def->info);
     }
+    e9ui_child_add(row, button, 0);
 
     return row;
 }
@@ -1348,27 +1361,19 @@ core_options_buildOptionsForCategory(core_options_modal_state_t *st, e9ui_contex
             }
             e9ui_component_t *chk = e9ui_labeled_checkbox_make(label, labelWidthPx, totalWidthPx,
                                                               selected, core_options_optionCheckboxChanged, cb);
-            if (!chk) {
-                continue;
-            }
             if (debugger.coreOptionsShowHelp && def->info && *def->info) {
                 e9ui_labeled_checkbox_setInfo(chk, def->info);
             }
             if (cb) {
                 cb->focusComp = e9ui_labeled_checkbox_getCheckbox(chk);
-                if (cb->focusComp) {
-                    cb->origHandleEvent = cb->focusComp->handleEvent;
-                    cb->focusComp->handleEvent = core_options_optionFocusHandleEvent;
-                }
+                cb->origHandleEvent = cb->focusComp->handleEvent;
+                cb->focusComp->handleEvent = core_options_optionFocusHandleEvent;
             }
             e9ui_stack_addFixed(st->optionsStack, chk);
         } else {
             e9ui_component_t *select = e9ui_labeled_select_make(label, labelWidthPx, totalWidthPx,
                                                                 opts, optCount, value,
                                                                 core_options_optionChanged, cb);
-            if (!select) {
-                continue;
-            }
             if (debugger.coreOptionsShowHelp && def->info && *def->info) {
                 e9ui_labeled_select_setInfo(select, def->info);
             }
@@ -1672,39 +1677,25 @@ core_options_makeBody(core_options_modal_state_t *st, e9ui_context_t *ctx)
     e9ui_hstack_addFlex(cols, optionsScroll);
 
     e9ui_component_t *content = e9ui_box_make(cols);
-    if (content) {
-        e9ui_box_setPaddingSides(content, 32, 32, 0, 32);
-    } else {
-        content = cols;
-    }
+    e9ui_box_setPaddingSides(content, 32, 32, 0, 32);
 
     e9ui_component_t *btnSave = e9ui_button_make("Apply", core_options_saveClicked, st);
     e9ui_component_t *btnDefaults = e9ui_button_make("Defaults", core_options_defaultsClicked, st);
     e9ui_component_t *btnCancel = e9ui_button_make("Cancel", core_options_cancelClicked, st);
     st->btnSave = btnSave;
     st->btnDefaults = btnDefaults;
-    if (btnSave) {
-        e9ui_button_setTheme(btnSave, e9ui_theme_button_preset_green());
-        e9ui_button_setGlowPulse(btnSave, 0);
-    }
-    if (btnCancel) {
-        e9ui_button_setTheme(btnCancel, e9ui_theme_button_preset_red());
-        e9ui_button_setGlowPulse(btnCancel, 1);
-    }
+    e9ui_button_setTheme(btnSave, e9ui_theme_button_preset_green());
+    e9ui_button_setGlowPulse(btnSave, 0);
+    e9ui_button_setTheme(btnCancel, e9ui_theme_button_preset_red());
+    e9ui_button_setGlowPulse(btnCancel, 1);
 
     e9ui_component_t *footer = e9ui_flow_make();
     e9ui_flow_setPadding(footer, 0);
     e9ui_flow_setSpacing(footer, 8);
     e9ui_flow_setWrap(footer, 0);
-    if (btnSave) {
-        e9ui_flow_add(footer, btnSave);
-    }
-    if (btnDefaults) {
-        e9ui_flow_add(footer, btnDefaults);
-    }    
-    if (btnCancel) {
-        e9ui_flow_add(footer, btnCancel);
-    }
+    e9ui_flow_add(footer, btnSave);
+    e9ui_flow_add(footer, btnDefaults);
+    e9ui_flow_add(footer, btnCancel);
 
     e9ui_component_t *layout = e9ui_overlay_make(content, footer);
     e9ui_overlay_setAnchor(layout, e9ui_anchor_bottom_right);
@@ -1758,21 +1749,19 @@ core_options_buildCategories(core_options_modal_state_t *st, e9ui_context_t *ctx
             core_options_trackCategoryCb(st, generalCb);
         }
         e9ui_component_t *btnGeneral = e9ui_button_make("General", core_options_categoryClicked, generalCb);
-        if (btnGeneral) {
-            if (generalCb) {
-                generalCb->button = btnGeneral;
-                generalCb->origHandleEvent = btnGeneral->handleEvent;
-                btnGeneral->handleEvent = core_options_categoryButtonHandleEvent;
-            }
-            e9ui_button_setLeftJustify(btnGeneral, 16);
-            e9ui_button_setIconRightPadding(btnGeneral, 16);
-            const char *icon = core_options_categoryIconAssetForKey(NULL);
-            if (icon && *icon) {
-                e9ui_button_setIconAsset(btnGeneral, icon);
-            }
-            e9ui_stack_addFixed(st->categoryStack, btnGeneral);
-            e9ui_stack_addFixed(st->categoryStack, e9ui_vspacer_make(4));
+        if (generalCb) {
+            generalCb->button = btnGeneral;
+            generalCb->origHandleEvent = btnGeneral->handleEvent;
+            btnGeneral->handleEvent = core_options_categoryButtonHandleEvent;
         }
+        e9ui_button_setLeftJustify(btnGeneral, 16);
+        e9ui_button_setIconRightPadding(btnGeneral, 16);
+        const char *icon = core_options_categoryIconAssetForKey(NULL);
+        if (icon && *icon) {
+            e9ui_button_setIconAsset(btnGeneral, icon);
+        }
+        e9ui_stack_addFixed(st->categoryStack, btnGeneral);
+        e9ui_stack_addFixed(st->categoryStack, e9ui_vspacer_make(4));
     }
 
     if (st->cats && st->catCount > 0) {
@@ -1793,9 +1782,6 @@ core_options_buildCategories(core_options_modal_state_t *st, e9ui_context_t *ctx
             cb->categoryKey = cat->key;
             core_options_trackCategoryCb(st, cb);
             e9ui_component_t *btn = e9ui_button_make(label, core_options_categoryClicked, cb);
-            if (!btn) {
-                continue;
-            }
             cb->button = btn;
             cb->origHandleEvent = btn->handleEvent;
             btn->handleEvent = core_options_categoryButtonHandleEvent;

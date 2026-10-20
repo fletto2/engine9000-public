@@ -10,6 +10,7 @@
 
 #include <SDL_image.h>
 #include <limits.h>
+
 #include "alloc.h"
 #include "e9ui_component.h"
 #include "e9ui_context.h"
@@ -25,6 +26,7 @@
 #include "e9ui_spacer.h"
 #include "e9ui_vspacer.h"
 #include "e9ui_textbox.h"
+#include "e9ui_data_edit.h"
 #include "e9ui_separator.h"
 #include "e9ui_overlay.h"
 #include "e9ui_center.h"
@@ -32,6 +34,7 @@
 #include "e9ui_labeled_textbox.h"
 #include "e9ui_labeled_checkbox.h"
 #include "e9ui_labeled_select.h"
+#include "e9ui_range_bar.h"
 #include "e9ui_seek_bar.h"
 #include "e9ui_slider.h"
 #include "e9ui_modal.h"
@@ -45,7 +48,6 @@
 #include "e9ui_theme_defaults.h"
 #include "e9ui_theme_presets.h"
 #include "e9ui_theme.h"
-
 #include "file.h"
 #include "debug.h"
 
@@ -309,20 +311,8 @@ e9ui_runFullscreenTransition(e9ui_context_t *ctx,
                              int width,
                              int height);
 
-int
-e9ui_routeAuxWindowEvent(e9ui_context_t *ctx, SDL_Event *eventValue, uint32_t mainWindowId);
-
-int
-e9ui_ownsAuxWindowId(e9ui_context_t *ctx, uint32_t windowId);
-
-void
-e9ui_handleAuxWindowEvent(e9ui_context_t *ctx, const SDL_Event *eventValue);
-
 void
 e9ui_setMainWindowFocused(e9ui_context_t *ctx, int focused);
-
-int
-e9ui_normalizeMouseWheelY(e9ui_context_t *ctx, int value);
 
 int
 e9ui_handleGlobalKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev);
@@ -370,6 +360,9 @@ e9ui_getFullscreenComponent(void);
 e9ui_component_t *
 e9ui_getOverlayHost(void);
 
+e9ui_component_t *
+e9ui_getSelectionScopeForOwner(const e9ui_component_t *owner);
+
 int
 e9ui_isFullscreenComponent(const e9ui_component_t *comp);
 
@@ -381,6 +374,9 @@ e9ui_shutdown(void);
 
 void
 e9ui_setDisableVariable(e9ui_component_t *comp, const int *stateFlag, int disableWhenTrue);
+
+void
+e9ui_setDisabled(e9ui_component_t *comp, int disabled);
 
 void
 e9ui_setHiddenVariable(e9ui_component_t *comp, const int *var, int hideWhenTrue);

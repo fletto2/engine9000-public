@@ -17,6 +17,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -108,6 +109,24 @@ debugger_platform_hashPath(const char *path)
 }
 
 int
+debugger_platform_uncompressBuffer(uint8_t *dest, size_t *inOutDestSize, const uint8_t *source, size_t sourceSize)
+{
+    uLongf destSize = 0;
+
+    if (!dest || !inOutDestSize || !source) {
+        return Z_BUF_ERROR;
+    }
+
+    destSize = (uLongf)*inOutDestSize;
+    int zResult = uncompress((Bytef *)dest,
+                             &destSize,
+                             (const Bytef *)source,
+                             (uLong)sourceSize);
+    *inOutDestSize = (size_t)destSize;
+    return zResult;
+}
+
+int
 debugger_platform_pathJoin(char *out, size_t cap, const char *dir, const char *name)
 {
     if (!out || cap == 0 || !dir || !*dir || !name || !*name) {
@@ -127,6 +146,38 @@ debugger_platform_pathJoin(char *out, size_t cap, const char *dir, const char *n
     }
     memcpy(out + pos, name, nlen);
     out[pos + nlen] = '\0';
+    return 1;
+}
+
+int
+debugger_platform_pathIsAbsolute(const char *path)
+{
+    if (!path || !path[0]) {
+        return 0;
+    }
+    return path[0] == '/' ? 1 : 0;
+}
+
+int
+debugger_platform_expandHomePath(char *out, size_t cap, const char *path)
+{
+    if (!out || cap == 0) {
+        return 0;
+    }
+    if (!path || !path[0]) {
+        out[0] = '\0';
+        return 0;
+    }
+    if (path[0] != '~' || (path[1] != '/' && path[1] != '\0')) {
+        strutil_strlcpy(out, cap, path);
+        return 1;
+    }
+    const char *home = getenv("HOME");
+    if (!home || !home[0]) {
+        strutil_strlcpy(out, cap, path);
+        return 0;
+    }
+    strutil_join2Trunc(out, cap, home, path + 1);
     return 1;
 }
 
@@ -168,6 +219,12 @@ char
 debugger_platform_preferredPathSeparator(void)
 {
     return '/';
+}
+
+void
+debugger_platform_normalizePathSeparators(char *path)
+{
+    (void)path;
 }
 
 int
@@ -418,12 +475,6 @@ debugger_platform_replaceFile(const char *srcPath, const char *dstPath)
         return 0;
     }
     return rename(srcPath, dstPath) == 0 ? 1 : 0;
-}
-
-int
-debugger_platform_normalizeMouseWheelY(int value)
-{
-    return value;
 }
 
 int

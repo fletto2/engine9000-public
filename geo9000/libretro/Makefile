@@ -641,6 +641,11 @@ else
 	CC ?= gcc
 	SHARED := -shared -Wl,--no-undefined -Wl,--version-script=link.T
 	LDFLAGS += -static-libgcc -static-libstdc++ -lwinmm
+	INCFLAGS_PLATFORM += -I$(CORE_DIR)/deps/libretro-common/include/compat/zlib
+	ifeq ($(system_platform),osx)
+		MINGW_HOME ?= /usr/local/mingw
+		LDFLAGS += -L$(MINGW_HOME)/lib
+	endif
 
 endif
 
@@ -653,6 +658,7 @@ include Makefile.common
 
 SOURCES_C_REL := $(patsubst $(CORE_DIR)/%,%,$(SOURCES_C))
 OBJECTS := $(SOURCES_C_REL:.c=.o)
+OBJECTS := $(patsubst ../e9k-lib/%,e9k-lib/%,$(OBJECTS))
 OBJECTS := $(addprefix $(BUILD_DIR)/,$(OBJECTS))
 
 TARGET := $(BUILD_DIR)/$(TARGET)
@@ -675,7 +681,7 @@ ifneq (,$(findstring msvc,$(platform)))
    CXXFLAGS += -MT
 endif
    CFLAGS   += -flto -O3 -DNDEBUG
-   CXXFLAGS += -lfto -O3 -DNDEBUG
+   CXXFLAGS += -flto -O3 -DNDEBUG
 endif
 
 LDFLAGS += -flto $(fpic) $(SHARED)
@@ -701,9 +707,18 @@ WARNINGS := -Wall \
 	-fno-strict-overflow
 endif
 
-FLAGS += -D__LIBRETRO__ $(WARNINGS)
+E9K_HACK_AUDIO_VIS ?= 1
+
+FLAGS += -D__LIBRETRO__ -DZ7_ST -DE9K_HACK_REGISTER_LOG $(WARNINGS)
+ifeq ($(E9K_HACK_AUDIO_VIS),1)
+FLAGS += -DE9K_HACK_AUDIO_VIS
+endif
 
 CFLAGS += $(FLAGS)
+
+ifeq (,$(findstring msvc,$(platform)))
+CFLAGS += -MMD -MP
+endif
 
 ifneq (,$(findstring msvc,$(platform)))
 	OBJOUT = -Fo
@@ -733,6 +748,11 @@ else
 all: $(TARGET)
 	@mkdir -p ../../e9k-debugger/system
 	cp $(TARGET) ../../e9k-debugger/system/geo9000$(suffix $(TARGET))
+
+ifeq (,$(findstring msvc,$(platform)))
+-include $(OBJECTS:.o=.d)
+endif
+
 $(TARGET): $(OBJECTS)
 	@mkdir -p $(dir $@)
 ifeq ($(STATIC_LINKING), 1)
@@ -742,6 +762,10 @@ else
 endif
 
 $(BUILD_DIR)/%.o: $(CORE_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(OBJOUT)$@ $< $(CFLAGS)
+
+$(BUILD_DIR)/e9k-lib/%.o: $(CORE_DIR)/../e9k-lib/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c $(OBJOUT)$@ $< $(CFLAGS)
 

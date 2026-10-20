@@ -12,14 +12,11 @@
 #include "e9ui.h"
 #include "debugger.h"
 
-#ifndef E9K_HACK_AMI_SPRITE_VIS
-#define E9K_HACK_AMI_SPRITE_VIS 0
-#endif
 
 extern const emu_system_iface_t emu_ami_iface;
 
 int
-emu_ami_mouseCaptureCanEnable(void);
+emu_ami_mouseCaptureOnClickEnabled(void);
 
 size_t
 emu_ami_rangeBarCount(void);
@@ -38,9 +35,6 @@ emu_ami_rangeBarTooltip(size_t index, float startPercent, float endPercent, char
 
 int
 emu_ami_rangeBarSync(size_t index, e9ui_component_t *bar);
-
-int
-emu_ami_getBlitterVisLatestStats(e9k_debug_ami_blitter_vis_stats_t *outStats);
 
 int
 emu_ami_getCopperDebugEnabled(void);

@@ -9,14 +9,15 @@
 #include <SDL.h>
 #include <SDL_image.h>
 #include <SDL_ttf.h>
-
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "ui.h"
+#include "aux_window.h"
 #include "breakpoints.h"
 #include "clipboard.h"
 #include "config.h"
@@ -37,11 +38,9 @@
 #include "prompt.h"
 #include "registers.h"
 #include "settings.h"
-#include "shader_ui.h"
 #include "snapshot.h"
 #include "rom_config.h"
 #include "source_pane.h"
-#include "sprite_debug.h"
 #include "stack.h"
 #include "status_bar.h"
 #include "system_badge.h"
@@ -49,16 +48,14 @@
 #include "trainer.h"
 #include "console.h"
 #include "smoke_test.h"
-#include "custom_log.h"
-#include "custom_ui.h"
-#include "memory_track_ui.h"
-#include "mega_sprite_debug.h"
 #include "transition.h"
 #include "input_record.h"
 #include "ui_test.h"
 #include "gl_composite.h"
 
 static e9ui_component_t *ui_source_panes[2];
+static e9ui_component_t *ui_compRegisters = NULL;
+static e9ui_component_t *ui_btnDebugProcessor = NULL;
 static e9ui_component_t *ui_btnContinue = NULL;
 static e9ui_component_t *ui_btnPause = NULL;
 static e9ui_component_t *ui_btnStep = NULL;
@@ -75,6 +72,8 @@ static e9ui_component_t *ui_btnRecord = NULL;
 static e9ui_component_t *ui_btnSettings = NULL;
 static e9ui_component_t *ui_btnReset = NULL;
 static e9ui_component_t *ui_btnRestart = NULL;
+static char ui_debugProcessorMessage[64];
+static char ui_tipDebugProcessor[128];
 static char ui_tipContinue[128];
 static char ui_tipPause[128];
 static char ui_tipStep[128];
@@ -91,6 +90,8 @@ static char ui_tipRecord[128];
 static char ui_tipSettings[128];
 static char ui_tipReset[128];
 static char ui_tipRestart[128];
+static source_pane_mode_t ui_sourcePanePrimaryAddressModes[2];
+static int ui_sourcePanePrimaryAddressModeValid[2];
 #ifdef _WIN32
 static SDL_Rect ui_windowsDefaultUsableBounds = {0, 0, 0, 0};
 static int ui_windowsApplyDefaultUsableBounds = 0;
@@ -202,6 +203,10 @@ ui_prepareMainWindow(e9ui_context_t *ctx,
     (void)ctx;
     (void)startHidden;
 #ifdef _WIN32
+    (void)wantX;
+    (void)wantY;
+    (void)wantW;
+    (void)wantH;
     ui_windowsDefaultUsableBounds = (SDL_Rect){0, 0, 0, 0};
     ui_windowsApplyDefaultUsableBounds = 0;
 #endif
@@ -298,6 +303,9 @@ static void
 ui_recordRefreshButton(void);
 
 static void
+ui_refreshFrameBackButton(void);
+
+static void
 ui_validateToolbarButtonRef(e9ui_component_t **slot)
 {
     if (!slot || !*slot) {
@@ -333,9 +341,219 @@ ui_setActionTooltip(e9ui_component_t *btn, const char *baseLabel, const char *ac
     e9ui_setTooltip(btn, buf);
 }
 
+static void
+ui_debugProcessorLabel(const e9k_debug_processor_info_t *processor, char *out, size_t cap)
+{
+    if (!out || cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!processor) {
+        return;
+    }
+    if (strcmp(processor->name, "M68000") == 0) {
+        snprintf(out, cap, "68K");
+    } else if (processor->name[0]) {
+        snprintf(out, cap, "%s", processor->name);
+    } else {
+        snprintf(out, cap, "CPU %u", (unsigned)processor->id);
+    }
+    out[cap - 1] = '\0';
+}
+
+static size_t
+ui_readDebugProcessors(e9k_debug_processor_info_t *processors, size_t cap)
+{
+    size_t count = 0;
+
+    if (!processors || cap == 0) {
+        return 0;
+    }
+    memset(processors, 0, cap * sizeof(*processors));
+    if (!libretro_host_debugReadProcessors(processors, cap, &count)) {
+        return 0;
+    }
+    if (count > cap) {
+        count = cap;
+    }
+    return count;
+}
+
+static int
+ui_findDebugProcessorIndex(const e9k_debug_processor_info_t *processors, size_t count, uint32_t processorId)
+{
+    if (!processors || count == 0) {
+        return -1;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (processors[i].id == processorId) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static int
+ui_activeDebugProcessorIsPrimary(void)
+{
+    e9k_debug_processor_info_t processors[8];
+    size_t count = ui_readDebugProcessors(processors, sizeof(processors) / sizeof(processors[0]));
+
+    if (count == 0) {
+        return debugger.activeDebugProcessorId == MACHINE_PROCESSOR_PRIMARY ? 1 : 0;
+    }
+    int selected = ui_findDebugProcessorIndex(processors, count, debugger.activeDebugProcessorId);
+    if (selected < 0) {
+        return 0;
+    }
+    return (processors[selected].flags & E9K_DEBUG_PROCESSOR_PRIMARY) ? 1 : 0;
+}
+
+static void
+ui_syncSourcePanesForDebugProcessor(int activeIsPrimary)
+{
+    for (size_t i = 0; i < sizeof(ui_source_panes) / sizeof(ui_source_panes[0]); ++i) {
+        e9ui_component_t *pane = ui_source_panes[i];
+        if (!pane) {
+            continue;
+        }
+        source_pane_mode_t mode = source_pane_getMode(pane);
+        if (activeIsPrimary) {
+            if (mode == source_pane_mode_z80s) {
+                source_pane_setMode(pane, source_pane_mode_c);
+            } else if (mode == source_pane_mode_z80) {
+                source_pane_mode_t dest = source_pane_mode_a;
+                if (ui_sourcePanePrimaryAddressModeValid[i]) {
+                    dest = ui_sourcePanePrimaryAddressModes[i];
+                }
+                source_pane_setMode(pane, dest);
+            }
+            continue;
+        }
+        if (mode == source_pane_mode_c) {
+            source_pane_setMode(pane, source_pane_mode_z80s);
+        } else if (mode == source_pane_mode_a || mode == source_pane_mode_h) {
+            ui_sourcePanePrimaryAddressModes[i] = mode;
+            ui_sourcePanePrimaryAddressModeValid[i] = 1;
+            source_pane_setMode(pane, source_pane_mode_z80);
+        }
+    }
+}
+
+static void
+ui_refreshDebugProcessorButton(void)
+{
+    e9k_debug_processor_info_t processors[8];
+    size_t count = ui_readDebugProcessors(processors, sizeof(processors) / sizeof(processors[0]));
+
+    if (count <= 1) {
+        if (ui_btnDebugProcessor) {
+            e9ui_setHidden(ui_btnDebugProcessor, 1);
+        }
+        if (count == 1) {
+            debugger.activeDebugProcessorId = processors[0].id;
+        } else {
+            debugger.activeDebugProcessorId = 0;
+        }
+        return;
+    }
+
+    int selected = ui_findDebugProcessorIndex(processors, count, debugger.activeDebugProcessorId);
+    if (selected < 0) {
+        selected = 0;
+        for (size_t i = 0; i < count; ++i) {
+            if (processors[i].flags & E9K_DEBUG_PROCESSOR_PRIMARY) {
+                selected = (int)i;
+                break;
+            }
+        }
+        debugger.activeDebugProcessorId = processors[selected].id;
+    }
+
+    char label[32];
+    ui_debugProcessorLabel(&processors[selected], label, sizeof(label));
+    snprintf(ui_tipDebugProcessor,
+             sizeof(ui_tipDebugProcessor),
+             "Debugger CPU: %s",
+             label);
+    ui_tipDebugProcessor[sizeof(ui_tipDebugProcessor) - 1] = '\0';
+    if (ui_btnDebugProcessor) {
+        e9ui_button_setLabel(ui_btnDebugProcessor, label);
+        e9ui_setHidden(ui_btnDebugProcessor, 0);
+        e9ui_setTooltip(ui_btnDebugProcessor, ui_tipDebugProcessor);
+    }
+}
+
+static void
+ui_debugProcessorToggle(e9ui_context_t *ctx, void *user)
+{
+    e9k_debug_processor_info_t processors[8];
+    size_t count = ui_readDebugProcessors(processors, sizeof(processors) / sizeof(processors[0]));
+
+    (void)ctx;
+    (void)user;
+    if (count <= 1) {
+        ui_refreshDebugProcessorButton();
+        return;
+    }
+
+    int selected = ui_findDebugProcessorIndex(processors, count, debugger.activeDebugProcessorId);
+    if (selected < 0) {
+        selected = 0;
+    } else {
+        selected = (selected + 1) % (int)count;
+    }
+    debugger.activeDebugProcessorId = processors[selected].id;
+    ui_syncSourcePanesForDebugProcessor((processors[selected].flags & E9K_DEBUG_PROCESSOR_PRIMARY) ? 1 : 0);
+    ui_refreshDebugProcessorButton();
+    char label[32];
+    ui_debugProcessorLabel(&processors[selected], label, sizeof(label));
+    debug_printf("debugger cpu: %s", label);
+    snprintf(ui_debugProcessorMessage, sizeof(ui_debugProcessorMessage), "DEBUGGER CPU: %s", label);
+    ui_debugProcessorMessage[sizeof(ui_debugProcessorMessage) - 1] = '\0';
+    e9ui_showTransientMessage(ui_debugProcessorMessage);
+}
+
+static int
+ui_stepActiveDebugProcessorInstruction(void)
+{
+    if (ui_activeDebugProcessorIsPrimary()) {
+        return libretro_host_debugStepInstr() ? 1 : 0;
+    }
+    (void)libretro_host_debugSuppressProcessorBreakpointAtPc(debugger.activeDebugProcessorId);
+    return libretro_host_debugStepProcessorInstr(debugger.activeDebugProcessorId) ? 1 : 0;
+}
+
+static void
+ui_refreshAfterActiveDebugProcessorStep(void)
+{
+    machine_setRunning(&debugger.machine, 0);
+    registers_refreshExtraRegsNow(ui_compRegisters);
+    ui_refreshOnPause();
+}
+
 void
 ui_refreshHotkeyTooltips(void)
 {
+    ui_validateToolbarButtonRef(&ui_btnDebugProcessor);
+    ui_validateToolbarButtonRef(&ui_btnContinue);
+    ui_validateToolbarButtonRef(&ui_btnPause);
+    ui_validateToolbarButtonRef(&ui_btnStep);
+    ui_validateToolbarButtonRef(&ui_btnNext);
+    ui_validateToolbarButtonRef(&ui_btnStepInst);
+    ui_validateToolbarButtonRef(&ui_btnWarp);
+    ui_validateToolbarButtonRef(&ui_btnFrameBack);
+    ui_validateToolbarButtonRef(&ui_btnFrameStep);
+    ui_validateToolbarButtonRef(&ui_btnFrameContinue);
+    ui_validateToolbarButtonRef(&ui_btnSaveState);
+    ui_validateToolbarButtonRef(&ui_btnRestoreState);
+    ui_validateToolbarButtonRef(&ui_btnAudio);
+    ui_validateToolbarButtonRef(&ui_btnRecord);
+    ui_validateToolbarButtonRef(&ui_btnSettings);
+    ui_validateToolbarButtonRef(&ui_btnReset);
+    ui_validateToolbarButtonRef(&ui_btnRestart);
+
+    ui_refreshDebugProcessorButton();
     ui_setActionTooltip(ui_btnContinue, "Continue", "continue", ui_tipContinue, sizeof(ui_tipContinue));
     ui_setActionTooltip(ui_btnPause, "Pause", "pause", ui_tipPause, sizeof(ui_tipPause));
     ui_setActionTooltip(ui_btnStep, "Step", "step", ui_tipStep, sizeof(ui_tipStep));
@@ -343,6 +561,7 @@ ui_refreshHotkeyTooltips(void)
     ui_setActionTooltip(ui_btnStepInst, "Step Inst", "step_inst", ui_tipStepInst, sizeof(ui_tipStepInst));
     ui_setActionTooltip(ui_btnWarp, "Warp", "warp", ui_tipWarp, sizeof(ui_tipWarp));
     ui_setActionTooltip(ui_btnFrameBack, "Frame step back", "frame_back", ui_tipFrameBack, sizeof(ui_tipFrameBack));
+    ui_refreshFrameBackButton();
     ui_setActionTooltip(ui_btnFrameStep, "Frame step", "frame_step", ui_tipFrameStep, sizeof(ui_tipFrameStep));
     ui_setActionTooltip(ui_btnFrameContinue, "Frame continue", "frame_continue", ui_tipFrameContinue, sizeof(ui_tipFrameContinue));
     ui_setActionTooltip(ui_btnSaveState, "Save state", "save_state", ui_tipSaveState, sizeof(ui_tipSaveState));
@@ -366,6 +585,26 @@ ui_basename(const char *path)
     const char *back = strrchr(path, '\\');
     const char *best = slash > back ? slash : back;
     return best ? best + 1 : path;
+}
+
+static const char *
+ui_windowTitlePath(void)
+{
+    const e9k_libretro_config_t *configLibretro =
+        debugger.config.target && debugger.config.target->selectLibretroConfig ?
+        debugger.config.target->selectLibretroConfig(&debugger.config) : NULL;
+    const char *configuredRomPath = configLibretro ? configLibretro->romPath : "";
+    if (debugger.config.target == target_neogeo() &&
+        debugger.config.neogeo.romFolder[0] &&
+        debugger.libretro.romPath[0]) {
+        return debugger.config.neogeo.romFolder;
+    }
+    const char *romExt = strrchr(configuredRomPath, '.');
+    if (romExt && strcasecmp(romExt + 1, "zip") == 0 &&
+        debugger.libretro.romPath[0]) {
+        return configuredRomPath;
+    }
+    return debugger.libretro.romPath;
 }
 
 int
@@ -410,98 +649,28 @@ ui_runFullscreenTransition(e9ui_context_t *ctx,
     return 1;
 }
 
-int
-ui_routeAuxWindowEvent(e9ui_context_t *ctx, SDL_Event *eventValue, uint32_t mainWindowId)
-{
-    (void)ctx;
-    if (!eventValue) {
-        return 0;
-    }
-    uint32_t evWindowId = 0;
-    switch (eventValue->type) {
-    case SDL_MOUSEMOTION:
-        evWindowId = eventValue->motion.windowID;
-        break;
-    case SDL_MOUSEBUTTONDOWN:
-    case SDL_MOUSEBUTTONUP:
-        evWindowId = eventValue->button.windowID;
-        break;
-    case SDL_MOUSEWHEEL:
-        evWindowId = eventValue->wheel.windowID;
-        break;
-    case SDL_KEYDOWN:
-    case SDL_KEYUP:
-        evWindowId = eventValue->key.windowID;
-        break;
-    case SDL_TEXTINPUT:
-        evWindowId = eventValue->text.windowID;
-        break;
-    case SDL_WINDOWEVENT:
-        evWindowId = eventValue->window.windowID;
-        break;
-    default:
-        break;
-    }
-    if (!evWindowId || (mainWindowId && evWindowId == mainWindowId)) {
-        return 0;
-    }
-    if (custom_log_getWindowId() == evWindowId) {
-        custom_log_handleEvent(eventValue);
-        return 1;
-    }
-    if (custom_ui_getWindowId() == evWindowId) {
-        custom_ui_handleEvent(eventValue);
-        return 1;
-    }
-    if (shader_ui_getWindowId() == evWindowId) {
-        shader_ui_handleEvent(eventValue);
-        return 1;
-    }
-    if (memory_track_ui_getWindowId() == evWindowId) {
-        memory_track_ui_handleEvent(eventValue);
-        return 1;
-    }
-    return 0;
-}
-
-int
-ui_ownsAuxWindowId(e9ui_context_t *ctx, uint32_t windowId)
-{
-    (void)ctx;
-    if (!windowId) {
-        return 0;
-    }
-    return sprite_debug_is_window_id(windowId) || mega_sprite_debug_ownsWindowId(windowId);
-}
-
-void
-ui_handleAuxWindowEvent(e9ui_context_t *ctx, const SDL_Event *eventValue)
-{
-    (void)ctx;
-    if (!eventValue) {
-        return;
-    }
-    sprite_debug_handleWindowEvent(eventValue);
-    mega_sprite_debug_handleWindowEvent(eventValue);
-}
-
 void
 ui_setMainWindowFocused(e9ui_context_t *ctx, int focused)
 {
-    (void)ctx;
-    custom_ui_setMainWindowFocused(focused);
-    custom_log_setMainWindowFocused(focused);
-    shader_ui_setMainWindowFocused(focused);
-    memory_track_ui_setMainWindowFocused(focused);
-    sprite_debug_setMainWindowFocused(focused);
-    mega_sprite_debug_setMainWindowFocused(focused);
+    if (!focused) {
+        (void)emu_mouseCaptureRelease(ctx);
+    }
+    aux_window_setFocus(focused);
 }
 
-int
-ui_normalizeMouseWheelY(e9ui_context_t *ctx, int value)
+static void
+ui_blockingWindowOpened(e9ui_context_t *ctx)
 {
-    (void)ctx;
-    return debugger_platform_normalizeMouseWheelY(value);
+    (void)emu_mouseCaptureRelease(ctx);
+}
+
+static int
+ui_handleHostEvent(e9ui_context_t *ctx, const SDL_Event *ev)
+{
+    if (ev->type == SDL_KEYDOWN && hotkeys_handleMouseCaptureKeydown(ctx, &ev->key)) {
+        return 1;
+    }
+    return emu_handleCapturedMouseEvent(ctx, ev);
 }
 
 int
@@ -525,7 +694,7 @@ ui_updateWindowTitle(void)
         return;
     }
 
-    const char *romPath = debugger.libretro.romPath;
+    const char *romPath = ui_windowTitlePath();
     const char *base = ui_basename(romPath);
     char title[PATH_MAX + 64];
 
@@ -587,7 +756,7 @@ void
 ui_refreshOnPause(void)
 {
     machine_refresh();
-    memory_refreshOnBreak();
+    registers_refreshExtraRegsNow(ui_compRegisters);
     for (size_t i = 0; i < sizeof(ui_source_panes)/sizeof(ui_source_panes[0]); ++i) {
         if (ui_source_panes[i]) {
             source_pane_markNeedsRefresh(ui_source_panes[i]);
@@ -598,11 +767,62 @@ ui_refreshOnPause(void)
 void
 ui_centerSourceOnAddress(uint32_t addr)
 {
-    for (size_t i = 0; i < sizeof(ui_source_panes)/sizeof(ui_source_panes[0]); ++i) {
-        if (ui_source_panes[i]) {
-            source_pane_centerOnAddress(ui_source_panes[i], &e9ui->ctx, addr);
+    e9ui_component_t *pane = NULL;
+
+    for (size_t i = 0; i < sizeof(ui_source_panes) / sizeof(ui_source_panes[0]); ++i) {
+        if (ui_source_panes[i] && source_pane_getMode(ui_source_panes[i]) != source_pane_mode_cpr) {
+            pane = ui_source_panes[i];
+            break;
         }
     }
+
+    if (!pane) {
+        pane = ui_source_panes[0] ? ui_source_panes[0] : ui_source_panes[1];
+    }
+    if (!pane) {
+        return;
+    }
+
+    if (source_pane_getMode(pane) != source_pane_mode_a &&
+        source_pane_getMode(pane) != source_pane_mode_h) {
+        source_pane_setMode(pane, source_pane_mode_a);
+    }
+    source_pane_submitAddress(pane, &e9ui->ctx, addr);
+    e9ui_setFocus(&e9ui->ctx, pane);
+}
+
+void
+ui_openSourceLocation(const char *file, int line, uint32_t fallbackAddr)
+{
+    if (!file || !*file || line <= 0) {
+        ui_centerSourceOnAddress(fallbackAddr);
+        return;
+    }
+
+    e9ui_component_t *pane = NULL;
+    for (size_t i = 0; i < sizeof(ui_source_panes) / sizeof(ui_source_panes[0]); ++i) {
+        if (ui_source_panes[i] && source_pane_getMode(ui_source_panes[i]) == source_pane_mode_c) {
+            pane = ui_source_panes[i];
+            break;
+        }
+    }
+    if (!pane) {
+        for (size_t i = 0; i < sizeof(ui_source_panes) / sizeof(ui_source_panes[0]); ++i) {
+            if (ui_source_panes[i] && source_pane_getMode(ui_source_panes[i]) != source_pane_mode_cpr) {
+                pane = ui_source_panes[i];
+                break;
+            }
+        }
+    }
+    if (!pane) {
+        pane = ui_source_panes[0] ? ui_source_panes[0] : ui_source_panes[1];
+    }
+    if (!pane) {
+        return;
+    }
+
+    source_pane_openSourceLocation(pane, &e9ui->ctx, file, line);
+    e9ui_setFocus(&e9ui->ctx, pane);
 }
 
 void
@@ -640,7 +860,13 @@ ui_applySourcePaneElfMode(void)
         if (!pane) {
             continue;
         }
-        if (!debugger.elfValid && source_pane_getMode(pane) == source_pane_mode_c) {
+        if (debugger.symbolFileKind == DEBUGGER_SYMBOL_FILE_KIND_TEXT_MAP &&
+            source_pane_getMode(pane) == source_pane_mode_c) {
+            source_pane_setMode(pane, source_pane_mode_c);
+        }
+        if (!debugger.elfValid &&
+            debugger.symbolFileKind != DEBUGGER_SYMBOL_FILE_KIND_TEXT_MAP &&
+            source_pane_getMode(pane) == source_pane_mode_c) {
             source_pane_setMode(pane, source_pane_mode_a);
         }
         source_pane_setToggleVisible(pane, showToggle);
@@ -684,6 +910,9 @@ ui_frameStepBack(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
     (void)user;
+    if (state_buffer_isRollingPaused()) {
+        return;
+    }
     debugger.frameStepMode = 1;
     debugger.frameStepPending = -1;
 }
@@ -702,6 +931,14 @@ ui_step(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
     (void)user;
+    if (!ui_activeDebugProcessorIsPrimary()) {
+        if (ui_stepActiveDebugProcessorInstruction()) {
+            ui_refreshAfterActiveDebugProcessorStep();
+            return;
+        }
+        debug_error("step: active processor does not expose debug instruction step");
+        return;
+    }
     debugger_suppressBreakpointAtPC();
     if (libretro_host_debugStepLine()) {
         machine_setRunning(&debugger.machine, 1);
@@ -715,6 +952,10 @@ ui_next(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
     (void)user;
+    if (!ui_activeDebugProcessorIsPrimary()) {
+        debug_error("step next: active processor does not expose debug step next");
+        return;
+    }
     debugger_suppressBreakpointAtPC();
     if (libretro_host_debugStepNext()) {
         machine_setRunning(&debugger.machine, 1);
@@ -728,6 +969,14 @@ ui_stepi(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
     (void)user;
+    if (!ui_activeDebugProcessorIsPrimary()) {
+        if (ui_stepActiveDebugProcessorInstruction()) {
+            ui_refreshAfterActiveDebugProcessorStep();
+            return;
+        }
+        debug_error("step instruction: active processor does not expose debug step");
+        return;
+    }
     debugger_suppressBreakpointAtPC();
     if (libretro_host_debugStepInstr()) {
         machine_setRunning(&debugger.machine, 1);
@@ -741,6 +990,10 @@ ui_finish(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
     (void)user;
+    if (!ui_activeDebugProcessorIsPrimary()) {
+        debug_error("step out: active processor does not expose debug step out");
+        return;
+    }
     debugger_suppressBreakpointAtPC();
     if (libretro_host_debugStepOut()) {
         machine_setRunning(&debugger.machine, 1);
@@ -835,6 +1088,17 @@ ui_recordRefreshButton(void)
         e9ui_button_setTheme(ui_btnRecord, e9ui_theme_button_preset_red());
     }
     ui_recordRefreshTooltip();
+    ui_refreshFrameBackButton();
+}
+
+static void
+ui_refreshFrameBackButton(void)
+{
+    ui_validateToolbarButtonRef(&ui_btnFrameBack);
+    if (!ui_btnFrameBack) {
+        return;
+    }
+    e9ui_setDisabled(ui_btnFrameBack, state_buffer_isRollingPaused());
 }
 
 void
@@ -880,24 +1144,20 @@ ui_saveState(e9ui_context_t *ctx, void *user)
         fprintf(stderr, "ui: saveState ok size=%zu diff=%zu maxBytes=%zu count=%zu\n",
                 size, diff, state_buffer_getMaxBytes(), state_buffer_getCount());
         fflush(stderr);
-        if (state_buffer_getMaxBytes() > 0 && state_buffer_getCount() > 0) {
-            (void)state_buffer_snapshot();
+        const uint8_t *stateData = NULL;
+        size_t stateSize = 0;
+        uint64_t frameNo = state_buffer_getCurrentFrameNo();
+        if (libretro_host_getStateData(&stateData, &stateSize)) {
+            int ok = state_buffer_setSaveKeyframe(stateData, stateSize, frameNo);
+            debug_printf("ui: saveState seeded snapshot ok=%d frameNo=%llu stateSize=%zu",
+                         ok, (unsigned long long)frameNo, stateSize);
+            fprintf(stderr, "ui: saveState seeded snapshot ok=%d frameNo=%llu stateSize=%zu\n",
+                    ok, (unsigned long long)frameNo, stateSize);
+            fflush(stderr);
         } else {
-            const uint8_t *stateData = NULL;
-            size_t stateSize = 0;
-            uint64_t frameNo = state_buffer_getCurrentFrameNo();
-            if (libretro_host_getStateData(&stateData, &stateSize)) {
-                int ok = state_buffer_setSaveKeyframe(stateData, stateSize, frameNo);
-                debug_printf("ui: saveState seeded snapshot ok=%d frameNo=%llu stateSize=%zu",
-                             ok, (unsigned long long)frameNo, stateSize);
-                fprintf(stderr, "ui: saveState seeded snapshot ok=%d frameNo=%llu stateSize=%zu\n",
-                        ok, (unsigned long long)frameNo, stateSize);
-                fflush(stderr);
-            } else {
-                debug_printf("ui: saveState missing host stateData");
-                fprintf(stderr, "ui: saveState missing host stateData\n");
-                fflush(stderr);
-            }
+            debug_printf("ui: saveState missing host stateData");
+            fprintf(stderr, "ui: saveState missing host stateData\n");
+            fflush(stderr);
         }
         // Persist immediately, not just on exit (matches user expectation for the Save button).
         rom_config_saveOnExit();
@@ -1040,11 +1300,9 @@ ui_configureE9uiHost(void)
     e9ui->ctx.pollInjectedUiEvent = ui_hostPollInjectedUiEvent;
     e9ui->ctx.recordUiEvent = ui_hostRecordUiEvent;
     e9ui->ctx.runFullscreenTransition = ui_runFullscreenTransition;
-    e9ui->ctx.routeAuxWindowEvent = ui_routeAuxWindowEvent;
-    e9ui->ctx.ownsAuxWindowId = ui_ownsAuxWindowId;
-    e9ui->ctx.handleAuxWindowEvent = ui_handleAuxWindowEvent;
     e9ui->ctx.setMainWindowFocused = ui_setMainWindowFocused;
-    e9ui->ctx.normalizeMouseWheelY = ui_normalizeMouseWheelY;
+    e9ui->ctx.blockingWindowOpened = ui_blockingWindowOpened;
+    e9ui->ctx.handleHostEvent = ui_handleHostEvent;
     e9ui->ctx.handleGlobalKeydown = ui_handleGlobalKeydown;
     e9ui->ctx.shutdownHostUi = ui_shutdownHostUi;
     e9ui->ctx.prepareMainWindow = ui_prepareMainWindow;
@@ -1160,16 +1418,22 @@ ui_build(void)
     e9ui_header_flow_setSpacing(toolbar, 8);
     e9ui_header_flow_setWrap(toolbar, 1);
     // Build buttons and bind hotkeys at creation
-    e9ui_component_t *btn_continue = e9ui_button_make("Continue", ui_continue, NULL);
+    e9ui_component_t *btn_debug_processor = e9ui_button_make("68K", ui_debugProcessorToggle, NULL);
+    e9ui_button_setLargestLabel(btn_debug_processor, "Z80");
+    ui_btnDebugProcessor = btn_debug_processor;
+    ui_refreshDebugProcessorButton();
+    e9ui_header_flow_add(toolbar, btn_debug_processor);
+    hotkeys_registerActionHotkey(&e9ui->ctx, "debug_processor_toggle", ui_debugProcessorToggle, NULL);
+
+    e9ui_component_t *btn_continue = e9ui_button_make("", ui_continue, NULL);
     e9ui_button_setIconAsset(btn_continue, "assets/icons/continue.png");
     hotkeys_registerButtonActionHotkey(btn_continue, &e9ui->ctx, "continue");
     ui_btnContinue = btn_continue;
     e9ui_setHiddenVariable(btn_continue, machine_getRunningState(debugger.machine), 1);
     e9ui_header_flow_add(toolbar, btn_continue);
 
-    e9ui_component_t *btn_pause = e9ui_button_make("Pause", ui_pause, NULL);
+    e9ui_component_t *btn_pause = e9ui_button_make("", ui_pause, NULL);
     e9ui_button_setIconAsset(btn_pause, "assets/icons/pause.png");
-    e9ui_button_setLargestLabel(btn_pause, "Continue");
     hotkeys_registerButtonActionHotkey(btn_pause, &e9ui->ctx, "pause");
     ui_btnPause = btn_pause;
     e9ui_setHiddenVariable(btn_pause, machine_getRunningState(debugger.machine), 0);
@@ -1299,6 +1563,7 @@ ui_build(void)
     e9ui_stack_addFixed(comp_stack, top_row_box);
     // Insert registers panel and make it resizable vs source/console (left pane)
     e9ui_component_t *comp_registers = registers_makeComponent();
+    ui_compRegisters = comp_registers;
     e9ui_component_t *comp_registers_box = e9ui_box_make(comp_registers);
     comp_registers_box->persist_id = "registers_box";
     e9ui_box_setTitlebar(comp_registers_box, "Registers", "assets/icons/registers.png");
@@ -1341,6 +1606,17 @@ ui_build(void)
     profile_buttonRefresh();
     e9ui_setHiddenVariable(btn_profile, &debugger.elfValid, 0);
     e9ui_flow_add(comp_profile_toolbar, btn_profile);
+
+    e9ui_component_t *btn_profile_reset = e9ui_button_make("Reset", profile_uiReset, NULL);
+    e9ui_button_setMini(btn_profile_reset, 1);
+    e9ui_button_setTheme(btn_profile_reset, e9ui_theme_button_preset_red());
+    e9ui_flow_add(comp_profile_toolbar, btn_profile_reset);
+
+    e9ui_component_t *btn_profile_metric = e9ui_button_make("Cycles", profile_uiMetricToggle, NULL);
+    e9ui_button_setMini(btn_profile_metric, 1);
+    e9ui_button_setLargestLabel(btn_profile_metric, "Samples");
+    profile_metricButtonRegister(btn_profile_metric);
+    e9ui_flow_add(comp_profile_toolbar, btn_profile_metric);
 
     e9ui_component_t *btn_analyse = e9ui_button_make("Analyse", profile_uiAnalyse, NULL);
     e9ui_button_setMini(btn_analyse, 1);

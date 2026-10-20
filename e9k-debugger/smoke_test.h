@@ -32,6 +32,9 @@ smoke_test_getMode(void);
 void
 smoke_test_setOpenOnFail(int enable);
 
+void
+smoke_test_setThreshold(int threshold);
+
 int
 smoke_test_init(void);
 
@@ -40,6 +43,18 @@ smoke_test_shutdown(void);
 
 int
 smoke_test_isEnabled(void);
+
+void
+smoke_test_setStartOnWrite(int enabled);
+
+int
+smoke_test_isWaitingForStart(void);
+
+int
+smoke_test_hasStarted(void);
+
+int
+smoke_test_startFromFrame(uint64_t frame);
 
 int
 smoke_test_getRecordPath(char *out, size_t cap);
@@ -58,3 +73,15 @@ smoke_test_cleanup(void);
 
 int
 smoke_test_captureFrame(uint64_t frame);
+
+int
+smoke_test_finishScreenCompare(void);
+
+void
+smoke_test_setAudioFormat(int sampleRate, int channels);
+
+int
+smoke_test_captureAudio(const int16_t *data, size_t frames);
+
+int
+smoke_test_finishAudioCompare(void);

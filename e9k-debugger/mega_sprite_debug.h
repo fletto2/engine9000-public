@@ -23,18 +23,6 @@ void
 mega_sprite_debug_render(const e9k_debug_mega_sprite_state_t *st);
 
 void
-mega_sprite_debug_handleWindowEvent(const SDL_Event *ev);
-
-int
-mega_sprite_debug_handleKeydown(const SDL_KeyboardEvent *kev);
-
-int
-mega_sprite_debug_ownsWindowId(uint32_t windowId);
-
-void
-mega_sprite_debug_setMainWindowFocused(int focused);
-
-void
 mega_sprite_debug_persistConfig(FILE *file);
 
 int

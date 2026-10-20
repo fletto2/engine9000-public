@@ -7,12 +7,13 @@
  */
 
 #include "emu.h"
+#include "e9ui_event.h"
 #include "runtime.h"
 #include "gl_composite.h"
 #include "alloc.h"
 #include "libretro_host.h"
+#include "e9ui_range_bar.h"
 #include "e9ui_seek_bar.h"
-#include "range_bar.h"
 #include "debug.h"
 #include "state_buffer.h"
 #include "debugger.h"
@@ -22,7 +23,7 @@
 #include "e9ui_button.h"
 #include "e9ui_scroll.h"
 #include "shader_ui.h"
-#include "emu_geo.h"
+
 #define EMU_RANGE_BAR_MAX 4
 #define EMU_OVERLAY_BUTTON_MICRO_THRESHOLD_W 480
 #define EMU_OVERLAY_BUTTON_NANO_THRESHOLD_W 350
@@ -57,6 +58,7 @@ typedef struct geo9000_state {
     char *zoomInBtnMeta;
     char *buttonStackMeta;
     size_t rangeBarCount;
+    uint32_t suppressedMouseButtons;
     char *rangeBarMeta[EMU_RANGE_BAR_MAX];
     emu_range_bar_binding_t rangeBarBindings[EMU_RANGE_BAR_MAX];
     emu_zoom_binding_t zoomOutBinding;
@@ -80,22 +82,44 @@ typedef enum emu_overlay_button_mode {
 } emu_overlay_button_mode_t;
 
 static int emu_mouseCaptured = 0;
+static e9ui_component_t *emu_mouseView;
 static char emu_mouseCaptureMessage[160];
 
 static int
-emu_mouseCaptureEnabledForCurrentTarget(void)
+emu_mouseButtonMask(Uint8 button)
 {
-    if (!target || !target->emu || !target->emu->mouseCaptureCanEnable) {
+    if (button >= 32u) {
         return 0;
     }
-    return target->emu->mouseCaptureCanEnable() ? 1 : 0;
+    return (int)(1u << button);
+}
+
+static int
+emu_mouseCaptureBlocked(void)
+{
+    return e9ui_event_componentContainsBlockingWindow(e9ui->root) ||
+           e9ui_event_componentContainsBlockingWindow(e9ui_getOverlayHost());
+}
+
+static int
+emu_mouseCaptureSupportedForCurrentTarget(void)
+{
+    return target && target->emu && target->emu->mouseCaptureSupported;
+}
+
+static int
+emu_mouseCaptureOnClickEnabledForCurrentTarget(void)
+{
+    if (!target || !target->emu || !target->emu->mouseCaptureOnClickEnabled) {
+        return 0;
+    }
+    return target->emu->mouseCaptureOnClickEnabled() ? 1 : 0;
 }
 
 static int
 emu_mouseCaptureEnable(e9ui_context_t *ctx)
 {
     int relativeEnabled = 0;
-    int canCapture = 0;
     char releaseBinding[64];
 
     if (!ctx) {
@@ -104,19 +128,23 @@ emu_mouseCaptureEnable(e9ui_context_t *ctx)
     if (emu_mouseCaptured) {
         return 1;
     }
-    canCapture = emu_mouseCaptureEnabledForCurrentTarget();
-    if (!canCapture) {
+    // Let the UI drag owner receive its button release before capturing.
+    if (ctx->cursorCaptureOwner) {
+        return 0;
+    }
+    if (!emu_mouseCaptureSupportedForCurrentTarget() || emu_mouseCaptureBlocked()) {
         return 0;
     }
     if (SDL_SetRelativeMouseMode(SDL_TRUE) == 0) {
         relativeEnabled = 1;
     }
+    libretro_host_clearMouseState();
     if (ctx->window) {
         SDL_SetWindowGrab(ctx->window, SDL_TRUE);
     }
     (void)SDL_CaptureMouse(SDL_TRUE);
     SDL_ShowCursor(SDL_DISABLE);
-    if (!relativeEnabled && ctx && ctx->window) {
+    if (!relativeEnabled && ctx->window) {
         SDL_RaiseWindow(ctx->window);
     }
     emu_mouseCaptured = 1;
@@ -144,6 +172,8 @@ emu_mouseCaptureRelease(e9ui_context_t *ctx)
     SDL_SetRelativeMouseMode(SDL_FALSE);
     SDL_ShowCursor(SDL_ENABLE);
     emu_mouseCaptured = 0;
+    libretro_host_clearMouseState();
+    e9ui_showTransientMessage("MOUSE RELEASED");
     return 1;
 }
 
@@ -153,10 +183,44 @@ emu_mouseCaptureValidate(e9ui_context_t *ctx)
     if (!emu_mouseCaptured) {
         return;
     }
-    if (emu_mouseCaptureEnabledForCurrentTarget()) {
+    if (emu_mouseCaptureSupportedForCurrentTarget() && !emu_mouseCaptureBlocked()) {
         return;
     }
     (void)emu_mouseCaptureRelease(ctx);
+}
+
+int
+emu_mouseCaptureStart(e9ui_context_t *ctx)
+{
+    if (emu_mouseCaptureEnable(ctx)) {
+        e9ui_component_t *view = emu_mouseView;
+        if (view) {
+            e9ui_setFocus(ctx, view);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+int
+emu_handleCapturedMouseEvent(e9ui_context_t *ctx, const SDL_Event *ev)
+{
+    emu_mouseCaptureValidate(ctx);
+    if (!emu_mouseCaptured ||
+        (ev->type != SDL_MOUSEMOTION && ev->type != SDL_MOUSEBUTTONDOWN &&
+         ev->type != SDL_MOUSEBUTTONUP && ev->type != SDL_MOUSEWHEEL)) {
+        return 0;
+    }
+    unsigned port = target->mousePort >= 0 ? (unsigned)target->mousePort : libretro_host_getMousePort();
+    if (ev->type == SDL_MOUSEMOTION) {
+        libretro_host_addMouseMotion(port, ev->motion.xrel, ev->motion.yrel);
+    } else if (ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP) {
+        if (ev->button.button == SDL_BUTTON_LEFT || ev->button.button == SDL_BUTTON_RIGHT) {
+            unsigned id = ev->button.button == SDL_BUTTON_LEFT ? RETRO_DEVICE_ID_MOUSE_LEFT : RETRO_DEVICE_ID_MOUSE_RIGHT;
+            libretro_host_setMouseButton(port, id, ev->type == SDL_MOUSEBUTTONDOWN);
+        }
+    }
+    return 1;
 }
 
 static void
@@ -588,15 +652,6 @@ emu_rangeBarSync(e9ui_component_t *bar, size_t index)
 }
 
 
-static int
-emu_viewPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
-{
-    (void)self;
-    (void)ctx;
-    (void)availW;
-    return 0;
-}
-
 static void
 emu_viewLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
 {
@@ -675,7 +730,7 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
                 }
                 rangeBar = e9ui_child_find(self, state->rangeBarMeta[i]);
                 if (rangeBar &&
-                    (range_bar_isDragging(rangeBar) || !e9ui_getHidden(rangeBar)) &&
+                    (e9ui_range_bar_isDragging(rangeBar) || !e9ui_getHidden(rangeBar)) &&
                     rangeBar->handleEvent && rangeBar->handleEvent(rangeBar, ctx, ev)) {
                     return 1;
                 }
@@ -704,6 +759,24 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
         if (!emu_pointInBounds(self, mx, my)) {
             return 0;
         }
+        if (ev->type == SDL_MOUSEBUTTONUP && state) {
+            int suppressMask = emu_mouseButtonMask(ev->button.button);
+
+            if (suppressMask && (state->suppressedMouseButtons & (uint32_t)suppressMask)) {
+                state->suppressedMouseButtons &= ~(uint32_t)suppressMask;
+                return 1;
+            }
+        }
+        if (ev->type == SDL_MOUSEBUTTONDOWN && ctx && e9ui_getFocus(ctx) != self) {
+            if (state) {
+                int suppressMask = emu_mouseButtonMask(ev->button.button);
+
+                if (suppressMask) {
+                    state->suppressedMouseButtons |= (uint32_t)suppressMask;
+                }
+            }
+            return 1;
+        }
         if (target && target->emu && target->emu->handleOverlayEvent &&
             (ev->type == SDL_MOUSEBUTTONDOWN || ev->type == SDL_MOUSEBUTTONUP)) {
             SDL_Rect dst;
@@ -711,10 +784,10 @@ emu_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t 
                 return 1;
             }
         }
-        if (ev->type == SDL_MOUSEBUTTONDOWN) {
-            (void)emu_mouseCaptureEnable(ctx);
-        }
-        if (ev->type == SDL_MOUSEBUTTONDOWN && ctx && e9ui_getFocus(ctx) != self) {
+        if (emu_mouseCaptureSupportedForCurrentTarget()) {
+            if (ev->type == SDL_MOUSEBUTTONDOWN && emu_mouseCaptureOnClickEnabledForCurrentTarget()) {
+                (void)emu_mouseCaptureEnable(ctx);
+            }
             return 1;
         }
         unsigned port = libretro_host_getMousePort();
@@ -906,7 +979,8 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
         SDL_RenderCopy(ctx->renderer, tex, NULL, &dst);
     }
 
-    target->emu->render(ctx, &dst);    
+    SDL_Rect componentClip = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
+    target->emu->render(ctx, &dst, &componentClip);    
 
     if (state && state->rangeBarCount > 0) {
         e9ui_rect_t vidBounds = { dst.x, dst.y, dst.w, dst.h };
@@ -917,7 +991,7 @@ emu_viewRender(e9ui_component_t *self, e9ui_context_t *ctx)
             }
             rangeBar = e9ui_child_find(self, state->rangeBarMeta[i]);
             if (rangeBar) {
-                range_bar_layoutInParent(rangeBar, ctx, vidBounds);
+                e9ui_range_bar_layoutInParent(rangeBar, ctx, vidBounds);
                 e9ui_setAutoHideClip(rangeBar, &self->bounds);
                 if (emu_rangeBarSync(rangeBar, i) &&
                     !e9ui_getHidden(rangeBar) && rangeBar->render) {
@@ -992,15 +1066,6 @@ restore_clip:
             SDL_RenderSetClipRect(ctx->renderer, NULL);
         }
     }
-}
-
-static int
-emu_hostPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
-{
-    (void)self;
-    (void)ctx;
-    (void)availW;
-    return 0;
 }
 
 static void
@@ -1106,6 +1171,7 @@ emu_hostHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_even
 {
     emu_state_t *state = NULL;
     e9ui_component_t *stack = NULL;
+    (void)ctx;
 
     if (!self || !ev) {
         return 0;
@@ -1119,9 +1185,6 @@ emu_hostHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_even
         if (stack && emu_pointInBounds(stack, mx, my)) {
             return 0;
         }
-    }
-    if (state && state->scrollComp && state->scrollComp->handleEvent) {
-        return state->scrollComp->handleEvent(state->scrollComp, ctx, ev);
     }
     return 0;
 }
@@ -1143,7 +1206,8 @@ emu_dtor(e9ui_component_t *self, e9ui_context_t *ctx)
 static void
 emu_viewDtor(e9ui_component_t *self, e9ui_context_t *ctx)
 {
-    (void)ctx;
+    (void)emu_mouseCaptureRelease(ctx);
+    emu_mouseView = NULL;
     if (!self) {
         return;
     }
@@ -1166,15 +1230,14 @@ emu_makeComponent(void)
     }
 
     comp->name = "emu";
-    comp->preferredHeight = emu_hostPreferredHeight;
     comp->layout = emu_hostLayout;
     comp->render = emu_hostRender;
     comp->handleEvent = emu_hostHandleEvent;
     comp->dtor = emu_dtor;
     comp->state = state;
 
+    emu_mouseView = view;
     view->name = "emu_view";
-    view->preferredHeight = emu_viewPreferredHeight;
     view->layout = emu_viewLayout;
     view->render = emu_viewRender;
     view->handleEvent = emu_handleEvent;
@@ -1189,23 +1252,15 @@ emu_makeComponent(void)
     state->viewComp = view;
 
     scroll = e9ui_scroll_make(view);
-    if (!scroll) {
-        alloc_free(view);
-        alloc_free(state);
-        alloc_free(comp);
-        return NULL;
-    }
     state->scrollComp = scroll;
     state->scrollMeta = alloc_strdup("scroll");
     e9ui_child_add(comp, scroll, state->scrollMeta);
 
     e9ui_component_t *button_stack = emu_buttonStackMake();
-    if (button_stack) {
-        e9ui_setAutoHide(button_stack, 1, 64);
-        e9ui_setFocusTarget(button_stack, view);
-        state->buttonStackMeta = alloc_strdup("button_stack");
-        e9ui_child_add(comp, button_stack, state->buttonStackMeta);
-    }
+    e9ui_setAutoHide(button_stack, 1, 64);
+    e9ui_setFocusTarget(button_stack, view);
+    state->buttonStackMeta = alloc_strdup("button_stack");
+    e9ui_child_add(comp, button_stack, state->buttonStackMeta);
 
     state->zoomOutBinding.deltaPercent = -EMU_ZOOM_STEP_PERCENT;
     state->zoomOutBinding.state = state;
@@ -1213,62 +1268,42 @@ emu_makeComponent(void)
     state->zoomInBinding.state = state;
 
     e9ui_component_t *btnZoomOut = e9ui_button_make("-", emu_adjustZoom, &state->zoomOutBinding);
-    if (btnZoomOut) {
-        e9ui_button_setMini(btnZoomOut, 1);
-        e9ui_setFocusTarget(btnZoomOut, view);
-        state->zoomOutBtnMeta = alloc_strdup("zoom_out");
-        if (button_stack) {
-            e9ui_child_add(button_stack, btnZoomOut, state->zoomOutBtnMeta);
-        } else {
-            e9ui_child_add(comp, btnZoomOut, state->zoomOutBtnMeta);
-        }
-    }
+    e9ui_button_setMini(btnZoomOut, 1);
+    e9ui_setFocusTarget(btnZoomOut, view);
+    state->zoomOutBtnMeta = alloc_strdup("zoom_out");
+    e9ui_child_add(button_stack, btnZoomOut, state->zoomOutBtnMeta);
 
     e9ui_component_t *btnZoomIn = e9ui_button_make("+", emu_adjustZoom, &state->zoomInBinding);
-    if (btnZoomIn) {
-        e9ui_button_setMini(btnZoomIn, 1);
-        e9ui_setFocusTarget(btnZoomIn, view);
-        state->zoomInBtnMeta = alloc_strdup("zoom_in");
-        if (button_stack) {
-            e9ui_child_add(button_stack, btnZoomIn, state->zoomInBtnMeta);
-        } else {
-            e9ui_child_add(comp, btnZoomIn, state->zoomInBtnMeta);
-        }
-    }
+    e9ui_button_setMini(btnZoomIn, 1);
+    e9ui_setFocusTarget(btnZoomIn, view);
+    state->zoomInBtnMeta = alloc_strdup("zoom_in");
+    e9ui_child_add(button_stack, btnZoomIn, state->zoomInBtnMeta);
 
     target->emu->createOverlays(view, button_stack);
     
-    e9ui_component_t *btn_shader = e9ui_button_make("CRT Settings", emu_toggleShaderUi, view);
-    if (btn_shader) {
-        e9ui_button_setMini(btn_shader, 1);
-        e9ui_setFocusTarget(btn_shader, view);
-        state->shaderUiBtnMeta = alloc_strdup("shader_ui");
-        if (button_stack) {
-            e9ui_child_add(button_stack, btn_shader, state->shaderUiBtnMeta);
-        } else {
-            e9ui_child_add(comp, btn_shader, state->shaderUiBtnMeta);
-        }
-    }
+    e9ui_component_t *btn_shader = e9ui_button_make("CRT", emu_toggleShaderUi, view);
+    e9ui_button_setMini(btn_shader, 1);
+    e9ui_setFocusTarget(btn_shader, view);
+    state->shaderUiBtnMeta = alloc_strdup("shader_ui");
+    e9ui_child_add(button_stack, btn_shader, state->shaderUiBtnMeta);
 
     e9ui_component_t *seek = e9ui_seek_bar_make();
-    if (seek) {
-        e9ui_seek_bar_setMargins(seek, 30, 30, 10);
-        e9ui_seek_bar_setHeight(seek, 14);
-        e9ui_seek_bar_setHoverMargin(seek, 18);
-        e9ui_seek_bar_setCallback(seek, emu_seekBarChanged, NULL);
-        e9ui_seek_bar_setDragCallback(seek, emu_seekBarDragging, seek);
-        e9ui_seek_bar_setTooltipCallback(seek, emu_seekTooltip, NULL);
-        seek->disabled = state_buffer_isRollingPaused() ? 1 : 0;
-        if (seek->disabled) {
-            e9ui_setHidden(seek, 1);
-            state->seekBarForcedHidden = 1;
-        } else {
-            state->seekBarForcedHidden = 0;
-        }
-        e9ui_setAutoHide(seek, 1, e9ui_seek_bar_getHoverMargin(seek));
-        state->seekBarMeta = alloc_strdup("seek_bar");
-        e9ui_child_add(view, seek, state->seekBarMeta);
+    e9ui_seek_bar_setMargins(seek, 30, 30, 10);
+    e9ui_seek_bar_setHeight(seek, 14);
+    e9ui_seek_bar_setHoverMargin(seek, 18);
+    e9ui_seek_bar_setCallback(seek, emu_seekBarChanged, NULL);
+    e9ui_seek_bar_setDragCallback(seek, emu_seekBarDragging, seek);
+    e9ui_seek_bar_setTooltipCallback(seek, emu_seekTooltip, NULL);
+    seek->disabled = state_buffer_isRollingPaused() ? 1 : 0;
+    if (seek->disabled) {
+        e9ui_setHidden(seek, 1);
+        state->seekBarForcedHidden = 1;
+    } else {
+        state->seekBarForcedHidden = 0;
     }
+    e9ui_setAutoHide(seek, 1, e9ui_seek_bar_getHoverMargin(seek));
+    state->seekBarMeta = alloc_strdup("seek_bar");
+    e9ui_child_add(view, seek, state->seekBarMeta);
 
     if (target && target->emu && target->emu->rangeBarCount && target->emu->rangeBarDescribe) {
         size_t count = target->emu->rangeBarCount();
@@ -1286,19 +1321,16 @@ emu_makeComponent(void)
             if (!desc.metaKey || !*desc.metaKey) {
                 continue;
             }
-            rangeBar = range_bar_make();
-            if (!rangeBar) {
-                continue;
-            }
-            range_bar_setSide(rangeBar, (range_bar_side_t)desc.side);
-            range_bar_setMargins(rangeBar, desc.marginTop, desc.marginBottom, desc.marginSide);
-            range_bar_setWidth(rangeBar, desc.width);
-            range_bar_setHoverMargin(rangeBar, desc.hoverMargin);
+            rangeBar = e9ui_range_bar_make();
+            e9ui_range_bar_setSide(rangeBar, (e9ui_range_bar_side_t)desc.side);
+            e9ui_range_bar_setMargins(rangeBar, desc.marginTop, desc.marginBottom, desc.marginSide);
+            e9ui_range_bar_setWidth(rangeBar, desc.width);
+            e9ui_range_bar_setHoverMargin(rangeBar, desc.hoverMargin);
             state->rangeBarBindings[i].index = i;
-            range_bar_setCallback(rangeBar, emu_rangeBarChanged, &state->rangeBarBindings[i]);
-            range_bar_setDragCallback(rangeBar, emu_rangeBarDragging, &state->rangeBarBindings[i]);
-            range_bar_setTooltipCallback(rangeBar, emu_rangeBarTooltip, &state->rangeBarBindings[i]);
-            e9ui_setAutoHide(rangeBar, 1, range_bar_getHoverMargin(rangeBar));
+            e9ui_range_bar_setCallback(rangeBar, emu_rangeBarChanged, &state->rangeBarBindings[i]);
+            e9ui_range_bar_setDragCallback(rangeBar, emu_rangeBarDragging, &state->rangeBarBindings[i]);
+            e9ui_range_bar_setTooltipCallback(rangeBar, emu_rangeBarTooltip, &state->rangeBarBindings[i]);
+            e9ui_setAutoHide(rangeBar, 1, e9ui_range_bar_getHoverMargin(rangeBar));
             state->rangeBarMeta[i] = alloc_strdup(desc.metaKey);
             e9ui_child_add(view, rangeBar, state->rangeBarMeta[i]);
         }

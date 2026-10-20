@@ -6,6 +6,8 @@
  * See COPYING for license details
  */
 
+#include "e9ui.h"
+
 #include <SDL.h>
 #include <SDL_ttf.h>
 #include <SDL_image.h>
@@ -19,14 +21,12 @@
 #include <limits.h>
 #include <math.h>
 
-#include "e9ui.h"
 #include "config.h"
 #include "hotkeys.h"
 #include "help.h"
 #include "file.h"
 #include "e9ui_theme.h"
 #include "ui_test.h"
-#include "debug.h"
 #include "e9ui_text_cache.h"
 #include "e9ui_theme_defaults.h"
 #include "strutil.h"
@@ -40,6 +40,9 @@
 #ifdef E9UI_ENABLE_DEBUG_FONT
 #include "debug_font.h"
 #endif
+
+static int
+e9ui_componentTreeContainsPointer(const e9ui_component_t *root, const void *target);
 
 #ifdef E9UI_ENABLE_GAMEPAD
 typedef enum e9ui_controller_device_type
@@ -245,33 +248,6 @@ e9ui_runFullscreenTransition(e9ui_context_t *ctx,
     return ctx->runFullscreenTransition(ctx, entering, from, to, width, height);
 }
 
-int
-e9ui_routeAuxWindowEvent(e9ui_context_t *ctx, SDL_Event *eventValue, uint32_t mainWindowId)
-{
-    if (!ctx || !ctx->routeAuxWindowEvent || !eventValue) {
-        return 0;
-    }
-    return ctx->routeAuxWindowEvent(ctx, eventValue, mainWindowId);
-}
-
-int
-e9ui_ownsAuxWindowId(e9ui_context_t *ctx, uint32_t windowId)
-{
-    if (!ctx || !ctx->ownsAuxWindowId || !windowId) {
-        return 0;
-    }
-    return ctx->ownsAuxWindowId(ctx, windowId);
-}
-
-void
-e9ui_handleAuxWindowEvent(e9ui_context_t *ctx, const SDL_Event *eventValue)
-{
-    if (!ctx || !ctx->handleAuxWindowEvent || !eventValue) {
-        return;
-    }
-    ctx->handleAuxWindowEvent(ctx, eventValue);
-}
-
 void
 e9ui_setMainWindowFocused(e9ui_context_t *ctx, int focused)
 {
@@ -279,15 +255,6 @@ e9ui_setMainWindowFocused(e9ui_context_t *ctx, int focused)
         return;
     }
     ctx->setMainWindowFocused(ctx, focused);
-}
-
-int
-e9ui_normalizeMouseWheelY(e9ui_context_t *ctx, int value)
-{
-    if (!ctx || !ctx->normalizeMouseWheelY) {
-        return value;
-    }
-    return ctx->normalizeMouseWheelY(ctx, value);
 }
 
 int
@@ -375,15 +342,6 @@ e9ui_defer(e9ui_context_t *ctx, e9ui_defer_fn_t fn, void *user)
     return 1;
 }
 
-static int
-e9ui_overlayHost_preferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
-{
-    (void)self;
-    (void)ctx;
-    (void)availW;
-    return 0;
-}
-
 static void
 e9ui_overlayHost_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bounds)
 {
@@ -433,7 +391,6 @@ e9ui_makeOverlayHost(const char *name)
         return NULL;
     }
     host->name = name;
-    host->preferredHeight = e9ui_overlayHost_preferredHeight;
     host->layout = e9ui_overlayHost_layout;
     host->render = e9ui_overlayHost_render;
     return host;
@@ -455,6 +412,35 @@ e9ui_getOverlayHost(void)
         return NULL;
     }
     return e9ui->overlayRoot;
+}
+
+e9ui_component_t *
+e9ui_getSelectionScopeForOwner(const e9ui_component_t *owner)
+{
+    e9ui_child_reverse_iterator iter;
+    e9ui_component_t *contentRoot = NULL;
+
+    if (!e9ui || !owner) {
+        return NULL;
+    }
+
+    if (e9ui->overlayRoot && e9ui_child_iterateChildrenReverse(e9ui->overlayRoot, &iter)) {
+        for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+             it;
+             it = e9ui_child_iteratePrev(&iter)) {
+            if (!it->child) {
+                continue;
+            }
+            if (e9ui_componentTreeContainsPointer(it->child, owner)) {
+                return it->child;
+            }
+        }
+    }
+    contentRoot = e9ui_activeContentRoot();
+    if (e9ui_componentTreeContainsPointer(contentRoot, owner)) {
+        return contentRoot;
+    }
+    return NULL;
 }
 
 static void
@@ -517,8 +503,58 @@ e9ui_resetRendererOverlayState(e9ui_context_t *ctx)
 }
 
 static int
+e9ui_pointInBounds(const e9ui_component_t *comp, int x, int y);
+
+static void
+e9ui_pointerOwnerClearIfStale(e9ui_context_t *ctx);
+
+static e9ui_component_t *
+e9ui_pointerOwnerForPoint(int x, int y)
+{
+    if (!e9ui) {
+        return NULL;
+    }
+    e9ui_child_reverse_iterator iter;
+    if (e9ui->overlayRoot && e9ui_child_iterateChildrenReverse(e9ui->overlayRoot, &iter)) {
+        for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+             it;
+             it = e9ui_child_iteratePrev(&iter)) {
+            if (!it->child || e9ui_getHidden(it->child)) {
+                continue;
+            }
+            if (e9ui_pointInBounds(it->child, x, y)) {
+                return it->child;
+            }
+        }
+    }
+    return e9ui_activeContentRoot();
+}
+
+static int
 e9ui_sceneProcessEvent(const e9ui_event_t *ev)
 {
+    e9ui_pointerOwnerClearIfStale(&e9ui->ctx);
+    if (ev &&
+        (ev->type == SDL_MOUSEMOTION ||
+         ev->type == SDL_MOUSEBUTTONUP) &&
+        e9ui->ctx.pointerOwner) {
+        int consumed = e9ui_event_process(e9ui->ctx.pointerOwner, &e9ui->ctx, ev);
+        if (ev->type == SDL_MOUSEBUTTONUP &&
+            ev->button.button == e9ui->ctx.pointerOwnerButton) {
+            e9ui->ctx.pointerOwner = NULL;
+            e9ui->ctx.pointerOwnerButton = 0;
+        }
+        return consumed;
+    }
+    if (ev && ev->type == SDL_MOUSEBUTTONDOWN) {
+        e9ui_component_t *pointerOwner = e9ui_pointerOwnerForPoint(ev->button.x, ev->button.y);
+        if (pointerOwner) {
+            e9ui->ctx.pointerOwner = pointerOwner;
+            e9ui->ctx.pointerOwnerButton = ev->button.button;
+            return e9ui_event_process(pointerOwner, &e9ui->ctx, ev);
+        }
+        return 0;
+    }
     if (e9ui->overlayRoot) {
         int allow_multiple = 0;
         int consumed = 0;
@@ -604,6 +640,29 @@ e9ui_captureOwnerIsLive(const e9ui_context_t *ctx, const void *owner)
         return 1;
     }
     return 0;
+}
+
+static void
+e9ui_focusClearIfStale(e9ui_context_t *ctx)
+{
+    if (!ctx || !ctx->_focus) {
+        return;
+    }
+    if (!e9ui_captureOwnerIsLive(ctx, ctx->_focus)) {
+        ctx->_focus = NULL;
+    }
+}
+
+static void
+e9ui_pointerOwnerClearIfStale(e9ui_context_t *ctx)
+{
+    if (!ctx || !ctx->pointerOwner) {
+        return;
+    }
+    if (!e9ui_captureOwnerIsLive(ctx, ctx->pointerOwner)) {
+        ctx->pointerOwner = NULL;
+        ctx->pointerOwnerButton = 0;
+    }
 }
 
 static int
@@ -1482,6 +1541,7 @@ e9ui_setFocus(e9ui_context_t *ctx, e9ui_component_t *comp)
   if (!ctx) {
     return;
   }
+  e9ui_focusClearIfStale(ctx);
   e9ui_component_t *prev = ctx->_focus;
   if (prev && prev != comp && prev->name && strcmp(prev->name, "e9ui_textbox") == 0) {
     e9ui_textbox_clearSelectionExternal(prev);
@@ -1815,7 +1875,8 @@ e9ui_saveLayout(const char* configPath)
         SDL_GetWindowSize(e9ui->ctx.window, &ww, &wh);
     }
     fprintf(f, "win_x=%d\nwin_y=%d\nwin_w=%d\nwin_h=%d\n", wx, wy, ww, wh);
-    if (e9ui->layout.memTrackWinW > 0 && e9ui->layout.memTrackWinH > 0) {
+    if (e9ui_windowHasSavedPosition(e9ui->layout.memTrackWinX, e9ui->layout.memTrackWinY) &&
+        e9ui_windowHasSavedSize(e9ui->layout.memTrackWinW, e9ui->layout.memTrackWinH)) {
         fprintf(f, "memtrack_win_x=%d\nmemtrack_win_y=%d\nmemtrack_win_w=%d\nmemtrack_win_h=%d\n",
                 e9ui->layout.memTrackWinX, e9ui->layout.memTrackWinY,
                 e9ui->layout.memTrackWinW, e9ui->layout.memTrackWinH);
@@ -2104,16 +2165,6 @@ e9ui_pointerBlockedByOverlayRecursive(e9ui_component_t *comp, int x, int y)
         }
     }
     return 0;
-}
-
-static int
-e9ui_pointerBlockedByOverlayAtCurrentMouse(void)
-{
-    e9ui_component_t *overlayRoot = e9ui_getOverlayHost();
-    if (!overlayRoot) {
-        return 0;
-    }
-    return e9ui_pointerBlockedByOverlayRecursive(overlayRoot, e9ui->ctx.mouseX, e9ui->ctx.mouseY);
 }
 
 void
@@ -2689,7 +2740,7 @@ e9ui_ctor(const char* configPath, int cliOverrideWindowSize, int cliWinW, int cl
         return 0;
     }
     e9ui->ctx.window = win;
-    e9ui->ctx.renderer = ren;
+    e9ui_context_setRenderer(&e9ui->ctx, ren);
     e9ui->ctx.dpiScale = e9ui_computeDpiScale();
     e9ui->currentDisplayIndex = SDL_GetWindowDisplayIndex(win);
     // Enable alpha blending for proper fade animations
@@ -2785,8 +2836,8 @@ e9ui_processEvents(void)
         if (e9ui->ctx.window) {
             mainWindowId = SDL_GetWindowID(e9ui->ctx.window);
         }
-        if (e9ui_routeAuxWindowEvent(&e9ui->ctx, &ev, mainWindowId)) {
-            e9ui_forceDefaultCursorOnNonMainHover(&ev);
+        if (evWindowId == mainWindowId && e9ui->ctx.handleHostEvent &&
+            e9ui->ctx.handleHostEvent(&e9ui->ctx, &ev)) {
             continue;
         }
         if (ev.type == SDL_MOUSEMOTION &&
@@ -2799,15 +2850,13 @@ e9ui_processEvents(void)
         e9ui->ctx.cursorOverride = 0;
         e9ui->ctx.focusRoot = e9ui->root;
         e9ui->ctx.focusFullscreen = e9ui->fullscreen;
+        e9ui_focusClearIfStale(&e9ui->ctx);
         if (ev.type == SDL_QUIT) {
             e9ui_runDeferred(&e9ui->ctx);
             return 1;
         }
         else if (ev.type == SDL_MOUSEMOTION) {
             if (!mainWindowId || ev.motion.windowID != mainWindowId) {
-                continue;
-            }
-            if (e9ui_ownsAuxWindowId(&e9ui->ctx, ev.motion.windowID)) {
                 continue;
             }
             int rawXrel = ev.motion.xrel;
@@ -2837,15 +2886,9 @@ e9ui_processEvents(void)
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
             }
-            if (!e9ui_pointerBlockedByOverlayAtCurrentMouse()) {
-                e9ui_text_select_handleEvent(&e9ui->ctx, &ev);
-            }
         }
         else if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP) {
             if (!mainWindowId || ev.button.windowID != mainWindowId) {
-                continue;
-            }
-            if (e9ui_ownsAuxWindowId(&e9ui->ctx, ev.button.windowID)) {
                 continue;
             }
             int scaledX = e9ui_scale_coord(&e9ui->ctx, ev.button.x);
@@ -2862,18 +2905,13 @@ e9ui_processEvents(void)
             if (e9ui_textbox_selectOverlayHandleEvent(&e9ui->ctx, &ev)) {
                 continue;
             }
-            if (!e9ui_pointerBlockedByOverlayAtCurrentMouse()) {
-                e9ui_text_select_handleEvent(&e9ui->ctx, &ev);
-            }
         }
         else if (ev.type == SDL_MOUSEWHEEL) {
             if (!mainWindowId || ev.wheel.windowID != mainWindowId) {
                 continue;
             }
-            if (e9ui_ownsAuxWindowId(&e9ui->ctx, ev.wheel.windowID)) {
-                continue;
-            }
-            ev.wheel.y = e9ui_normalizeMouseWheelY(&e9ui->ctx, ev.wheel.y);
+            ev.wheel.x = -ev.wheel.x;
+            ev.wheel.y = -ev.wheel.y;
             int scaledX = e9ui->ctx.mouseX;
             int scaledY = e9ui->ctx.mouseY;
 #if SDL_VERSION_ATLEAST(2, 26, 0)
@@ -2894,7 +2932,6 @@ e9ui_processEvents(void)
             }
         }
         else if (ev.type == SDL_WINDOWEVENT) {
-            e9ui_handleAuxWindowEvent(&e9ui->ctx, &ev);
             if (!mainWindowId || ev.window.windowID != mainWindowId) {
                 continue;
             }
@@ -3047,10 +3084,13 @@ e9ui_processEvents(void)
         }
         // For mouse and other events, bubble through tree for hit-testing and focus updates
         (void)e9ui_sceneProcessEvent(&ev);
-	if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT && !e9ui->ctx.focusClickHandled) {
-	  if (!e9ui_ownsAuxWindowId(&e9ui->ctx, ev.button.windowID)) {
-	    e9ui_setFocus(&e9ui->ctx, NULL);
-	  }
+        if (ev.type == SDL_MOUSEMOTION ||
+            ev.type == SDL_MOUSEBUTTONDOWN ||
+            ev.type == SDL_MOUSEBUTTONUP) {
+            (void)e9ui_text_select_handleEvent(&e9ui->ctx, &ev);
+        }
+        if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT && !e9ui->ctx.focusClickHandled) {
+            e9ui_setFocus(&e9ui->ctx, NULL);
         }
     }
     e9ui_runDeferred(&e9ui->ctx);
@@ -3125,7 +3165,7 @@ e9ui_shutdown(void)
 
   if (e9ui->ctx.renderer)
     SDL_DestroyRenderer(e9ui->ctx.renderer);
-  e9ui->ctx.renderer = NULL;
+  e9ui_context_setRenderer(&e9ui->ctx, NULL);
   if (e9ui->ctx.window)
     SDL_DestroyWindow(e9ui->ctx.window);
   e9ui->ctx.window = NULL;

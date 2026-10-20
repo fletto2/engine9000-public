@@ -15,14 +15,10 @@
 #include <SDL_ttf.h>
 #include <SDL_image.h>
 #include "e9ui.h"
-#include "debug.h"
 #include "linebuf.h"
 #include "machine.h"
-#include "e9k-geo.h"
-#include "file.h"
-#include "dasm.h"
-#include "emu.h"
 #include "target.h"
+
 #define countof(x) (sizeof(x) / sizeof(x[0]))
 
 struct state_wrap_info;
@@ -40,6 +36,12 @@ typedef enum {
   DEBUGGER_RUNMODE_RESTORE,
 } debugger_run_mode_t;
 
+typedef enum debugger_symbol_file_kind {
+    DEBUGGER_SYMBOL_FILE_KIND_NONE = 0,
+    DEBUGGER_SYMBOL_FILE_KIND_BINARY = 1,
+    DEBUGGER_SYMBOL_FILE_KIND_TEXT_MAP = 2
+} debugger_symbol_file_kind_t;
+
 typedef struct e9k_libretro_config {
   char romPath[PATH_MAX];
   char systemDir[PATH_MAX];
@@ -56,6 +58,7 @@ typedef struct e9k_path_config {
     e9k_libretro_config_t libretro;
     char romFolder[PATH_MAX];
     char systemType[16];
+    char cdSystemType[16];
     int  skipBiosLogo;
 } e9k_neogeo_config_t;
 
@@ -85,6 +88,7 @@ typedef struct e9k_system_config {
     e9k_amiga_config_t amiga;
     e9k_megadrive_config_t megadrive;
     e9k_atarist_config_t atarist;
+    int logsEnabled;
     int recordEnabled;
     int logosEnabled;
     int crtEnabled;
@@ -110,10 +114,12 @@ typedef struct e9k_debugger {
     int seeking;
     int hasStateSnapshot;
     int speedMultiplier;
+    uint32_t activeDebugProcessorId;
     int frameStepMode;
     int frameStepPending;
     int suppressBpActive;
     uint32_t suppressBpAddr;
+    int suppressVblankFrameCounter;
     uint64_t frameCounter;
     uint64_t frameTimeCounter;
     double frameTimeAccum;
@@ -128,6 +134,11 @@ typedef struct e9k_debugger {
     int smokeTestFailed;
     int smokeTestExitCode;
     int smokeTestOpenOnFail;
+    int smokeTestStartOnWrite;
+    int smokeTestThreshold;
+    int profileStartOnWrite;
+    uint32_t debugArgs[10];
+    int debugArgCount;
     int cliWindowOverride;
     int cliWindowW;
     int cliWindowH;
@@ -142,6 +153,9 @@ typedef struct e9k_debugger {
     int cliTargetIndex;
     int settingsOk;
     int elfValid;
+    int symbolValid;
+    debugger_symbol_file_kind_t symbolFileKind;
+    int exitRequested;
     int restartRequested;
     e9k_debug_options_t opts;
     int coreOptionsShowHelp;
@@ -186,7 +200,16 @@ int
 debugger_main(int argc, char **argv);
 
 int
+debugger_onCoreReset(void);
+
+int
 debugger_platform_pathJoin(char *out, size_t cap, const char *dir, const char *name);
+
+int
+debugger_platform_pathIsAbsolute(const char *path);
+
+int
+debugger_platform_expandHomePath(char *out, size_t cap, const char *path);
 
 int
 debugger_platform_scanFolder(const char *folder, int (*cb)(const char *path, void *user), void *user);
@@ -196,6 +219,9 @@ debugger_platform_caseInsensitivePaths(void);
 
 char
 debugger_platform_preferredPathSeparator(void);
+
+void
+debugger_platform_normalizePathSeparators(char *path);
 
 int
 debugger_platform_getExeDir(char *out, size_t cap);
@@ -223,9 +249,6 @@ debugger_platform_makeTempFilePath(char *out, size_t cap, const char *prefix, co
 
 int
 debugger_platform_replaceFile(const char *srcPath, const char *dstPath);
-
-int
-debugger_platform_normalizeMouseWheelY(int value);
 
 int
 debugger_platform_glCompositeNeedsOpenGLHint(void);
@@ -273,6 +296,9 @@ debugger_platform_formatToolCommand(char *out,
 
 int
 debugger_platform_finalizeToolBinary(char *toolPath, size_t cap);
+
+int
+debugger_platform_uncompressBuffer(uint8_t *dest, size_t *inOutDestSize, const uint8_t *source, size_t sourceSize);
 
 void
 debugger_suppressBreakpointAtPC(void);

@@ -6,11 +6,6 @@
  * See COPYING for license details
  */
 
-#include "platform/w64/debugger_platform.h"
-#include "debugger.h"
-#include "tinyfiledialogs.h"
-#include "ui_test.h"
-
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -20,6 +15,13 @@
 #include <io.h>
 #include <windows.h>
 #include <errno.h>
+#include <zlib.h>
+
+#include "platform/w64/debugger_platform.h"
+#include "debugger.h"
+#include "strutil.h"
+#include "tinyfiledialogs.h"
+#include "ui_test.h"
 
 static const char debugger_testConfigName[] = ".e9k-debugger.cfg";
 static const char debugger_testTempConfigPrefix[] = "e9k-debugger-test-";
@@ -57,24 +59,36 @@ debugger_platform_pathIsDirectory(const char *path)
 static const char *
 debugger_platform_dialogDefaultPath(const char *path, char *out, size_t cap)
 {
+    DWORD fullPathLen = 0;
+    char fullPath[PATH_MAX];
+    const char *sourcePath = path;
     size_t len = 0;
+
     if (!path || !*path) {
         return path;
     }
     if (!out || cap < 4) {
         return path;
     }
-    if (!debugger_platform_pathIsDirectory(path)) {
+
+    fullPathLen = GetFullPathNameA(path, (DWORD)sizeof(fullPath), fullPath, NULL);
+    if (fullPathLen > 0 && fullPathLen < sizeof(fullPath)) {
+        sourcePath = fullPath;
+    }
+    len = strlen(sourcePath);
+    if (len + 1 > cap) {
         return path;
     }
-    len = strlen(path);
-    if (path[len - 1] == '/' || path[len - 1] == '\\') {
-        return path;
+    memcpy(out, sourcePath, len + 1);
+    if (!debugger_platform_pathIsDirectory(out)) {
+        return out;
+    }
+    if (out[len - 1] == '/' || out[len - 1] == '\\') {
+        return out;
     }
     if (len + 2 > cap) {
-        return path;
+        return out;
     }
-    memcpy(out, path, len);
     out[len++] = '\\';
     out[len] = '\0';
     return out;
@@ -92,6 +106,27 @@ debugger_platform_hashPath(const char *path)
         hash *= 1099511628211ull;
     }
     return hash;
+}
+
+int
+debugger_platform_uncompressBuffer(uint8_t *dest, size_t *inOutDestSize, const uint8_t *source, size_t sourceSize)
+{
+    uint32_t destSize = 0;
+
+    if (!dest || !inOutDestSize || !source) {
+        return Z_BUF_ERROR;
+    }
+    if (*inOutDestSize > UINT32_MAX || sourceSize > UINT32_MAX) {
+        return Z_BUF_ERROR;
+    }
+
+    destSize = (uint32_t)*inOutDestSize;
+    int zResult = uncompress((unsigned char *)dest,
+                             &destSize,
+                             (const unsigned char *)source,
+                             (uint32_t)sourceSize);
+    *inOutDestSize = (size_t)destSize;
+    return zResult;
 }
 
 int
@@ -114,6 +149,52 @@ debugger_platform_pathJoin(char *out, size_t cap, const char *dir, const char *n
     }
     memcpy(out + pos, name, nlen);
     out[pos + nlen] = '\0';
+    debugger_platform_normalizePathSeparators(out);
+    return 1;
+}
+
+int
+debugger_platform_pathIsAbsolute(const char *path)
+{
+    if (!path || !path[0]) {
+        return 0;
+    }
+    if (path[0] == '\\' || path[0] == '/') {
+        return 1;
+    }
+    if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+        path[1] == ':' &&
+        (path[2] == '\\' || path[2] == '/')) {
+        return 1;
+    }
+    return 0;
+}
+
+int
+debugger_platform_expandHomePath(char *out, size_t cap, const char *path)
+{
+    char home[PATH_MAX];
+
+    if (!out || cap == 0) {
+        return 0;
+    }
+    if (!path || !path[0]) {
+        out[0] = '\0';
+        return 0;
+    }
+    if (path[0] != '~' || (path[1] != '\\' && path[1] != '/' && path[1] != '\0')) {
+        strutil_strlcpy(out, cap, path);
+        debugger_platform_normalizePathSeparators(out);
+        return 1;
+    }
+    home[0] = '\0';
+    if (!debugger_platform_getHomeDir(home, sizeof(home)) || !home[0]) {
+        strutil_strlcpy(out, cap, path);
+        debugger_platform_normalizePathSeparators(out);
+        return 0;
+    }
+    strutil_join2Trunc(out, cap, home, path + 1);
+    debugger_platform_normalizePathSeparators(out);
     return 1;
 }
 
@@ -159,6 +240,19 @@ char
 debugger_platform_preferredPathSeparator(void)
 {
     return '\\';
+}
+
+void
+debugger_platform_normalizePathSeparators(char *path)
+{
+    if (!path) {
+        return;
+    }
+    for (size_t i = 0; path[i]; ++i) {
+        if (path[i] == '/') {
+            path[i] = '\\';
+        }
+    }
 }
 
 int
@@ -365,8 +459,7 @@ debugger_platform_makeTempFilePath(char *out, size_t cap, const char *prefix, co
     char filePath[MAX_PATH];
     const char *filePrefix = (prefix && *prefix) ? prefix : "e9k";
     char shortPrefix[4] = "e9k";
-    strncpy(shortPrefix, filePrefix, sizeof(shortPrefix) - 1);
-    shortPrefix[sizeof(shortPrefix) - 1] = '\0';
+    strutil_strlcpy(shortPrefix, sizeof(shortPrefix), filePrefix);
     if (GetTempFileNameA(tempDir, shortPrefix, 0, filePath) == 0) {
         return 0;
     }
@@ -400,12 +493,6 @@ debugger_platform_replaceFile(const char *srcPath, const char *dstPath)
 }
 
 int
-debugger_platform_normalizeMouseWheelY(int value)
-{
-    return -value;
-}
-
-int
 debugger_platform_glCompositeNeedsOpenGLHint(void)
 {
     return 1;
@@ -420,7 +507,12 @@ debugger_platform_windowIconAssetPath(void)
 const char *
 debugger_platform_selectFolderDialog(const char *title, const char *defaultPath)
 {
-    return tinyfd_selectFolderDialog(title, defaultPath);
+    char dialogPath[PATH_MAX];
+
+    return tinyfd_selectFolderDialog(title,
+                                     debugger_platform_dialogDefaultPath(defaultPath,
+                                                                         dialogPath,
+                                                                         sizeof(dialogPath)));
 }
 
 const char *

@@ -140,15 +140,6 @@ e9ui_modal_layout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect_t bound
     }
 }
 
-static int
-e9ui_modal_preferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
-{
-    (void)self;
-    (void)ctx;
-    (void)availW;
-    return 0;
-}
-
 static void
 e9ui_modal_drawTitlebar(e9ui_component_t *self, e9ui_modal_state_t *st, e9ui_context_t *ctx, SDL_Rect rect)
 {
@@ -282,7 +273,6 @@ e9ui_modal_make(const char *title, e9ui_rect_t rect, e9ui_modal_close_cb_t onClo
     st->body = e9ui_box_make(NULL);
     c->name = "e9ui_modal";
     c->state = st;
-    c->preferredHeight = e9ui_modal_preferredHeight;
     c->layout = e9ui_modal_layout;
     c->render = e9ui_modal_render;
     c->handleEvent = e9ui_modal_handleEvent;
@@ -317,6 +307,9 @@ e9ui_modal_show(e9ui_context_t *ctx, const char *title, e9ui_rect_t rect,
         e9ui_stack_addFixed(hostRoot, modal);
     } else {
         e9ui_child_add(hostRoot, modal, alloc_strdup("modal"));
+    }
+    if (ctx->blockingWindowOpened) {
+        ctx->blockingWindowOpened(ctx);
     }
     return modal;
 }
@@ -368,6 +361,20 @@ e9ui_modal_closeAll(e9ui_context_t *ctx)
             e9ui_childRemove(hostRoot, modal, useCtx);
         }
     }
+}
+
+void
+e9ui_modal_setCloseCallback(e9ui_component_t *modal, e9ui_modal_close_cb_t onClose, void *user)
+{
+    if (!modal || !modal->state) {
+        return;
+    }
+    e9ui_modal_state_t *st = (e9ui_modal_state_t*)modal->state;
+    if (!st) {
+        return;
+    }
+    st->onClose = onClose;
+    st->onCloseUser = user;
 }
 
 void

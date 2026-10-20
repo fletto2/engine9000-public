@@ -16,7 +16,13 @@
 #include "emu_mega.h"
 #include "e9ui.h"
 #include "libretro.h"
+#include "libretro_host.h"
+#include "mega_audio_vis.h"
+#include "mega_vdp.h"
+#include "mega_memview.h"
+#include "mega_palette_debug.h"
 #include "mega_sprite_debug.h"
+#include "profile_checkpoints.h"
 #include "target.h"
 
 typedef struct
@@ -57,6 +63,8 @@ static emu_mega_histogram_mode_t emu_mega_histogramMode = emu_mega_histogramMode
 static e9ui_component_t *emu_mega_histogramBtn = NULL;
 static int emu_mega_spriteShadowReady = 0;
 static e9k_debug_mega_sprite_state_t emu_mega_spriteShadow;
+static int emu_mega_audioFrameReady = 0;
+static e9k_debug_mega_audio_frame_t emu_mega_audioFrame;
 
 void
 emu_mega_setSpriteState(const e9k_debug_mega_sprite_state_t *state, int ready)
@@ -67,6 +75,17 @@ emu_mega_setSpriteState(const e9k_debug_mega_sprite_state_t *state, int ready)
     } else {
         emu_mega_spriteShadowReady = 0;
     }
+}
+
+void
+emu_mega_setAudioFrame(const e9k_debug_mega_audio_frame_t *frame, int ready)
+{
+    if (!ready || !frame) {
+        emu_mega_audioFrameReady = 0;
+        return;
+    }
+    emu_mega_audioFrame = *frame;
+    emu_mega_audioFrameReady = 1;
 }
 
 static uint32_t
@@ -192,6 +211,38 @@ emu_mega_toggleSpriteDebug(e9ui_context_t *ctx, void *user)
     (void)ctx;
     (void)user;
     mega_sprite_debug_toggle();
+}
+
+static void
+emu_mega_toggleMemview(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    (void)user;
+    mega_memview_toggle();
+}
+
+static void
+emu_mega_togglePaletteDebug(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    (void)user;
+    mega_palette_debug_toggle();
+}
+
+static void
+emu_mega_toggleAudioVis(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    (void)user;
+    mega_audio_vis_toggle();
+}
+
+static void
+emu_mega_toggleVdp(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    (void)user;
+    mega_vdp_toggle();
 }
 
 static void
@@ -533,11 +584,7 @@ emu_mega_createOverlays(e9ui_component_t *comp, e9ui_component_t *button_stack)
         e9ui_button_setMini(btn, 1);
         e9ui_setFocusTarget(btn, comp);
         void *histogramBtnMeta = alloc_strdup("histogram");
-        if (button_stack) {
-            e9ui_child_add(button_stack, btn, histogramBtnMeta);
-        } else {
-            e9ui_child_add(comp, btn, histogramBtnMeta);
-        }
+        e9ui_child_add(button_stack, btn, histogramBtnMeta);
     }
 
     e9ui_component_t *btnDebug = e9ui_button_make("Sprite Debug", emu_mega_toggleSpriteDebug, comp);
@@ -545,22 +592,69 @@ emu_mega_createOverlays(e9ui_component_t *comp, e9ui_component_t *button_stack)
         e9ui_button_setMini(btnDebug, 1);
         e9ui_setFocusTarget(btnDebug, comp);
         void *spriteDebugBtnMeta = alloc_strdup("mega_sprite_debug");
-        if (button_stack) {
-            e9ui_child_add(button_stack, btnDebug, spriteDebugBtnMeta);
-        } else {
-            e9ui_child_add(comp, btnDebug, spriteDebugBtnMeta);
-        }
+        e9ui_child_add(button_stack, btnDebug, spriteDebugBtnMeta);
+    }
+
+    e9ui_component_t *btnMemview = e9ui_button_make("RAM/ROMS", emu_mega_toggleMemview, comp);
+    if (btnMemview) {
+        e9ui_button_setMini(btnMemview, 1);
+        e9ui_setFocusTarget(btnMemview, comp);
+        void *memviewBtnMeta = alloc_strdup("mega_memview");
+        e9ui_child_add(button_stack, btnMemview, memviewBtnMeta);
+    }
+
+    e9ui_component_t *btnPalette = e9ui_button_make("Palette", emu_mega_togglePaletteDebug, comp);
+    if (btnPalette) {
+        e9ui_button_setMini(btnPalette, 1);
+        e9ui_setFocusTarget(btnPalette, comp);
+        void *paletteBtnMeta = alloc_strdup("mega_palette_debug");
+        e9ui_child_add(button_stack, btnPalette, paletteBtnMeta);
+    }
+
+    e9ui_component_t *btnAudio = e9ui_button_make("Audio", emu_mega_toggleAudioVis, comp);
+    if (btnAudio) {
+        e9ui_button_setMini(btnAudio, 1);
+        e9ui_setFocusTarget(btnAudio, comp);
+        void *audioBtnMeta = alloc_strdup("mega_audio_vis");
+        e9ui_child_add(button_stack, btnAudio, audioBtnMeta);
+    }
+
+    e9ui_component_t *btnVdp = e9ui_button_make("VDP", emu_mega_toggleVdp, comp);
+    if (btnVdp) {
+        e9ui_button_setMini(btnVdp, 1);
+        e9ui_setFocusTarget(btnVdp, comp);
+        void *vdpBtnMeta = alloc_strdup("mega_vdp");
+        e9ui_child_add(button_stack, btnVdp, vdpBtnMeta);
     }
 }
 
 static void
-emu_mega_render(e9ui_context_t *ctx, SDL_Rect *dst)
+emu_mega_render(e9ui_context_t *ctx, SDL_Rect *dst, const SDL_Rect *clipRect)
 {
+    int scanlineCount = 0;
+    if (libretro_host_megadrive_getRasterLineCount(&scanlineCount) && scanlineCount > 0) {
+        profile_checkpoints_renderScanlineOverlay(ctx,
+                                                  dst,
+                                                  clipRect,
+                                                  (uint64_t)scanlineCount,
+                                                  0,
+                                                  (uint64_t)scanlineCount);
+    }
+
     if (emu_mega_histogramMode != emu_mega_histogramModeOff && emu_mega_spriteShadowReady) {
         emu_mega_renderHistogram(ctx->renderer, dst, &emu_mega_spriteShadow);
     }
     if (mega_sprite_debug_is_open() && emu_mega_spriteShadowReady) {
         mega_sprite_debug_render(&emu_mega_spriteShadow);
+    }
+    if (mega_memview_isOpen()) {
+        mega_memview_render();
+    }
+    if (mega_audio_vis_isOpen() && emu_mega_audioFrameReady) {
+        mega_audio_vis_render(&emu_mega_audioFrame);
+    }
+    if (mega_vdp_isOpen()) {
+        mega_vdp_render();
     }
 }
 

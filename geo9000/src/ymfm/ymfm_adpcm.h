@@ -77,6 +77,17 @@ void adpcm_b_engine_write(uint32_t regnum, uint8_t data);
 // status
 uint8_t adpcm_b_engine_status(void);
 
+#ifdef E9K_HACK_AUDIO_VIS
+void
+ymfm_adpcm_debugAdpcmAVolumes(uint32_t chnum, uint32_t *left, uint32_t *right);
+
+void
+ymfm_adpcm_debugAdpcmBVolumes(uint32_t *left, uint32_t *right);
+
+uint32_t
+adpcm_b_engine_debug_delta_n(void);
+#endif
+
 void adpcm_state_load(uint8_t *st);
 void adpcm_state_save(uint8_t *st);
 

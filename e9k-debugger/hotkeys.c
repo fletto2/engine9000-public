@@ -12,27 +12,25 @@
 
 #include "hotkeys.h"
 #include "e9ui.h"
+#include "e9ui_checkbox.h"
 #include "e9ui_scroll.h"
 #include "e9ui_text.h"
 #include "e9ui_text_select.h"
 #include "e9ui_textbox.h"
+#include "e9ui_window.h"
 #include "help.h"
 #include "core_options.h"
 #include "settings.h"
 #include "debugger.h"
 #include "emu.h"
-#include "sprite_debug.h"
-#include "mega_sprite_debug.h"
 #include "ui.h"
-#include "crt.h"
-#include "state_buffer.h"
 #include "prompt.h"
 #include "input_record.h"
 #include "profile_checkpoints.h"
 #include "config.h"
 #include "source_pane.h"
+#include "hex_byte_color.h"
 #include "hex_convert.h"
-#include "emu_ami.h"
 #include "strutil.h"
 
 static int hotkeys_enabled = 1;
@@ -96,6 +94,12 @@ typedef struct hotkeys_action_registration
     size_t specIndex;
 } hotkeys_action_registration_t;
 
+typedef enum hotkeys_config_section {
+    hotkeys_config_section_global = 0,
+    hotkeys_config_section_execution,
+    hotkeys_config_section_checkpoints
+} hotkeys_config_section_t;
+
 static const hotkeys_config_spec_t hotkeys_configSpecs[] = {
     { "help", "Help", SDLK_F1, 0 },
     { "screenshot", "Screenshot", SDLK_F2, 0 },
@@ -112,13 +116,14 @@ static const hotkeys_config_spec_t hotkeys_configSpecs[] = {
     { "hex_convert", "Hex Converter", SDLK_i, KMOD_CTRL },
     { "hex_convert_inline", "In-place Hex Convert", SDLK_h, KMOD_CTRL },
     { "fullscreen", "Fullscreen", SDLK_RETURN, KMOD_ALT },
-    { "mouse_release", "Mouse Release", SDLK_LALT, (SDL_Keymod)(KMOD_CTRL | KMOD_ALT) },
+    { "mouse_release", "Capture/Release Mouse", SDLK_LALT, (SDL_Keymod)(KMOD_CTRL | KMOD_ALT) },
     { "prompt_focus", "Prompt Focus", SDLK_TAB, 0 },
     { "continue", "Continue", SDLK_c, KMOD_ALT },
     { "pause", "Pause", SDLK_p, KMOD_ALT },
     { "step", "Step", SDLK_s, KMOD_ALT },
     { "next", "Next", SDLK_n, KMOD_ALT },
     { "step_inst", "Step Inst", SDLK_i, KMOD_ALT },
+    { "debug_processor_toggle", "Debugger CPU Toggle", SDLK_z, KMOD_ALT },
     { "breakpoint_add_current", "Breakpoint Add Current", SDLK_d, KMOD_ALT },
     { "frame_back", "Frame Step Back", SDLK_b, KMOD_ALT },
     { "frame_step", "Frame Step", SDLK_f, KMOD_ALT },
@@ -167,6 +172,93 @@ static size_t
 hotkeys_configSpecCount(void)
 {
     return sizeof(hotkeys_configSpecs) / sizeof(hotkeys_configSpecs[0]);
+}
+
+static int
+hotkeys_checkboxMeasureWidth(e9ui_component_t *checkbox, e9ui_context_t *ctx)
+{
+    int width = 0;
+    int height = 0;
+
+    if (!checkbox || !ctx) {
+        return 0;
+    }
+    e9ui_checkbox_measure(checkbox, ctx, &width, &height);
+    return width > 0 ? width : 0;
+}
+
+static void
+hotkeys_debuggerOptionFunChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    (void)user;
+
+    if (selected) {
+        if (e9ui->transition.mode == e9k_transition_none) {
+            e9ui->transition.mode = e9k_transition_random;
+        }
+    } else {
+        e9ui->transition.mode = e9k_transition_none;
+    }
+    e9ui->transition.fullscreenModeSet = 0;
+    config_saveConfig();
+}
+
+static void
+hotkeys_debuggerOptionLogsChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    (void)user;
+
+    debugger.settingsEdit.logsEnabled = selected ? 1 : 0;
+    settings_updateSaveLabel();
+}
+
+static void
+hotkeys_debuggerOptionCrtChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    (void)user;
+
+    debugger.settingsEdit.crtEnabled = selected ? 1 : 0;
+    settings_updateSaveLabel();
+}
+
+static void
+hotkeys_debuggerOptionRecordChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    (void)user;
+
+    debugger.settingsEdit.recordEnabled = selected ? 1 : 0;
+    settings_updateSaveLabel();
+}
+
+static void
+hotkeys_debuggerOptionLogosChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    (void)user;
+
+    debugger.settingsEdit.logosEnabled = selected ? 1 : 0;
+    settings_markCoreOptionsDirtyWithRestart(1);
+    settings_updateSaveLabel();
+}
+
+static void
+hotkeys_debuggerOptionHexByteColorsChanged(e9ui_component_t *self, e9ui_context_t *ctx, int selected, void *user)
+{
+    (void)self;
+    (void)ctx;
+    (void)user;
+
+    hex_byte_color_setEnabled(selected ? 1 : 0);
+    config_saveConfig();
 }
 
 static int
@@ -1427,12 +1519,6 @@ hotkeys_configContainerDtor(e9ui_component_t *self, e9ui_context_t *ctx)
     self->state = NULL;
 }
 
-typedef enum hotkeys_config_section {
-    hotkeys_config_section_global = 0,
-    hotkeys_config_section_execution,
-    hotkeys_config_section_checkpoints
-} hotkeys_config_section_t;
-
 static hotkeys_config_section_t
 hotkeys_configSectionForActionId(const char *actionId)
 {
@@ -1445,6 +1531,7 @@ hotkeys_configSectionForActionId(const char *actionId)
         strcmp(actionId, "step") == 0 ||
         strcmp(actionId, "next") == 0 ||
         strcmp(actionId, "step_inst") == 0 ||
+        strcmp(actionId, "debug_processor_toggle") == 0 ||
         strcmp(actionId, "breakpoint_add_current") == 0 ||
         strcmp(actionId, "frame_back") == 0 ||
         strcmp(actionId, "frame_step") == 0 ||
@@ -1466,12 +1553,12 @@ hotkeys_configSectionLabel(hotkeys_config_section_t section)
 {
     switch (section) {
     case hotkeys_config_section_execution:
-        return "DEBUG";
+        return "HOTKEYS (DEBUGGER)";
     case hotkeys_config_section_checkpoints:
-        return "CHECKPOINTS";
+        return "HOTKEYS (CHECKPOINTS)";
     case hotkeys_config_section_global:
     default:
-        return "GENERAL";
+        return "HOTKEYS (GENERAL)";
     }
 }
 
@@ -1527,45 +1614,28 @@ hotkeys_makeConfigBody(hotkeys_config_modal_state_t *st, e9ui_context_t *ctx)
             *lastSection = section;
         }
         e9ui_component_t *row = e9ui_hstack_make();
-        if (!row) {
-            continue;
-        }
         e9ui_component_t *labelText = e9ui_text_make(spec->label);
-        e9ui_component_t *labelBox = labelText ? e9ui_box_make(labelText) : NULL;
-        if (labelBox) {
-            e9ui_box_setWidth(labelBox, e9ui_dim_fixed, labelWidthPx);
-        }
+        e9ui_component_t *labelBox = e9ui_box_make(labelText);
+        e9ui_box_setWidth(labelBox, e9ui_dim_fixed, labelWidthPx);
         e9ui_component_t *button = e9ui_button_make("", hotkeys_configBindingButtonClicked, entry);
-        if (button) {
-            e9ui_button_setLeftJustify(button, 16);
-            e9ui_button_setLargestLabel(button, "Press key... (ctrl+shift+alt+cmd)");
-            entry->button = button;
-            hotkeys_configUpdateEntryButtonLabel(entry);
-        }
+        e9ui_button_setLeftJustify(button, 16);
+        e9ui_button_setLargestLabel(button, "Press key... (ctrl+shift+alt+cmd)");
+        entry->button = button;
+        hotkeys_configUpdateEntryButtonLabel(entry);
         e9ui_component_t *btnUnbind = e9ui_button_make("", hotkeys_configUnbindClicked, entry);
-        if (btnUnbind) {
-            e9ui_button_setMini(btnUnbind, 1);
-            e9ui_button_setIconAsset(btnUnbind, "assets/icons/trash.png");
-            e9ui_setTooltip(btnUnbind, "Delete Hotkey");
-            entry->btnUnbind = btnUnbind;
-        }
+        e9ui_button_setMini(btnUnbind, 1);
+        e9ui_button_setIconAsset(btnUnbind, "assets/icons/trash.png");
+        e9ui_setTooltip(btnUnbind, "Delete Hotkey");
+        entry->btnUnbind = btnUnbind;
         int gapPx = e9ui_scale_px(ctx, 8);
         int unbindW = 0;
         int unbindH = 0;
-        if (btnUnbind) {
-            e9ui_button_measure(btnUnbind, ctx, &unbindW, &unbindH);
-            (void)unbindH;
-        }
-        if (labelBox) {
-            e9ui_hstack_addFixed(row, labelBox, e9ui_scale_px(ctx, labelWidthPx));
-        } else if (labelText) {
-            e9ui_hstack_addFlex(row, labelText);
-        }
+        e9ui_button_measure(btnUnbind, ctx, &unbindW, &unbindH);
+        (void)unbindH;
+        e9ui_hstack_addFixed(row, labelBox, e9ui_scale_px(ctx, labelWidthPx));
         e9ui_hstack_addFixed(row, e9ui_spacer_make(gapPx), gapPx);
-        if (button) {
-            e9ui_hstack_addFlex(row, button);
-        }
-        if (btnUnbind && unbindW > 0) {
+        e9ui_hstack_addFlex(row, button);
+        if (unbindW > 0) {
             e9ui_hstack_addFixed(row, e9ui_spacer_make(gapPx), gapPx);
             e9ui_hstack_addFixed(row, btnUnbind, unbindW);
         }
@@ -1587,38 +1657,121 @@ hotkeys_makeConfigBody(hotkeys_config_modal_state_t *st, e9ui_context_t *ctx)
     if (controllerSelect) {
         e9ui_component_t *row = e9ui_hstack_make();
         e9ui_component_t *labelText = e9ui_text_make("Controller");
-        e9ui_component_t *labelBox = labelText ? e9ui_box_make(labelText) : NULL;
-        if (labelBox) {
-            e9ui_box_setWidth(labelBox, e9ui_dim_fixed, labelWidthPx);
-        }
+        e9ui_component_t *labelBox = e9ui_box_make(labelText);
+        e9ui_component_t *heading = e9ui_text_make("CONTROLLERS");
+        e9ui_box_setWidth(labelBox, e9ui_dim_fixed, labelWidthPx);
         st->controllerSelect = controllerSelect;
-        if (row) {
-            int gapPx = e9ui_scale_px(ctx, 8);
-            e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(10));
-            if (labelBox) {
-                e9ui_hstack_addFixed(row, labelBox, e9ui_scale_px(ctx, labelWidthPx));
-            } else if (labelText) {
-                e9ui_hstack_addFlex(row, labelText);
-            }
-            e9ui_hstack_addFixed(row, e9ui_spacer_make(gapPx), gapPx);
-            e9ui_hstack_addFlex(row, controllerSelect);
-            e9ui_stack_addFixed(rightStack, row);
-            e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(rowGapPx));
-        } else {
-            e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(10));
-            e9ui_stack_addFixed(rightStack, controllerSelect);
-            e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(rowGapPx));
+        int gapPx = e9ui_scale_px(ctx, 8);
+        e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(10));
+        if (heading) {
+            e9ui_text_setBold(heading, 1);
+            e9ui_text_setColor(heading, (SDL_Color){235, 235, 235, 255});
+            e9ui_stack_addFixed(rightStack, heading);
+            e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(6));
         }
+        e9ui_hstack_addFixed(row, labelBox, e9ui_scale_px(ctx, labelWidthPx));
+        e9ui_hstack_addFixed(row, e9ui_spacer_make(gapPx), gapPx);
+        e9ui_hstack_addFlex(row, controllerSelect);
+        e9ui_stack_addFixed(rightStack, row);
+        e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(rowGapPx));
         hotkeys_configRebuildControllerOptions(st);
+    }
+
+    {
+        int funSelected = (e9ui->transition.mode != e9k_transition_none);
+        e9ui_component_t *cbLogs = e9ui_checkbox_make("LOGS",
+                                                      debugger.settingsEdit.logsEnabled,
+                                                      hotkeys_debuggerOptionLogsChanged,
+                                                      NULL);
+        e9ui_component_t *cbFun = e9ui_checkbox_make("FUN",
+                                                     funSelected,
+                                                     hotkeys_debuggerOptionFunChanged,
+                                                     NULL);
+        e9ui_component_t *cbCrt = e9ui_checkbox_make("CRT",
+                                                     debugger.settingsEdit.crtEnabled,
+                                                     hotkeys_debuggerOptionCrtChanged,
+                                                     NULL);
+        e9ui_component_t *cbRecord = e9ui_checkbox_make("RECORD",
+                                                        debugger.settingsEdit.recordEnabled,
+                                                        hotkeys_debuggerOptionRecordChanged,
+                                                        NULL);
+        e9ui_component_t *cbLogos = e9ui_checkbox_make("LOGOS",
+                                                       debugger.settingsEdit.logosEnabled,
+                                                       hotkeys_debuggerOptionLogosChanged,
+                                                       NULL);
+        e9ui_component_t *cbHexColors = e9ui_checkbox_make("HEX COLORS",
+                                                           hex_byte_color_isEnabled() ? 1 : 0,
+                                                           hotkeys_debuggerOptionHexByteColorsChanged,
+                                                           NULL);
+        e9ui_component_t *row = e9ui_hstack_make();
+        int rowGapPx = e9ui_scale_px(ctx, 8);
+        int addedAny = 0;
+
+        if (row) {
+            e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(10));
+            e9ui_component_t *heading = e9ui_text_make("OPTIONS");
+            if (heading) {
+                e9ui_text_setBold(heading, 1);
+                e9ui_text_setColor(heading, (SDL_Color){235, 235, 235, 255});
+                e9ui_stack_addFixed(rightStack, heading);
+                e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(6));
+            }
+        }
+        if (row && cbLogs) {
+            int width = hotkeys_checkboxMeasureWidth(cbLogs, ctx);
+            e9ui_hstack_addFixed(row, cbLogs, width);
+            addedAny = 1;
+        }
+        if (row && cbFun) {
+            int width = hotkeys_checkboxMeasureWidth(cbFun, ctx);
+            if (addedAny) {
+                e9ui_hstack_addFixed(row, e9ui_spacer_make(rowGapPx), rowGapPx);
+            }
+            e9ui_hstack_addFixed(row, cbFun, width);
+            addedAny = 1;
+        }
+        if (row && cbCrt) {
+            int width = hotkeys_checkboxMeasureWidth(cbCrt, ctx);
+            if (addedAny) {
+                e9ui_hstack_addFixed(row, e9ui_spacer_make(rowGapPx), rowGapPx);
+            }
+            e9ui_hstack_addFixed(row, cbCrt, width);
+            addedAny = 1;
+        }
+        if (row && cbRecord) {
+            int width = hotkeys_checkboxMeasureWidth(cbRecord, ctx);
+            if (addedAny) {
+                e9ui_hstack_addFixed(row, e9ui_spacer_make(rowGapPx), rowGapPx);
+            }
+            e9ui_hstack_addFixed(row, cbRecord, width);
+            addedAny = 1;
+        }
+        if (row && cbLogos) {
+            int width = hotkeys_checkboxMeasureWidth(cbLogos, ctx);
+            if (addedAny) {
+                e9ui_hstack_addFixed(row, e9ui_spacer_make(rowGapPx), rowGapPx);
+            }
+            e9ui_hstack_addFixed(row, cbLogos, width);
+            addedAny = 1;
+        }
+        if (row && cbHexColors) {
+            int width = hotkeys_checkboxMeasureWidth(cbHexColors, ctx);
+            if (addedAny) {
+                e9ui_hstack_addFixed(row, e9ui_spacer_make(rowGapPx), rowGapPx);
+            }
+            e9ui_hstack_addFixed(row, cbHexColors, width);
+            addedAny = 1;
+        }
+        if (row && addedAny) {
+            e9ui_stack_addFixed(rightStack, row);
+            e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(6));
+        }
     }
 
     e9ui_stack_addFixed(leftStack, e9ui_vspacer_make(72));
     e9ui_stack_addFixed(rightStack, e9ui_vspacer_make(72));
 
     e9ui_component_t *columns = e9ui_hstack_make();
-    if (!columns) {
-        return NULL;
-    }
     int colGapPx = e9ui_scale_px(ctx, 16);
     if (colGapPx < 8) {
         colGapPx = 8;
@@ -1630,47 +1783,29 @@ hotkeys_makeConfigBody(hotkeys_config_modal_state_t *st, e9ui_context_t *ctx)
     e9ui_component_t *scroll = e9ui_scroll_make(columns);
     st->scroll = scroll;
 
-    e9ui_component_t *content = e9ui_box_make(scroll ? scroll : columns);
-    if (content) {
-        e9ui_box_setPadding(content, 20);
-    } else {
-        content = scroll ? scroll : columns;
-    }
+    e9ui_component_t *content = e9ui_box_make(scroll);
+    e9ui_box_setPadding(content, 20);
 
     e9ui_component_t *btnSave = e9ui_button_make("Save", hotkeys_configSaveClicked, st);
     e9ui_component_t *btnDefaults = e9ui_button_make("Defaults", hotkeys_configDefaultsClicked, st);
     e9ui_component_t *btnCancel = e9ui_button_make("Cancel", hotkeys_configCancelClicked, st);
     st->btnSave = btnSave;
     st->btnDefaults = btnDefaults;
-    if (btnSave) {
-        e9ui_button_setTheme(btnSave, e9ui_theme_button_preset_green());
-        e9ui_button_setGlowPulse(btnSave, 0);
-    }
-    if (btnCancel) {
-        e9ui_button_setTheme(btnCancel, e9ui_theme_button_preset_red());
-    }
+    e9ui_button_setTheme(btnSave, e9ui_theme_button_preset_green());
+    e9ui_button_setGlowPulse(btnSave, 0);
+    e9ui_button_setTheme(btnCancel, e9ui_theme_button_preset_red());
 
     e9ui_component_t *footer = e9ui_flow_make();
-    if (footer) {
-        e9ui_flow_setPadding(footer, 0);
-        e9ui_flow_setSpacing(footer, 8);
-        e9ui_flow_setWrap(footer, 0);
-        if (btnSave) {
-            e9ui_flow_add(footer, btnSave);
-        }
-        if (btnDefaults) {
-            e9ui_flow_add(footer, btnDefaults);
-        }
-        if (btnCancel) {
-            e9ui_flow_add(footer, btnCancel);
-        }
-    }
+    e9ui_flow_setPadding(footer, 0);
+    e9ui_flow_setSpacing(footer, 8);
+    e9ui_flow_setWrap(footer, 0);
+    e9ui_flow_add(footer, btnSave);
+    e9ui_flow_add(footer, btnDefaults);
+    e9ui_flow_add(footer, btnCancel);
 
-    e9ui_component_t *layout = footer ? e9ui_overlay_make(content, footer) : content;
-    if (footer && layout) {
-        e9ui_overlay_setAnchor(layout, e9ui_anchor_bottom_right);
-        e9ui_overlay_setMargin(layout, 12);
-    }
+    e9ui_component_t *layout = e9ui_overlay_make(content, footer);
+    e9ui_overlay_setAnchor(layout, e9ui_anchor_bottom_right);
+    e9ui_overlay_setMargin(layout, 12);
 
     e9ui_component_t *container = (e9ui_component_t *)alloc_calloc(1, sizeof(*container));
     if (!container) {
@@ -1803,7 +1938,7 @@ hotkeys_showConfigModal(e9ui_context_t *ctx)
         h = 1;
     }
     e9ui_rect_t rect = { margin, margin, w, h };
-    hotkeys_configModal = e9ui_modal_show(ctx, "Hotkeys/Controllers", rect, hotkeys_configUiClosed, NULL);
+    hotkeys_configModal = e9ui_modal_show(ctx, "Debugger Options", rect, hotkeys_configUiClosed, NULL);
     if (!hotkeys_configModal) {
         return;
     }
@@ -2043,6 +2178,24 @@ hotkeys_dispatchHotkey(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
 }
 
 int
+hotkeys_handleMouseCaptureKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
+{
+    if (hotkeys_eventMatchesAction(kev, "mouse_release")) {
+        if (!kev->repeat && emu_mouseCaptureRelease(ctx)) {
+            return 1;
+        }
+        if (hotkeys_configModal) {
+            return 0;
+        }
+        if (kev->repeat) {
+            return 1;
+        }
+        return emu_mouseCaptureStart(ctx);
+    }
+    return 0;
+}
+
+int
 hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
 {
     if (!ctx || !kev) {
@@ -2089,12 +2242,6 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
         e9ui_showTransientMessage(hotkeys_enabled ? "HOTKEYS ON" : "HOTKEYS OFF");
         return 1;
     }
-    if (kev->repeat == 0 && hotkeys_eventMatchesAction(kev, "mouse_release")) {
-        if (emu_mouseCaptureRelease(ctx)) {
-            e9ui_showTransientMessage("MOUSE RELEASED");
-            return 1;
-        }
-    }
     if (kev->repeat == 0 && hotkeys_eventMatchesAction(kev, "hex_convert")) {
         hex_convert_toggle(ctx);
         return 1;
@@ -2109,16 +2256,7 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
             hex_convert_close();
             return 1;
         }
-        if (sprite_debug_is_window_id(kev->windowID)) {
-            if (sprite_debug_is_open()) {
-                sprite_debug_toggle();
-            }
-            return 1;
-        }
-        if (mega_sprite_debug_ownsWindowId(kev->windowID)) {
-            if (mega_sprite_debug_is_open()) {
-                mega_sprite_debug_toggle();
-            }
+        if (e9ui_windowCloseTopOverlay()) {
             return 1;
         }
         if (e9ui->helpModal) {
@@ -2143,15 +2281,12 @@ hotkeys_handleKeydown(e9ui_context_t *ctx, const SDL_KeyboardEvent *kev)
                 return 0;
             }
         }
-        if (focus && focus->name && strcmp(focus->name, "e9ui_textbox") == 0) {
+        if (focus && focus->name &&
+            (strcmp(focus->name, "e9ui_textbox") == 0 ||
+             strcmp(focus->name, "e9ui_data_edit") == 0)) {
             return 0;
         }
         return 1;
-    }
-    if (mega_sprite_debug_ownsWindowId(kev->windowID)) {
-        if (mega_sprite_debug_handleKeydown(kev)) {
-            return 1;
-        }
     }
     if (hotkeys_eventMatchesAction(kev, "help")) {
         e9ui_setFocus(ctx, NULL);

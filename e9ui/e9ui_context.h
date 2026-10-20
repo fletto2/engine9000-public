@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include <stddef.h>
 #include <SDL.h>
 #include <SDL_ttf.h>
 
@@ -18,6 +17,7 @@ typedef struct e9ui_context {
     SDL_Window  *window;
     SDL_Renderer *renderer;
     TTF_Font     *font;
+    int           rendererSupportsTargetTexture;
     int           winW;
     int           winH;
     int           mouseX;
@@ -28,6 +28,8 @@ typedef struct e9ui_context {
     int           cursorOverride;
     void         *cursorCaptureOwner;
     SDL_Cursor   *cursorCapture;
+    struct e9ui_component *pointerOwner;
+    Uint8         pointerOwnerButton;
     float         dpiScale; 
     struct e9ui_component *_focus;
     int                  focusClickHandled;
@@ -56,11 +58,9 @@ typedef struct e9ui_context {
                                    struct e9ui_component *to,
                                    int width,
                                    int height);
-    int (*routeAuxWindowEvent)(struct e9ui_context *ctx, SDL_Event *eventValue, uint32_t mainWindowId);
-    int (*ownsAuxWindowId)(struct e9ui_context *ctx, uint32_t windowId);
-    void (*handleAuxWindowEvent)(struct e9ui_context *ctx, const SDL_Event *eventValue);
     void (*setMainWindowFocused)(struct e9ui_context *ctx, int focused);
-    int (*normalizeMouseWheelY)(struct e9ui_context *ctx, int value);
+    void (*blockingWindowOpened)(struct e9ui_context *ctx);
+    int (*handleHostEvent)(struct e9ui_context *ctx, const SDL_Event *ev);
     int (*handleGlobalKeydown)(struct e9ui_context *ctx, const SDL_KeyboardEvent *kev);
     void (*shutdownHostUi)(struct e9ui_context *ctx);
     void (*prepareMainWindow)(struct e9ui_context *ctx,
@@ -88,6 +88,22 @@ typedef struct e9ui_context {
     void (*showCompletions)(struct e9ui_context *ctx, const char * const *cands, int count);
     void (*hideCompletions)(struct e9ui_context *ctx);
 } e9ui_context_t;
+
+static inline void
+e9ui_context_setRenderer(e9ui_context_t *ctx, SDL_Renderer *renderer)
+{
+    if (!ctx) {
+        return;
+    }
+    ctx->renderer = renderer;
+    ctx->rendererSupportsTargetTexture = renderer ? SDL_RenderTargetSupported(renderer) : 0;
+}
+
+static inline int
+e9ui_context_supportsTargetTexture(const e9ui_context_t *ctx)
+{
+    return ctx && ctx->renderer && ctx->rendererSupportsTargetTexture;
+}
 
 #define e9ui_getFocus(ctx) (ctx)->_focus
 void

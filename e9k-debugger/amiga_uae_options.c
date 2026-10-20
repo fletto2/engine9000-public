@@ -6,16 +6,18 @@
  * See COPYING for license details
  */
 
-#include "amiga_uae_options.h"
 
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
+#include "amiga_uae_options.h"
 #include "alloc.h"
 #include "debugger.h"
 #include "libretro_host.h"
+#include "strutil.h"
 
 typedef struct amiga_uae_kv {
     char *key;
@@ -29,14 +31,16 @@ enum {
     AMIGA_UAE_DIRTY_FLOPPY0 = 1 << 0,
     AMIGA_UAE_DIRTY_FLOPPY1 = 1 << 1,
     AMIGA_UAE_DIRTY_HD0 = 1 << 2,
-    AMIGA_UAE_DIRTY_PUAE = 1 << 3
+    AMIGA_UAE_DIRTY_PUAE = 1 << 3,
+    AMIGA_UAE_DIRTY_HD1 = 1 << 4
 };
 static int amiga_uae_dirtyMask = 0;
 static char amiga_uae_loadedPath[PATH_MAX];
 static char amiga_uae_floppy0[PATH_MAX];
 static char amiga_uae_floppy1[PATH_MAX];
-static char amiga_uae_hd0Folder[PATH_MAX];
-static char amiga_uae_hd0Hdf[PATH_MAX];
+static char amiga_uae_hdFolder[2][PATH_MAX];
+static char amiga_uae_hdHdf[2][PATH_MAX];
+static char amiga_uae_hdVolume[2][64];
 
 static void
 amiga_uaeTrimRight(char *s)
@@ -129,12 +133,20 @@ amiga_uaeKeyIsFloppyType(const char *key, int *out_drive)
 }
 
 static int
-amiga_uaeParseFilesystem2Dh0Folder(const char *value, char *out, size_t cap)
+amiga_uaeParseFilesystem2DhFolderAndVolume(const char *value,
+                                           int unit,
+                                           char *out,
+                                           size_t cap,
+                                           char *volume,
+                                           size_t volumeCap)
 {
     if (!out || cap == 0) {
         return 0;
     }
     out[0] = '\0';
+    if (volume && volumeCap > 0) {
+        volume[0] = '\0';
+    }
     if (!value || !*value) {
         return 0;
     }
@@ -159,16 +171,28 @@ amiga_uaeParseFilesystem2Dh0Folder(const char *value, char *out, size_t cap)
     mid[midLen] = '\0';
 
     char *p = amiga_uaeTrimLeft(mid);
-    if (!p || strncmp(p, "DH0:", 4) != 0) {
+    if (!p || p[0] != 'D' || p[1] != 'H' || p[2] != (char)('0' + unit) || p[3] != ':') {
         return 0;
     }
-    const char *colon1 = strchr(p, ':');
+    const char *colon1 = p + 3;
     if (!colon1) {
         return 0;
     }
     const char *colon2 = strchr(colon1 + 1, ':');
     if (!colon2) {
         return 0;
+    }
+    size_t volumeLen = (size_t)(colon2 - (colon1 + 1));
+    if (volumeLen == 0) {
+        return 0;
+    }
+    if (volume && volumeCap > 0) {
+        size_t copyLen = volumeLen;
+        if (copyLen >= volumeCap) {
+            copyLen = volumeCap - 1;
+        }
+        memcpy(volume, colon1 + 1, copyLen);
+        volume[copyLen] = '\0';
     }
     const char *path = colon2 + 1;
     if (!*path) {
@@ -196,14 +220,25 @@ amiga_uaeParseFilesystem2Dh0Folder(const char *value, char *out, size_t cap)
 }
 
 static int
-amiga_uaeFilesystem2IsDh0Line(const char *value)
+amiga_uaeFilesystem2IsManagedDhLine(const char *value, int unit)
 {
+    if (!value || strncmp(value, "rw,", 3) != 0) {
+        return 0;
+    }
+    const char *commaLast = strrchr(value, ',');
+    if (!commaLast || strcmp(commaLast, ",0") != 0) {
+        return 0;
+    }
     char tmp[8];
-    return amiga_uaeParseFilesystem2Dh0Folder(value, tmp, sizeof(tmp)) ? 1 : 0;
+    char volume[64];
+    if (!amiga_uaeParseFilesystem2DhFolderAndVolume(value, unit, tmp, sizeof(tmp), volume, sizeof(volume))) {
+        return 0;
+    }
+    return 1;
 }
 
 static int
-amiga_uaeParseHardfile2Dh0Path(const char *value, char *out, size_t cap)
+amiga_uaeParseHardfile2DhPath(const char *value, int unit, char *out, size_t cap)
 {
     if (!out || cap == 0) {
         return 0;
@@ -217,10 +252,12 @@ amiga_uaeParseHardfile2Dh0Path(const char *value, char *out, size_t cap)
         return 0;
     }
     const char *rest = comma1 + 1;
-    if (strncmp(rest, "DH0:", 4) != 0) {
+    char device[8];
+    snprintf(device, sizeof(device), "DH%d:", unit);
+    if (strncmp(rest, device, strlen(device)) != 0) {
         return 0;
     }
-    const char *path = rest + 4;
+    const char *path = rest + strlen(device);
     if (!*path) {
         return 0;
     }
@@ -251,10 +288,68 @@ amiga_uaeParseHardfile2Dh0Path(const char *value, char *out, size_t cap)
 }
 
 static int
-amiga_uaeHardfile2IsDh0Line(const char *value)
+amiga_uaeHardfile2IsDhLine(const char *value, int unit)
 {
     char tmp[8];
-    return amiga_uaeParseHardfile2Dh0Path(value, tmp, sizeof(tmp)) ? 1 : 0;
+    return amiga_uaeParseHardfile2DhPath(value, unit, tmp, sizeof(tmp)) ? 1 : 0;
+}
+
+static const char *
+amiga_uaeHardfile2TailAfterPath(const char *path)
+{
+    if (!path || !*path) {
+        return NULL;
+    }
+    if (path[0] == '"' || path[0] == '\'') {
+        char quote = path[0];
+        const char *end = strrchr(path + 1, quote);
+        if (!end || end == path + 1) {
+            return NULL;
+        }
+        return end + 1;
+    }
+    return strchr(path, ',');
+}
+
+static int
+amiga_uaeHardfile2HasGeneratedTail(const char *tail)
+{
+    if (!tail || tail[0] != ',') {
+        return 0;
+    }
+    if (strcmp(tail, ",0,0,0,512,0,,uae0") == 0) {
+        return 1;
+    }
+    const char *p = tail + 1;
+    if (strncmp(p, "32,", 3) != 0) {
+        return 0;
+    }
+    p += 3;
+    if (*p < '0' || *p > '9') {
+        return 0;
+    }
+    while (*p >= '0' && *p <= '9') {
+        p++;
+    }
+    return strcmp(p, ",2,512,0,,uae0") == 0 ? 1 : 0;
+}
+
+static int
+amiga_uaeHardfile2IsManagedDhLine(const char *value, int unit)
+{
+    if (unit == 0) {
+        return amiga_uaeHardfile2IsDhLine(value, unit);
+    }
+    if (!value || strncmp(value, "rw,DH1:", 7) != 0) {
+        return 0;
+    }
+    const char *path = value + 7;
+    const char *tail = amiga_uaeHardfile2TailAfterPath(path);
+    if (!amiga_uaeHardfile2HasGeneratedTail(tail)) {
+        return 0;
+    }
+    char tmp[8];
+    return amiga_uaeParseHardfile2DhPath(value, unit, tmp, sizeof(tmp)) ? 1 : 0;
 }
 
 static void
@@ -314,6 +409,18 @@ amiga_uaePathIsDirectory(const char *path)
         return 0;
     }
     return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+static int
+amiga_uaeHardDriveDirtyBit(int unit)
+{
+    if (unit == 0) {
+        return AMIGA_UAE_DIRTY_HD0;
+    }
+    if (unit == 1) {
+        return AMIGA_UAE_DIRTY_HD1;
+    }
+    return 0;
 }
 
 static int
@@ -451,8 +558,11 @@ amiga_uaeClearPuaeOptions(void)
     amiga_uae_loadedPath[0] = '\0';
     amiga_uae_floppy0[0] = '\0';
     amiga_uae_floppy1[0] = '\0';
-    amiga_uae_hd0Folder[0] = '\0';
-    amiga_uae_hd0Hdf[0] = '\0';
+    for (int unit = 0; unit < 2; ++unit) {
+        amiga_uae_hdFolder[unit][0] = '\0';
+        amiga_uae_hdHdf[unit][0] = '\0';
+        amiga_uae_hdVolume[unit][0] = '\0';
+    }
 }
 
 int
@@ -464,7 +574,7 @@ amiga_uaeUaeOptionsDirty(void)
 int
 amiga_uaeHasRestartRequiredDirty(void)
 {
-    const int restartMask = AMIGA_UAE_DIRTY_HD0;
+    const int restartMask = AMIGA_UAE_DIRTY_HD0 | AMIGA_UAE_DIRTY_HD1;
     return (amiga_uae_dirtyMask & restartMask) ? 1 : 0;
 }
 
@@ -510,24 +620,36 @@ amiga_uaeLoadUaeOptions(const char *uaePath)
         }
         if (strcmp(key, "filesystem2") == 0) {
             char folder[PATH_MAX];
-            if (amiga_uaeParseFilesystem2Dh0Folder(value, folder, sizeof(folder))) {
-                strncpy(amiga_uae_hd0Folder, folder, sizeof(amiga_uae_hd0Folder) - 1);
-                amiga_uae_hd0Folder[sizeof(amiga_uae_hd0Folder) - 1] = '\0';
-                amiga_uae_hd0Hdf[0] = '\0';
+            char volume[64];
+            for (int unit = 0; unit < 2; ++unit) {
+                if (amiga_uaeFilesystem2IsManagedDhLine(value, unit) &&
+                    amiga_uaeParseFilesystem2DhFolderAndVolume(value,
+                                                               unit,
+                                                               folder,
+                                                               sizeof(folder),
+                                                               volume,
+                                                               sizeof(volume))) {
+                    strutil_strlcpy(amiga_uae_hdFolder[unit], sizeof(amiga_uae_hdFolder[unit]), folder);
+                    strutil_strlcpy(amiga_uae_hdVolume[unit], sizeof(amiga_uae_hdVolume[unit]), volume);
+                    amiga_uae_hdHdf[unit][0] = '\0';
+                    break;
+                }
             }
             continue;
         }
         if (strcmp(key, "hardfile2") == 0) {
             char hdf[PATH_MAX];
-            if (amiga_uaeParseHardfile2Dh0Path(value, hdf, sizeof(hdf))) {
-                if (amiga_uaePathIsDirectory(hdf)) {
-                    strncpy(amiga_uae_hd0Folder, hdf, sizeof(amiga_uae_hd0Folder) - 1);
-                    amiga_uae_hd0Folder[sizeof(amiga_uae_hd0Folder) - 1] = '\0';
-                    amiga_uae_hd0Hdf[0] = '\0';
-                } else {
-                    strncpy(amiga_uae_hd0Hdf, hdf, sizeof(amiga_uae_hd0Hdf) - 1);
-                    amiga_uae_hd0Hdf[sizeof(amiga_uae_hd0Hdf) - 1] = '\0';
-                    amiga_uae_hd0Folder[0] = '\0';
+            for (int unit = 0; unit < 2; ++unit) {
+                if (amiga_uaeHardfile2IsManagedDhLine(value, unit) &&
+                    amiga_uaeParseHardfile2DhPath(value, unit, hdf, sizeof(hdf))) {
+                    if (amiga_uaePathIsDirectory(hdf)) {
+                        strutil_strlcpy(amiga_uae_hdFolder[unit], sizeof(amiga_uae_hdFolder[unit]), hdf);
+                        amiga_uae_hdHdf[unit][0] = '\0';
+                    } else {
+                        strutil_strlcpy(amiga_uae_hdHdf[unit], sizeof(amiga_uae_hdHdf[unit]), hdf);
+                        amiga_uae_hdFolder[unit][0] = '\0';
+                    }
+                    break;
                 }
             }
             continue;
@@ -593,39 +715,82 @@ amiga_uaeGetFloppyPath(int drive)
 }
 
 const char *
+amiga_uaeGetHardDriveFolderPathForUnit(int unit)
+{
+    if (unit < 0 || unit >= 2) {
+        return NULL;
+    }
+    return amiga_uae_hdFolder[unit][0] ? amiga_uae_hdFolder[unit] : NULL;
+}
+
+void
+amiga_uaeSetHardDriveFolderPathForUnit(int unit, const char *path)
+{
+    if (unit < 0 || unit >= 2) {
+        return;
+    }
+    const char *src = path ? path : "";
+    strncpy(amiga_uae_hdFolder[unit], src, sizeof(amiga_uae_hdFolder[unit]) - 1);
+    amiga_uae_hdFolder[unit][sizeof(amiga_uae_hdFolder[unit]) - 1] = '\0';
+    if (src[0]) {
+        amiga_uae_hdHdf[unit][0] = '\0';
+        if (!amiga_uae_hdVolume[unit][0]) {
+            if (unit == 0) {
+                strutil_strlcpy(amiga_uae_hdVolume[unit], sizeof(amiga_uae_hdVolume[unit]), "Work");
+            } else {
+                strutil_strlcpy(amiga_uae_hdVolume[unit], sizeof(amiga_uae_hdVolume[unit]), "Work1");
+            }
+        }
+    }
+    amiga_uae_dirtyMask |= amiga_uaeHardDriveDirtyBit(unit);
+}
+
+const char *
+amiga_uaeGetHardDriveHdfPathForUnit(int unit)
+{
+    if (unit < 0 || unit >= 2) {
+        return NULL;
+    }
+    return amiga_uae_hdHdf[unit][0] ? amiga_uae_hdHdf[unit] : NULL;
+}
+
+void
+amiga_uaeSetHardDriveHdfPathForUnit(int unit, const char *path)
+{
+    if (unit < 0 || unit >= 2) {
+        return;
+    }
+    const char *src = path ? path : "";
+    strncpy(amiga_uae_hdHdf[unit], src, sizeof(amiga_uae_hdHdf[unit]) - 1);
+    amiga_uae_hdHdf[unit][sizeof(amiga_uae_hdHdf[unit]) - 1] = '\0';
+    if (src[0]) {
+        amiga_uae_hdFolder[unit][0] = '\0';
+    }
+    amiga_uae_dirtyMask |= amiga_uaeHardDriveDirtyBit(unit);
+}
+
+const char *
 amiga_uaeGetHardDriveFolderPath(void)
 {
-    return amiga_uae_hd0Folder[0] ? amiga_uae_hd0Folder : NULL;
+    return amiga_uaeGetHardDriveFolderPathForUnit(0);
 }
 
 void
 amiga_uaeSetHardDriveFolderPath(const char *path)
 {
-    const char *src = path ? path : "";
-    strncpy(amiga_uae_hd0Folder, src, sizeof(amiga_uae_hd0Folder) - 1);
-    amiga_uae_hd0Folder[sizeof(amiga_uae_hd0Folder) - 1] = '\0';
-    if (src[0]) {
-        amiga_uae_hd0Hdf[0] = '\0';
-    }
-    amiga_uae_dirtyMask |= AMIGA_UAE_DIRTY_HD0;
+    amiga_uaeSetHardDriveFolderPathForUnit(0, path);
 }
 
 const char *
 amiga_uaeGetHardDriveHdfPath(void)
 {
-    return amiga_uae_hd0Hdf[0] ? amiga_uae_hd0Hdf : NULL;
+    return amiga_uaeGetHardDriveHdfPathForUnit(0);
 }
 
 void
 amiga_uaeSetHardDriveHdfPath(const char *path)
 {
-    const char *src = path ? path : "";
-    strncpy(amiga_uae_hd0Hdf, src, sizeof(amiga_uae_hd0Hdf) - 1);
-    amiga_uae_hd0Hdf[sizeof(amiga_uae_hd0Hdf) - 1] = '\0';
-    if (src[0]) {
-        amiga_uae_hd0Folder[0] = '\0';
-    }
-    amiga_uae_dirtyMask |= AMIGA_UAE_DIRTY_HD0;
+    amiga_uaeSetHardDriveHdfPathForUnit(0, path);
 }
 
 void
@@ -694,10 +859,20 @@ amiga_uaeWriteUaeOptionsToFile(const char *uaePath)
                     isManaged = 1;
                 } else if (strcmp(key, "nr_floppies") == 0) {
                     isManaged = 1;
-                } else if (strcmp(key, "filesystem2") == 0 && amiga_uaeFilesystem2IsDh0Line(value)) {
-                    isManaged = 1;
-                } else if (strcmp(key, "hardfile2") == 0 && amiga_uaeHardfile2IsDh0Line(value)) {
-                    isManaged = 1;
+                } else if (strcmp(key, "filesystem2") == 0) {
+                    for (int unit = 0; unit < 2; ++unit) {
+                        if (amiga_uaeFilesystem2IsManagedDhLine(value, unit)) {
+                            isManaged = 1;
+                            break;
+                        }
+                    }
+                } else if (strcmp(key, "hardfile2") == 0) {
+                    for (int unit = 0; unit < 2; ++unit) {
+                        if (amiga_uaeHardfile2IsManagedDhLine(value, unit)) {
+                            isManaged = 1;
+                            break;
+                        }
+                    }
                 }
             }
             if (isManaged) {
@@ -730,32 +905,42 @@ amiga_uaeWriteUaeOptionsToFile(const char *uaePath)
         fprintf(out, "floppy1type=0\n");
     }
 
-    if (amiga_uae_hd0Hdf[0]) {
-        fputs("hardfile2=rw,DH0:", out);
-        amiga_uaeWriteQuotedFilesystemPath(out, amiga_uae_hd0Hdf);
-        if (amiga_uaeHdfIsRdb(amiga_uae_hd0Hdf)) {
-            fputs(",0,0,0,512,0,,uae0\n", out);
-        } else {
-            fprintf(out, ",32,%d,2,512,0,,uae0\n", amiga_uaeHdfGuessSurfaces(amiga_uae_hd0Hdf));
-        }
-    } else if (amiga_uae_hd0Folder[0]) {
-        char sep = '/';
-        if (strchr(amiga_uae_hd0Folder, '\\')) {
-            sep = '\\';
-        }
-        char folder[PATH_MAX + 2];
-        strncpy(folder, amiga_uae_hd0Folder, sizeof(folder) - 1);
-        folder[sizeof(folder) - 1] = '\0';
-        size_t len = strlen(folder);
-        if (len > 0 && folder[len - 1] != '/' && folder[len - 1] != '\\') {
-            if (len + 2 <= sizeof(folder)) {
-                folder[len] = sep;
-                folder[len + 1] = '\0';
+    for (int unit = 0; unit < 2; ++unit) {
+        if (amiga_uae_hdHdf[unit][0]) {
+            fprintf(out, "hardfile2=rw,DH%d:", unit);
+            amiga_uaeWriteQuotedFilesystemPath(out, amiga_uae_hdHdf[unit]);
+            if (amiga_uaeHdfIsRdb(amiga_uae_hdHdf[unit])) {
+                fputs(",0,0,0,512,0,,uae0\n", out);
+            } else {
+                fprintf(out, ",32,%d,2,512,0,,uae0\n", amiga_uaeHdfGuessSurfaces(amiga_uae_hdHdf[unit]));
             }
+        } else if (amiga_uae_hdFolder[unit][0]) {
+            char sep = '/';
+            if (strchr(amiga_uae_hdFolder[unit], '\\')) {
+                sep = '\\';
+            }
+            char folder[PATH_MAX + 2];
+            strncpy(folder, amiga_uae_hdFolder[unit], sizeof(folder) - 1);
+            folder[sizeof(folder) - 1] = '\0';
+            size_t len = strlen(folder);
+            if (len > 0 && folder[len - 1] != '/' && folder[len - 1] != '\\') {
+                if (len + 2 <= sizeof(folder)) {
+                    folder[len] = sep;
+                    folder[len + 1] = '\0';
+                }
+            }
+            const char *volume = amiga_uae_hdVolume[unit];
+            if (!volume[0]) {
+                if (unit == 0) {
+                    volume = "Work";
+                } else {
+                    volume = "Work1";
+                }
+            }
+            fprintf(out, "filesystem2=rw,DH%d:%s:", unit, volume);
+            amiga_uaeWriteQuotedFilesystemPath(out, folder);
+            fputs(",0\n", out);
         }
-        fputs("filesystem2=rw,DH0:Work:", out);
-        amiga_uaeWriteQuotedFilesystemPath(out, folder);
-        fputs(",0\n", out);
     }
 
     if (amiga_uae_entryCount > 1) {

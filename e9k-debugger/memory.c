@@ -23,15 +23,26 @@
 #include "e9ui_stack.h"
 #include "e9ui_hstack.h"
 #include "e9ui_textbox.h"
+#include "e9ui_labeled_select.h"
+#include "e9ui_data_edit.h"
 #include "e9ui_text_cache.h"
 #include "e9ui_step_buttons.h"
 #include "e9ui_scrollbar.h"
-#include "debugger.h"
+#include "target.h"
+#include "rom_config.h"
+#include "hex_byte_color.h"
+#include "inline_edit_pause.h"
 #include "libretro_host.h"
 
 #define MEMORY_SEARCH_MAX_PATTERN 128
 #define MEMORY_SEARCH_MAX_RANGES 64
+#define MEMORY_MAX_SPACES 8
 #define MEMORY_SEARCH_CHUNK 4096
+#define MEMORY_BYTES_PER_ROW 16u
+#define MEMORY_DEFAULT_VIEW_ROWS 32
+#define MEMORY_ROW_HEX_START_COL 10
+#define MEMORY_ROW_ASCII_START_COL (MEMORY_ROW_HEX_START_COL + ((int)MEMORY_BYTES_PER_ROW * 3) + 1)
+#define MEMORY_RENDER_CACHE_CAP 512
 
 typedef struct memory_search_pattern {
     uint8_t ascii[MEMORY_SEARCH_MAX_PATTERN];
@@ -40,10 +51,50 @@ typedef struct memory_search_pattern {
     int hexLen;
 } memory_search_pattern_t;
 
+typedef enum memory_inline_edit_mode {
+    memory_inline_edit_mode_none = 0,
+    memory_inline_edit_mode_hex,
+    memory_inline_edit_mode_ascii
+} memory_inline_edit_mode_t;
+
+typedef struct memory_row_address_cache {
+    int      valid;
+    uint32_t rowAddr;
+    char     text[9];
+    SDL_Texture *texture;
+    SDL_Renderer *renderer;
+    TTF_Font *font;
+    int columnWidth;
+    int lineHeight;
+    int textureW;
+    int textureH;
+    int textureValid;
+    unsigned long long lastUsed;
+} memory_row_address_cache_t;
+
+typedef struct memory_row_content_cache {
+    int     valid;
+    uint8_t bytes[MEMORY_BYTES_PER_ROW];
+    char    hexText[MEMORY_BYTES_PER_ROW * 3u + 1u];
+    char    asciiText[MEMORY_BYTES_PER_ROW + 1u];
+    SDL_Texture *texture;
+    SDL_Renderer *renderer;
+    TTF_Font *font;
+    int columnWidth;
+    int lineHeight;
+    int colorEnabled;
+    int textureW;
+    int textureH;
+    int textureValid;
+    unsigned long long lastUsed;
+} memory_row_content_cache_t;
+
 typedef struct memory_view_state {
     unsigned int   base;
-    unsigned int   size;
-    unsigned char *data;
+    int            rowsPerView;
+    e9ui_component_t *ownerView;
+    void           *inlineEditMeta;
+    e9ui_component_t *spaceSelect;
     e9ui_component_t *addressBox;
     e9ui_component_t *searchBox;
     uint32_t       searchMatchAddr;
@@ -54,12 +105,25 @@ typedef struct memory_view_state {
     e9ui_scrollbar_state_t hScrollbar;
     int            scrollX;
     int            contentPixelWidth;
+    int            inlineEditPending;
+    int            inlineEditActive;
+    int            inlineEditAutoResume;
+    uint32_t       inlineEditAddr;
+    int            inlineEditByteCount;
+    memory_inline_edit_mode_t inlineEditMode;
+    uint8_t        inlineEditOriginalBytes[MEMORY_BYTES_PER_ROW];
+    SDL_Rect       inlineEditRect;
+    char           spaceValue[16];
+    memory_row_address_cache_t *addressCache;
+    int            addressCacheCount;
+    memory_row_content_cache_t *contentCache;
+    int            contentCacheCount;
+    unsigned long long cacheTick;
 } memory_view_state_t;
 
-static memory_view_state_t *g_memory_view_state = NULL;
-
-static void
-memory_fillFromram(memory_view_state_t *st, unsigned int base);
+typedef struct memory_step_buttons_action_ctx {
+    memory_view_state_t *st;
+} memory_step_buttons_action_ctx_t;
 
 static int
 memory_buildSearchPattern(const char *text, memory_search_pattern_t *outPattern);
@@ -71,6 +135,17 @@ memory_findNextMatch(memory_view_state_t *st, const memory_search_pattern_t *pat
 static int
 memory_findPrevMatch(memory_view_state_t *st, const memory_search_pattern_t *pattern,
                      uint32_t startAddr, uint32_t *outAddr, int *outLen);
+
+static void
+memory_inlineEditCancel(memory_view_state_t *st, e9ui_context_t *ctx);
+
+static int
+memory_inlineEditCommit(memory_view_state_t *st, e9ui_context_t *ctx);
+
+static int
+memory_beginInlineEditAtPoint(e9ui_component_t *self, e9ui_context_t *ctx, memory_view_state_t *st, int mx, int my);
+
+static memory_view_state_t *memory_activeState = NULL;
 
 static int
 memory_parseU64SmartHex(const char *text, unsigned long long *outValue, char **outEnd)
@@ -118,18 +193,150 @@ memory_parseU64SmartHex(const char *text, unsigned long long *outValue, char **o
 }
 
 static int
-memory_getAddressLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
+memory_getSpaces(target_memory_space_t *outSpaces, size_t cap, size_t *outCount)
 {
+    if (outCount) {
+        *outCount = 0;
+    }
+    if (target && target->memoryGetSpaces) {
+        return target->memoryGetSpaces(outSpaces, cap, outCount);
+    }
+
+    if (outCount) {
+        *outCount = 1;
+    }
+    if (!outSpaces || cap == 0) {
+        return 1;
+    }
+
+    uint32_t minAddr = 0;
+    uint32_t maxAddr = 0x00ffffffu;
+    if (target && target->memoryGetLimits) {
+        (void)target->memoryGetLimits(&minAddr, &maxAddr);
+    }
+    outSpaces[0] = (target_memory_space_t){
+        .value = "main",
+        .label = "Main",
+        .minAddr = minAddr,
+        .maxAddr = maxAddr,
+        .addressDigits = 6,
+        .processorMemory = 0,
+        .processorId = 0
+    };
+    return 1;
+}
+
+static int
+memory_getPanelOptions(target_memory_panel_options_t *outOptions)
+{
+    if (!outOptions) {
+        return 0;
+    }
+    memset(outOptions, 0, sizeof(*outOptions));
+    if (!target || !target->memoryPanelOptions) {
+        return 0;
+    }
+    return target->memoryPanelOptions(outOptions);
+}
+
+static const char *
+memory_activeOptionValue(const char *key)
+{
+    if (!key || !*key || !target || !target->romConfigGetActiveCustomOptionValue) {
+        return NULL;
+    }
+    return target->romConfigGetActiveCustomOptionValue(key);
+}
+
+static void
+memory_setActiveOptionValue(const char *key, const char *value, int save)
+{
+    if (!key || !*key || !target || !target->romConfigSetActiveCustomOptionValue) {
+        return;
+    }
+    target->romConfigSetActiveCustomOptionValue(key, value);
+    if (save) {
+        rom_config_saveCurrentRomSettings();
+    }
+}
+
+static void
+memory_copySpaceValue(memory_view_state_t *st, const char *value)
+{
+    if (!st || !value) {
+        return;
+    }
+    size_t len = strlen(value);
+    if (len >= sizeof(st->spaceValue)) {
+        len = sizeof(st->spaceValue) - 1;
+    }
+    memcpy(st->spaceValue, value, len);
+    st->spaceValue[len] = '\0';
+}
+
+static int
+memory_spaceValueExists(const target_memory_space_t *spaces, size_t count, const char *value)
+{
+    if (!spaces || !value || !*value) {
+        return 0;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (spaces[i].value && strcmp(spaces[i].value, value) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+memory_getSelectedSpace(const memory_view_state_t *st, target_memory_space_t *outSpace)
+{
+    target_memory_space_t spaces[MEMORY_MAX_SPACES];
+    size_t count = 0;
+    size_t spaceCap = sizeof(spaces) / sizeof(spaces[0]);
+
+    if (!outSpace) {
+        return 0;
+    }
+    memset(spaces, 0, sizeof(spaces));
+    if (!memory_getSpaces(spaces, spaceCap, &count) || count == 0) {
+        return 0;
+    }
+    if (count > spaceCap) {
+        count = spaceCap;
+    }
+    const char *want = (st && st->spaceValue[0]) ? st->spaceValue : spaces[0].value;
+    for (size_t i = 0; i < count; ++i) {
+        if (spaces[i].value && want && strcmp(spaces[i].value, want) == 0) {
+            *outSpace = spaces[i];
+            return 1;
+        }
+    }
+    *outSpace = spaces[0];
+    return 1;
+}
+
+static int
+memory_getSelectedAddressLimits(const memory_view_state_t *st, uint32_t *outMinAddr, uint32_t *outMaxAddr)
+{
+    target_memory_space_t space;
+
     if (outMinAddr) {
         *outMinAddr = 0;
     }
     if (outMaxAddr) {
         *outMaxAddr = 0x00ffffffu;
     }
-    if (target && target->memoryGetLimits) {
-        return target->memoryGetLimits(outMinAddr, outMaxAddr);
+    if (!memory_getSelectedSpace(st, &space)) {
+        return 0;
     }
-    return 0;
+    if (outMinAddr) {
+        *outMinAddr = space.minAddr;
+    }
+    if (outMaxAddr) {
+        *outMaxAddr = space.maxAddr;
+    }
+    return 1;
 }
 
 static void
@@ -138,24 +345,123 @@ memory_syncTextboxFromBase(memory_view_state_t *st)
     if (!st || !st->addressBox) {
         return;
     }
+    target_memory_space_t space;
+    int digits = 6;
+    uint32_t maxAddr = 0x00ffffffu;
+    if (memory_getSelectedSpace(st, &space)) {
+        digits = space.addressDigits > 0 ? space.addressDigits : 6;
+        maxAddr = space.maxAddr;
+    }
     char addrText[32];
-    snprintf(addrText, sizeof(addrText), "0x%06X", st->base & 0x00ffffffu);
+    snprintf(addrText, sizeof(addrText), "0x%0*X", digits, st->base & maxAddr);
     e9ui_textbox_setText(st->addressBox, addrText);
+}
+
+static void
+memory_persistBase(memory_view_state_t *st, int save)
+{
+    if (!st) {
+        return;
+    }
+    target_memory_panel_options_t options;
+    if (!memory_getPanelOptions(&options) || !options.addressKey) {
+        return;
+    }
+    target_memory_space_t space;
+    int digits = 6;
+    uint32_t maxAddr = 0x00ffffffu;
+    if (memory_getSelectedSpace(st, &space)) {
+        digits = space.addressDigits > 0 ? space.addressDigits : 6;
+        maxAddr = space.maxAddr;
+    }
+    char addrText[32];
+    snprintf(addrText, sizeof(addrText), "0x%0*X", digits, st->base & maxAddr);
+    memory_setActiveOptionValue(options.addressKey, addrText, save);
+}
+
+static void
+memory_persistAddressText(memory_view_state_t *st, int save)
+{
+    if (!st || !st->addressBox) {
+        return;
+    }
+    target_memory_panel_options_t options;
+    if (!memory_getPanelOptions(&options) || !options.addressKey) {
+        return;
+    }
+    memory_setActiveOptionValue(options.addressKey, e9ui_textbox_getText(st->addressBox), save);
+}
+
+static void
+memory_persistSpace(memory_view_state_t *st, int save)
+{
+    if (!st) {
+        return;
+    }
+    target_memory_panel_options_t options;
+    if (!memory_getPanelOptions(&options) || !options.spaceKey) {
+        return;
+    }
+    memory_setActiveOptionValue(options.spaceKey, st->spaceValue, save);
+}
+
+static void
+memory_persistSearch(memory_view_state_t *st, int save)
+{
+    if (!st || !st->searchBox) {
+        return;
+    }
+    target_memory_panel_options_t options;
+    if (!memory_getPanelOptions(&options) || !options.searchKey) {
+        return;
+    }
+    memory_setActiveOptionValue(options.searchKey, e9ui_textbox_getText(st->searchBox), save);
+}
+
+static unsigned int
+memory_viewByteCount(const memory_view_state_t *st)
+{
+    unsigned int rows = MEMORY_DEFAULT_VIEW_ROWS;
+
+    if (st && st->rowsPerView > 0) {
+        rows = (unsigned int)st->rowsPerView;
+    }
+    return rows * MEMORY_BYTES_PER_ROW;
+}
+
+static e9ui_component_t *
+memory_inlineEditComponent(memory_view_state_t *st)
+{
+    if (!st || !st->ownerView || !st->inlineEditMeta) {
+        return NULL;
+    }
+    return e9ui_child_find(st->ownerView, st->inlineEditMeta);
+}
+
+static int
+memory_pointInBounds(const e9ui_component_t *comp, int x, int y)
+{
+    if (!comp) {
+        return 0;
+    }
+    return x >= comp->bounds.x && x < comp->bounds.x + comp->bounds.w &&
+           y >= comp->bounds.y && y < comp->bounds.y + comp->bounds.h;
 }
 
 static uint32_t
 memory_clampBaseForView(memory_view_state_t *st, uint32_t base)
 {
     if (!st) {
-        return base & 0x00ffffffu;
+        return base;
     }
     uint32_t minAddr = 0;
     uint32_t maxAddr = 0x00ffffffu;
-    if (!memory_getAddressLimits(&minAddr, &maxAddr)) {
+    if (!memory_getSelectedAddressLimits(st, &minAddr, &maxAddr)) {
         minAddr = 0;
         maxAddr = 0x00ffffffu;
     }
-    uint64_t span = st->size > 0 ? (uint64_t)(st->size - 1u) : 0ull;
+    uint64_t viewBytes = memory_viewByteCount(st);
+    uint64_t span = viewBytes > 0 ? (uint64_t)(viewBytes - 1u) : 0ull;
     uint32_t maxBase = maxAddr;
     if ((uint64_t)maxAddr >= span) {
         maxBase = (uint32_t)((uint64_t)maxAddr - span);
@@ -165,14 +471,23 @@ memory_clampBaseForView(memory_view_state_t *st, uint32_t base)
     if (maxBase < minAddr) {
         maxBase = minAddr;
     }
-    uint32_t base24 = base & 0x00ffffffu;
-    if (base24 < minAddr) {
-        base24 = minAddr;
+    uint32_t clamped = base;
+    if (clamped < minAddr) {
+        clamped = minAddr;
     }
-    if (base24 > maxBase) {
-        base24 = maxBase;
+    if (clamped > maxBase) {
+        clamped = maxBase;
     }
-    return base24;
+    return clamped;
+}
+
+static int
+memory_pageRows(const memory_view_state_t *st)
+{
+    if (st && st->rowsPerView > 0) {
+        return st->rowsPerView;
+    }
+    return MEMORY_DEFAULT_VIEW_ROWS;
 }
 
 static void
@@ -181,8 +496,11 @@ memory_scrollRows(memory_view_state_t *st, int rows)
     if (!st || rows == 0) {
         return;
     }
+    if (st->inlineEditActive) {
+        memory_inlineEditCancel(st, NULL);
+    }
     int64_t delta = (int64_t)rows * 16ll;
-    int64_t rawBase = (int64_t)(uint32_t)(st->base & 0x00ffffffu) + delta;
+    int64_t rawBase = (int64_t)(uint32_t)st->base + delta;
     if (rawBase < 0) {
         rawBase = 0;
     }
@@ -192,7 +510,7 @@ memory_scrollRows(memory_view_state_t *st, int rows)
     }
     st->base = clamped;
     memory_syncTextboxFromBase(st);
-    memory_fillFromram(st, st->base);
+    memory_persistBase(st, 1);
 }
 
 static void
@@ -212,13 +530,183 @@ memory_setError(memory_view_state_t *panel, const char *fmt, ...)
     panel->error[sizeof(panel->error) - 1] = '\0';
 }
 
-static void
-memory_clearData(memory_view_state_t *panel)
+static int
+memory_parseHexNibble(char c)
 {
-    if (!panel || !panel->data) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return 10 + (c - 'a');
+    }
+    if (c >= 'A' && c <= 'F') {
+        return 10 + (c - 'A');
+    }
+    return -1;
+}
+
+static int
+memory_parseInlineHexBytes(const char *text, uint8_t *outBytes, int wantCount)
+{
+    int highNibble = -1;
+    int count = 0;
+
+    if (!text || !outBytes || wantCount <= 0) {
+        return 0;
+    }
+
+    while (*text) {
+        if (isspace((unsigned char)*text)) {
+            ++text;
+            continue;
+        }
+        int nibble = memory_parseHexNibble(*text);
+        if (nibble < 0) {
+            return 0;
+        }
+        if (highNibble < 0) {
+            highNibble = nibble;
+        } else {
+            if (count >= wantCount) {
+                return 0;
+            }
+            outBytes[count++] = (uint8_t)((highNibble << 4) | nibble);
+            highNibble = -1;
+        }
+        ++text;
+    }
+
+    if (highNibble >= 0 || count != wantCount) {
+        return 0;
+    }
+    return 1;
+}
+
+static void
+memory_formatInlineHexBytes(char *dst, size_t cap, const uint8_t *bytes, int count)
+{
+    size_t pos = 0;
+
+    if (!dst || cap == 0) {
         return;
     }
-    memset(panel->data, 0, panel->size);
+    dst[0] = '\0';
+    if (!bytes || count <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < count && pos + 1 < cap; ++i) {
+        int written = snprintf(dst + pos, cap - pos, i == 0 ? "%02X" : " %02X", (unsigned)bytes[i]);
+        if (written < 0) {
+            break;
+        }
+        pos += (size_t)written;
+        if (pos >= cap) {
+            dst[cap - 1] = '\0';
+            break;
+        }
+    }
+}
+
+static void
+memory_formatInlineAsciiBytes(char *dst, size_t cap, const uint8_t *bytes, int count)
+{
+    int limit = 0;
+
+    if (!dst || cap == 0) {
+        return;
+    }
+    dst[0] = '\0';
+    if (!bytes || count <= 0) {
+        return;
+    }
+
+    limit = count;
+    if ((size_t)limit >= cap) {
+        limit = (int)cap - 1;
+    }
+    if (limit < 0) {
+        limit = 0;
+    }
+    for (int i = 0; i < limit; ++i) {
+        unsigned char c = bytes[i];
+        dst[i] = (c >= 32 && c <= 126) ? (char)c : '.';
+    }
+    dst[limit] = '\0';
+}
+
+static int
+memory_parseInlineAsciiBytes(const char *text, const uint8_t *originalBytes, uint8_t *outBytes, int count)
+{
+    char originalText[MEMORY_BYTES_PER_ROW + 1];
+    size_t textLen = 0;
+
+    if (!text || !originalBytes || !outBytes || count <= 0 || count > (int)MEMORY_BYTES_PER_ROW) {
+        return 0;
+    }
+
+    textLen = strlen(text);
+    if (textLen > (size_t)count) {
+        return 0;
+    }
+
+    memcpy(outBytes, originalBytes, (size_t)count);
+    memory_formatInlineAsciiBytes(originalText, sizeof(originalText), originalBytes, count);
+
+    if (textLen == (size_t)count) {
+        for (int i = 0; i < count; ++i) {
+            unsigned char c = (unsigned char)text[i];
+            if (c < 32 || c > 126) {
+                return 0;
+            }
+            if (c == (unsigned char)originalText[i] &&
+                !(originalBytes[i] >= 32 && originalBytes[i] <= 126)) {
+                continue;
+            }
+            outBytes[i] = c;
+        }
+        return 1;
+    }
+
+    for (size_t i = 0; i < textLen; ++i) {
+        unsigned char c = (unsigned char)text[i];
+        if (c < 32 || c > 126) {
+            return 0;
+        }
+        outBytes[i] = c;
+    }
+    return 1;
+}
+
+static int
+memory_readRaw(memory_view_state_t *st, uint32_t addr, void *out, size_t size)
+{
+    target_memory_space_t space;
+
+    if (!out || size == 0) {
+        return 0;
+    }
+    if (!memory_getSelectedSpace(st, &space)) {
+        return libretro_host_debugReadMemory(addr, out, size) ? 1 : 0;
+    }
+    if (space.processorMemory) {
+        return libretro_host_debugReadProcessorMemory(space.processorId, addr, out, size) ? 1 : 0;
+    }
+    return libretro_host_debugReadMemory(addr, out, size) ? 1 : 0;
+}
+
+static int
+memory_writeRaw(memory_view_state_t *st, uint32_t addr, uint32_t value, size_t size)
+{
+    target_memory_space_t space;
+
+    if (!memory_getSelectedSpace(st, &space)) {
+        return libretro_host_debugWriteMemory(addr, value, size) ? 1 : 0;
+    }
+    if (space.processorMemory) {
+        return libretro_host_debugWriteProcessorMemory(space.processorId, addr, value, size) ? 1 : 0;
+    }
+    return libretro_host_debugWriteMemory(addr, value, size) ? 1 : 0;
 }
 
 static int
@@ -245,15 +733,11 @@ memory_parseAddress(memory_view_state_t *st, unsigned int *out_addr)
         memory_setError(st, "Invalid address: \"%s\"", t);
         return 0;
     }
-    if (val > 0x00ffffffull) {
-        memory_setError(st, "Address outside 24-bit range (0x000000-0xFFFFFF)");
-        return 0;
-    }
     uint32_t minAddr = 0;
     uint32_t maxAddr = 0x00ffffffu;
-    int hasLimits = memory_getAddressLimits(&minAddr, &maxAddr);
-    if (hasLimits && ((uint32_t)val < minAddr || (uint32_t)val > maxAddr)) {
-        memory_setError(st, "Address outside range (0x%06X-0x%06X)", minAddr, maxAddr);
+    int hasLimits = memory_getSelectedAddressLimits(st, &minAddr, &maxAddr);
+    if (val > UINT32_MAX || (hasLimits && ((uint32_t)val < minAddr || (uint32_t)val > maxAddr))) {
+        memory_setError(st, "Address outside range (0x%X-0x%X)", minAddr, maxAddr);
         return 0;
     }
     *out_addr = (unsigned int)val;
@@ -261,49 +745,133 @@ memory_parseAddress(memory_view_state_t *st, unsigned int *out_addr)
 }
 
 static void
-memory_fillFromram(memory_view_state_t *st, unsigned int base)
+memory_readRange(memory_view_state_t *st, uint32_t base, uint8_t *data, unsigned int size)
 {
-    if (!st || !st->data) {
+    if (!st || !data || size == 0) {
         return;
     }
+    memset(data, 0, size);
     uint32_t minAddr = 0;
     uint32_t maxAddr = 0x00ffffffu;
-    int hasLimits = memory_getAddressLimits(&minAddr, &maxAddr);
+    int hasLimits = memory_getSelectedAddressLimits(st, &minAddr, &maxAddr);
     memory_setError(st, NULL);
-    int range_error = 0;
-    for (unsigned int i = 0; i < st->size; ++i) {
-        uint32_t addr = base + i;
-        if (addr > 0x00ffffffu) {
-            st->data[i] = 0;
-            range_error = 1;
-            continue;
-        }
-        if (hasLimits && (addr < minAddr || addr > maxAddr)) {
-            st->data[i] = 0;
-            range_error = 1;
-            continue;
-        }
-        if (!libretro_host_debugReadMemory(addr, &st->data[i], 1)) {
-            st->data[i] = 0;
-            range_error = 1;
+    uint32_t clampedMin = hasLimits ? minAddr : 0u;
+    uint32_t clampedMax = hasLimits ? maxAddr : 0x00ffffffu;
+    uint64_t rangeStart = (uint64_t)base;
+    uint64_t rangeEnd = rangeStart + (uint64_t)size - 1ull;
+    int rangeError = 0;
+
+    if (rangeEnd > (uint64_t)clampedMax) {
+        rangeEnd = clampedMax;
+        rangeError = 1;
+    }
+    if (rangeStart < (uint64_t)clampedMin || rangeEnd > (uint64_t)clampedMax) {
+        rangeError = 1;
+    }
+
+    uint64_t readStart = rangeStart;
+    if (readStart < (uint64_t)clampedMin) {
+        readStart = clampedMin;
+    }
+    uint64_t readEnd = rangeEnd;
+    if (readEnd > (uint64_t)clampedMax) {
+        readEnd = clampedMax;
+    }
+
+    if (readEnd >= readStart) {
+        unsigned int dstOffset = (unsigned int)(readStart - rangeStart);
+        unsigned int readSize = (unsigned int)(readEnd - readStart + 1ull);
+        if (!memory_readRaw(st, (uint32_t)readStart, data + dstOffset, readSize)) {
+            rangeError = 1;
         }
     }
-    if (range_error) {
+
+    if (rangeError) {
         if (hasLimits) {
-            memory_setError(st, "Range exceeds limits (0x%06X-0x%06X)", minAddr, maxAddr);
+            memory_setError(st, "Range exceeds limits (0x%X-0x%X)", minAddr, maxAddr);
         } else {
             memory_setError(st, "Range exceeds 24-bit address space (0x000000-0xFFFFFF)");
         }
     }
 }
 
+static int
+memory_readEditableRange(memory_view_state_t *st, uint32_t base, uint8_t *data, int size)
+{
+    uint32_t minAddr = 0;
+    uint32_t maxAddr = 0x00ffffffu;
+
+    if (!data || size <= 0) {
+        return 0;
+    }
+    if (!memory_getSelectedAddressLimits(st, &minAddr, &maxAddr)) {
+        minAddr = 0;
+        maxAddr = 0x00ffffffu;
+    }
+    if (base < minAddr) {
+        return 0;
+    }
+    if ((uint64_t)base + (uint64_t)size - 1ull > (uint64_t)maxAddr) {
+        return 0;
+    }
+    return memory_readRaw(st, base, data, (size_t)size) ? 1 : 0;
+}
+
+static int
+memory_writeHexBytes(memory_view_state_t *st, uint32_t addr, const uint8_t *bytes, int count)
+{
+    int i = 0;
+    target_memory_space_t space;
+    int byteWritesOnly = 0;
+
+    if (!bytes || count <= 0) {
+        return 0;
+    }
+    if (memory_getSelectedSpace(st, &space) && space.processorMemory) {
+        byteWritesOnly = 1;
+    }
+
+    while (i < count) {
+        if (!byteWritesOnly && (i + 1) < count) {
+            uint16_t word = (uint16_t)(((uint16_t)bytes[i] << 8) | (uint16_t)bytes[i + 1]);
+            if (!memory_writeRaw(st, addr + (uint32_t)i, (uint32_t)word, 2)) {
+                return 0;
+            }
+            i += 2;
+            continue;
+        }
+        if (!memory_writeRaw(st, addr + (uint32_t)i, (uint32_t)bytes[i], 1)) {
+            return 0;
+        }
+        i += 1;
+    }
+    return 1;
+}
+
+static int
+memory_verifyHexBytes(memory_view_state_t *st, uint32_t addr, const uint8_t *bytes, int count)
+{
+    uint8_t check[MEMORY_BYTES_PER_ROW];
+
+    if (!bytes || count <= 0 || count > (int)sizeof(check)) {
+        return 0;
+    }
+    memset(check, 0, sizeof(check));
+    if (!memory_readRaw(st, addr, check, (size_t)count)) {
+        return 0;
+    }
+    return memcmp(check, bytes, (size_t)count) == 0 ? 1 : 0;
+}
+
 static void
 memory_onAddressSubmit(e9ui_context_t *ctx, void *user)
 {
-    (void)ctx;
     memory_view_state_t *st = (memory_view_state_t*)user;
     if (!st || !st->addressBox) {
         return;
+    }
+    if (st->inlineEditActive) {
+        memory_inlineEditCancel(st, ctx);
     }
     unsigned int addr = 0;
     if (!memory_parseAddress(st, &addr)) {
@@ -311,16 +879,60 @@ memory_onAddressSubmit(e9ui_context_t *ctx, void *user)
     }
     st->base = memory_clampBaseForView(st, addr);
     memory_syncTextboxFromBase(st);
-    memory_fillFromram(st, st->base);
+    memory_persistBase(st, 1);
+}
+
+static void
+memory_onAddressChange(e9ui_context_t *ctx, void *user)
+{
+    (void)ctx;
+    memory_view_state_t *st = (memory_view_state_t*)user;
+    memory_persistAddressText(st, 1);
+}
+
+static void
+memory_onSpaceChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *value, void *user)
+{
+    memory_view_state_t *st = (memory_view_state_t*)user;
+
+    (void)comp;
+    if (!st || !value) {
+        return;
+    }
+    if (st->inlineEditActive) {
+        memory_inlineEditCancel(st, ctx);
+    }
+    memory_copySpaceValue(st, value);
+    st->searchMatchValid = 0;
+    st->searchMatchAddr = 0;
+    st->searchMatchLen = 0;
+    uint32_t minAddr = 0;
+    uint32_t maxAddr = 0x00ffffffu;
+    if (!memory_getSelectedAddressLimits(st, &minAddr, &maxAddr)) {
+        minAddr = 0;
+        maxAddr = 0x00ffffffu;
+    }
+    (void)maxAddr;
+    st->base = memory_clampBaseForView(st, minAddr);
+    memory_syncTextboxFromBase(st);
+    memory_persistSpace(st, 0);
+    memory_persistBase(st, 1);
 }
 
 static int
-memory_collectSearchRanges(target_memory_range_t *outRanges, size_t cap, size_t *outCount)
+memory_collectSearchRanges(memory_view_state_t *st, target_memory_range_t *outRanges, size_t cap, size_t *outCount)
 {
     if (!outRanges || cap == 0 || !outCount) {
         return 0;
     }
     *outCount = 0;
+    target_memory_space_t space;
+    if (memory_getSelectedSpace(st, &space) && space.processorMemory) {
+        outRanges[0].baseAddr = space.minAddr;
+        outRanges[0].size = (space.maxAddr - space.minAddr) + 1u;
+        *outCount = 1;
+        return 1;
+    }
     if (target && target->memoryTrackGetRanges) {
         size_t count = 0;
         if (target->memoryTrackGetRanges(outRanges, cap, &count) && count > 0) {
@@ -339,7 +951,7 @@ memory_collectSearchRanges(target_memory_range_t *outRanges, size_t cap, size_t 
     }
     uint32_t minAddr = 0;
     uint32_t maxAddr = 0x00ffffffu;
-    if (!memory_getAddressLimits(&minAddr, &maxAddr)) {
+    if (!memory_getSelectedAddressLimits(st, &minAddr, &maxAddr)) {
         minAddr = 0;
         maxAddr = 0x00ffffffu;
     }
@@ -381,7 +993,7 @@ memory_patternMatchesAt(const uint8_t *bytes, int avail, const memory_search_pat
 }
 
 static int
-memory_scanRangeForMatch(uint32_t scanStart, uint32_t scanEndInclusive,
+memory_scanRangeForMatch(memory_view_state_t *st, uint32_t scanStart, uint32_t scanEndInclusive,
                          const memory_search_pattern_t *pattern,
                          uint32_t *outAddr, int *outLen)
 {
@@ -403,7 +1015,7 @@ memory_scanRangeForMatch(uint32_t scanStart, uint32_t scanEndInclusive,
         if (want > MEMORY_SEARCH_CHUNK) {
             want = MEMORY_SEARCH_CHUNK;
         }
-        if (!libretro_host_debugReadMemory(addr, chunk, want)) {
+        if (!memory_readRaw(st, addr, chunk, want)) {
             uint32_t step = (uint32_t)want;
             if (step == 0) {
                 step = 1;
@@ -442,7 +1054,7 @@ memory_scanRangeForMatch(uint32_t scanStart, uint32_t scanEndInclusive,
 }
 
 static int
-memory_scanRangeForLastMatch(uint32_t scanStart, uint32_t scanEndInclusive,
+memory_scanRangeForLastMatch(memory_view_state_t *st, uint32_t scanStart, uint32_t scanEndInclusive,
                              const memory_search_pattern_t *pattern,
                              uint32_t *outAddr, int *outLen)
 {
@@ -467,7 +1079,7 @@ memory_scanRangeForLastMatch(uint32_t scanStart, uint32_t scanEndInclusive,
         if (want > MEMORY_SEARCH_CHUNK) {
             want = MEMORY_SEARCH_CHUNK;
         }
-        if (!libretro_host_debugReadMemory(addr, chunk, want)) {
+        if (!memory_readRaw(st, addr, chunk, want)) {
             uint32_t step = (uint32_t)want;
             if (step == 0) {
                 step = 1;
@@ -514,22 +1126,23 @@ static int
 memory_findNextMatch(memory_view_state_t *st, const memory_search_pattern_t *pattern,
                      uint32_t startAddr, uint32_t *outAddr, int *outLen)
 {
-    (void)st;
     target_memory_range_t ranges[MEMORY_SEARCH_MAX_RANGES];
     size_t rangeCount = 0;
-    if (!memory_collectSearchRanges(ranges, MEMORY_SEARCH_MAX_RANGES, &rangeCount) || rangeCount == 0) {
+    if (!memory_collectSearchRanges(st, ranges, MEMORY_SEARCH_MAX_RANGES, &rangeCount) || rangeCount == 0) {
         return 0;
     }
+    uint32_t maxAddr = 0x00ffffffu;
+    (void)memory_getSelectedAddressLimits(st, NULL, &maxAddr);
     for (int pass = 0; pass < 2; ++pass) {
         for (size_t i = 0; i < rangeCount; ++i) {
-            uint32_t base = ranges[i].baseAddr & 0x00ffffffu;
+            uint32_t base = ranges[i].baseAddr;
             uint32_t size = ranges[i].size;
             if (size == 0) {
                 continue;
             }
             uint32_t end = base + size - 1u;
             if (end < base) {
-                end = 0x00ffffffu;
+                end = maxAddr;
             }
             uint32_t scanStart = base;
             uint32_t scanEnd = end;
@@ -551,7 +1164,7 @@ memory_findNextMatch(memory_view_state_t *st, const memory_search_pattern_t *pat
             if (scanEnd < scanStart) {
                 continue;
             }
-            if (memory_scanRangeForMatch(scanStart, scanEnd, pattern, outAddr, outLen)) {
+            if (memory_scanRangeForMatch(st, scanStart, scanEnd, pattern, outAddr, outLen)) {
                 return 1;
             }
         }
@@ -563,22 +1176,23 @@ static int
 memory_findPrevMatch(memory_view_state_t *st, const memory_search_pattern_t *pattern,
                      uint32_t startAddr, uint32_t *outAddr, int *outLen)
 {
-    (void)st;
     target_memory_range_t ranges[MEMORY_SEARCH_MAX_RANGES];
     size_t rangeCount = 0;
-    if (!memory_collectSearchRanges(ranges, MEMORY_SEARCH_MAX_RANGES, &rangeCount) || rangeCount == 0) {
+    if (!memory_collectSearchRanges(st, ranges, MEMORY_SEARCH_MAX_RANGES, &rangeCount) || rangeCount == 0) {
         return 0;
     }
+    uint32_t maxAddr = 0x00ffffffu;
+    (void)memory_getSelectedAddressLimits(st, NULL, &maxAddr);
     for (int pass = 0; pass < 2; ++pass) {
         for (int i = (int)rangeCount - 1; i >= 0; --i) {
-            uint32_t base = ranges[i].baseAddr & 0x00ffffffu;
+            uint32_t base = ranges[i].baseAddr;
             uint32_t size = ranges[i].size;
             if (size == 0) {
                 continue;
             }
             uint32_t end = base + size - 1u;
             if (end < base) {
-                end = 0x00ffffffu;
+                end = maxAddr;
             }
             uint32_t scanStart = base;
             uint32_t scanEnd = end;
@@ -600,7 +1214,7 @@ memory_findPrevMatch(memory_view_state_t *st, const memory_search_pattern_t *pat
             if (scanEnd < scanStart) {
                 continue;
             }
-            if (memory_scanRangeForLastMatch(scanStart, scanEnd, pattern, outAddr, outLen)) {
+            if (memory_scanRangeForLastMatch(st, scanStart, scanEnd, pattern, outAddr, outLen)) {
                 return 1;
             }
         }
@@ -661,6 +1275,9 @@ memory_runSearch(memory_view_state_t *st, int direction, int advance)
     if (!st || !st->searchBox) {
         return;
     }
+    if (st->inlineEditActive) {
+        memory_inlineEditCancel(st, NULL);
+    }
     const char *text = e9ui_textbox_getText(st->searchBox);
     memory_search_pattern_t pattern;
     if (!memory_buildSearchPattern(text, &pattern)) {
@@ -669,12 +1286,15 @@ memory_runSearch(memory_view_state_t *st, int direction, int advance)
         st->searchMatchLen = 0;
         return;
     }
-    uint32_t startAddr = st->base & 0x00ffffffu;
+    uint32_t minAddr = 0;
+    uint32_t maxAddr = 0x00ffffffu;
+    (void)memory_getSelectedAddressLimits(st, &minAddr, &maxAddr);
+    uint32_t startAddr = st->base;
     if (advance && st->searchMatchValid) {
         if (direction >= 0) {
-            startAddr = (st->searchMatchAddr + 1u) & 0x00ffffffu;
+            startAddr = st->searchMatchAddr < maxAddr ? st->searchMatchAddr + 1u : minAddr;
         } else {
-            startAddr = (st->searchMatchAddr - 1u) & 0x00ffffffu;
+            startAddr = st->searchMatchAddr > minAddr ? st->searchMatchAddr - 1u : maxAddr;
         }
     }
     uint32_t hitAddr = 0;
@@ -692,7 +1312,7 @@ memory_runSearch(memory_view_state_t *st, int direction, int advance)
         return;
     }
     st->searchMatchValid = 1;
-    st->searchMatchAddr = hitAddr & 0x00ffffffu;
+    st->searchMatchAddr = hitAddr;
     st->searchMatchLen = hitLen;
 
     uint32_t wantBase = memory_clampBaseForView(st, hitAddr & ~0x0fu);
@@ -700,7 +1320,6 @@ memory_runSearch(memory_view_state_t *st, int direction, int advance)
         st->base = wantBase;
         memory_syncTextboxFromBase(st);
     }
-    memory_fillFromram(st, st->base);
 }
 
 static void
@@ -708,6 +1327,7 @@ memory_onSearchChange(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
     memory_view_state_t *st = (memory_view_state_t*)user;
+    memory_persistSearch(st, 1);
     memory_runSearch(st, 1, 0);
 }
 
@@ -716,7 +1336,68 @@ memory_onSearchSubmit(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
     memory_view_state_t *st = (memory_view_state_t*)user;
+    memory_persistSearch(st, 1);
     memory_runSearch(st, 1, 1);
+}
+
+static void
+memory_restorePersistentStateForView(memory_view_state_t *st)
+{
+    if (!st || !rom_config_activeInit) {
+        return;
+    }
+
+    target_memory_space_t spaces[MEMORY_MAX_SPACES];
+    size_t spaceCount = 0;
+    size_t spaceCap = sizeof(spaces) / sizeof(spaces[0]);
+    memset(spaces, 0, sizeof(spaces));
+    if (memory_getSpaces(spaces, spaceCap, &spaceCount) && spaceCount > spaceCap) {
+        spaceCount = spaceCap;
+    }
+
+    target_memory_panel_options_t options;
+    memset(&options, 0, sizeof(options));
+    if (!memory_getPanelOptions(&options)) {
+        return;
+    }
+
+    const char *savedSpace = memory_activeOptionValue(options.spaceKey);
+    if (memory_spaceValueExists(spaces, spaceCount, savedSpace)) {
+        memory_copySpaceValue(st, savedSpace);
+        if (st->spaceSelect) {
+            e9ui_labeled_select_setValue(st->spaceSelect, savedSpace);
+        }
+    }
+
+    const char *savedAddress = memory_activeOptionValue(options.addressKey);
+    if (savedAddress && *savedAddress) {
+        if (st->addressBox) {
+            e9ui_textbox_setText(st->addressBox, savedAddress);
+        }
+        unsigned long long savedValue = 0;
+        char *end = NULL;
+        if (memory_parseU64SmartHex(savedAddress, &savedValue, &end)) {
+            while (end && *end && isspace((unsigned char)*end)) {
+                ++end;
+            }
+            if (end && !*end && savedValue <= UINT32_MAX) {
+                st->base = memory_clampBaseForView(st, (uint32_t)savedValue);
+                memory_syncTextboxFromBase(st);
+            }
+        }
+    }
+
+    const char *savedSearch = memory_activeOptionValue(options.searchKey);
+    if (savedSearch && st->searchBox) {
+        e9ui_textbox_setText(st->searchBox, savedSearch);
+        memory_runSearch(st, 1, 0);
+    }
+}
+
+void
+memory_restorePersistentState(void)
+{
+    memory_restorePersistentStateForView(memory_activeState);
 }
 
 static int
@@ -815,9 +1496,6 @@ memory_hscrollBounds(e9ui_context_t *ctx, e9ui_component_t *self)
     return bounds;
 }
 
-typedef struct memory_step_buttons_action_ctx {
-    memory_view_state_t *st;
-} memory_step_buttons_action_ctx_t;
 
 static int
 memory_stepButtonsOnAction(void *user, e9ui_step_buttons_action_t action)
@@ -829,7 +1507,7 @@ memory_stepButtonsOnAction(void *user, e9ui_step_buttons_action_t action)
     int rows = 0;
     switch (action) {
     case e9ui_step_buttons_action_page_up:
-        rows = -32;
+        rows = -memory_pageRows(actionCtx->st);
         break;
     case e9ui_step_buttons_action_line_up:
         rows = -1;
@@ -838,7 +1516,7 @@ memory_stepButtonsOnAction(void *user, e9ui_step_buttons_action_t action)
         rows = 1;
         break;
     case e9ui_step_buttons_action_page_down:
-        rows = 32;
+        rows = memory_pageRows(actionCtx->st);
         break;
     default:
         break;
@@ -853,12 +1531,36 @@ memory_stepButtonsOnAction(void *user, e9ui_step_buttons_action_t action)
 static int
 memory_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event_t *ev)
 {
+    e9ui_component_t *inlineEdit = NULL;
+
     if (!self || !ctx || !ev) {
         return 0;
     }
     memory_view_state_t *st = (memory_view_state_t*)self->state;
     if (!st) {
         return 0;
+    }
+    inlineEdit = memory_inlineEditComponent(st);
+    if (st->inlineEditActive && ctx && inlineEdit &&
+        e9ui_getFocus(ctx) != inlineEdit &&
+        e9ui_getFocus(ctx) != self) {
+        memory_inlineEditCancel(st, ctx);
+    }
+    if (st->inlineEditActive && inlineEdit &&
+        ev->type == SDL_MOUSEBUTTONDOWN &&
+        ev->button.button == SDL_BUTTON_LEFT &&
+        !memory_pointInBounds(inlineEdit, ev->button.x, ev->button.y) &&
+        memory_pointInBounds(self, ev->button.x, ev->button.y)) {
+        if (memory_inlineEditCommit(st, ctx)) {
+            return 1;
+        }
+        return 1;
+    }
+    if (st->inlineEditActive &&
+        ev->type == SDL_KEYDOWN &&
+        ev->key.keysym.sym == SDLK_ESCAPE) {
+        memory_inlineEditCancel(st, ctx);
+        return 1;
     }
 
     if (ctx &&
@@ -893,7 +1595,7 @@ memory_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event
 
     if (ctx) {
         memory_step_buttons_action_ctx_t actionCtx = { st };
-        int stepEnabled = machine_getRunning(debugger.machine) ? 0 : 1;
+        int stepEnabled = 1;
         if (e9ui_step_buttons_handleEvent(ctx,
                                           ev,
                                           self->bounds,
@@ -915,10 +1617,6 @@ memory_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event
         }
         int wheelX = ev->wheel.x;
         int wheelY = ev->wheel.y;
-        if (ev->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
-            wheelX = -wheelX;
-            wheelY = -wheelY;
-        }
         if (wheelX != 0) {
             e9ui_rect_t sbBounds = memory_hscrollBounds(ctx, self);
             int viewW = sbBounds.w > 0 ? sbBounds.w : 1;
@@ -927,21 +1625,50 @@ memory_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event
             e9ui_scrollbar_clamp(viewW, 1, st->contentPixelWidth, 1, &st->scrollX, &scrollY);
         }
         if (wheelY != 0) {
-            memory_scrollRows(st, -wheelY * 3);
+            memory_scrollRows(st, wheelY * 3);
         }
         if (wheelX != 0 || wheelY != 0) {
             return 1;
         }
         return 0;
     }
+    if (ev->type == SDL_MOUSEBUTTONDOWN && ev->button.button == SDL_BUTTON_LEFT) {
+        int mx = ev->button.x;
+        int my = ev->button.y;
+
+        st->inlineEditPending = 0;
+        if (!memory_pointInBounds(self, mx, my)) {
+            return 0;
+        }
+        if (!st->inlineEditActive && ev->button.clicks >= 2) {
+            st->inlineEditPending = 1;
+        }
+        return 0;
+    }
+    if (ev->type == SDL_MOUSEBUTTONUP && ev->button.button == SDL_BUTTON_LEFT) {
+        int mx = ev->button.x;
+        int my = ev->button.y;
+
+        if (!st->inlineEditPending) {
+            return 0;
+        }
+        st->inlineEditPending = 0;
+        if (!memory_pointInBounds(self, mx, my)) {
+            return 0;
+        }
+        if (!st->inlineEditActive &&
+            memory_beginInlineEditAtPoint(self, ctx, st, mx, my)) {
+            return 1;
+        }
+    }
     if (ev->type == SDL_KEYDOWN && ctx && e9ui_getFocus(ctx) == self) {
         SDL_Keycode kc = ev->key.keysym.sym;
         if (kc == SDLK_PAGEUP) {
-            memory_scrollRows(st, -32);
+            memory_scrollRows(st, -memory_pageRows(st));
             return 1;
         }
         if (kc == SDLK_PAGEDOWN) {
-            memory_scrollRows(st, 32);
+            memory_scrollRows(st, memory_pageRows(st));
             return 1;
         }
         if (kc == SDLK_UP) {
@@ -953,13 +1680,6 @@ memory_handleEvent(e9ui_component_t *self, e9ui_context_t *ctx, const e9ui_event
             return 1;
         }
     }
-    return 0;
-}
-
-static int
-memory_preferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
-{
-    (void)self; (void)ctx; (void)availW;
     return 0;
 }
 
@@ -1000,38 +1720,898 @@ memory_measureSegment(TTF_Font *font, const char *line, int start, int len)
     return w;
 }
 
-static void
-memory_markVisibleMatches(memory_view_state_t *st, const memory_search_pattern_t *pattern,
-                          uint8_t *allMask, uint8_t *currentMask)
+static int
+memory_fontColumnWidth(TTF_Font *font)
 {
-    if (!st || !pattern || !allMask || !currentMask) {
+    int w = 0;
+
+    if (!font) {
+        return 0;
+    }
+    if (TTF_SizeText(font, "0", &w, NULL) != 0 || w <= 0) {
+        return 0;
+    }
+    return w;
+}
+
+static void
+memory_formatAddressText(char *dst, size_t cap, uint32_t rowAddr)
+{
+    if (!dst || cap == 0) {
         return;
     }
-    memset(allMask, 0, st->size);
-    memset(currentMask, 0, st->size);
+    int n = snprintf(dst, cap, "%08X", rowAddr);
+    if (n < 0 || (size_t)n >= cap) {
+        dst[cap - 1] = '\0';
+    }
+}
+
+static int
+memory_ensureRenderCaches(memory_view_state_t *st)
+{
+    if (!st) {
+        return 0;
+    }
+    if (!st->addressCache) {
+        st->addressCache = (memory_row_address_cache_t*)alloc_calloc(
+            MEMORY_RENDER_CACHE_CAP, sizeof(*st->addressCache));
+        if (!st->addressCache) {
+            return 0;
+        }
+    }
+    if (!st->contentCache) {
+        st->contentCache = (memory_row_content_cache_t*)alloc_calloc(
+            MEMORY_RENDER_CACHE_CAP, sizeof(*st->contentCache));
+        if (!st->contentCache) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void
+memory_addressCacheDestroyTexture(memory_row_address_cache_t *cache)
+{
+    if (!cache) {
+        return;
+    }
+    if (cache->texture) {
+        SDL_DestroyTexture(cache->texture);
+        cache->texture = NULL;
+    }
+    cache->renderer = NULL;
+    cache->font = NULL;
+    cache->columnWidth = 0;
+    cache->lineHeight = 0;
+    cache->textureW = 0;
+    cache->textureH = 0;
+    cache->textureValid = 0;
+}
+
+static void
+memory_addressCacheClear(memory_row_address_cache_t *cache)
+{
+    if (!cache) {
+        return;
+    }
+    memory_addressCacheDestroyTexture(cache);
+    memset(cache, 0, sizeof(*cache));
+}
+
+static void
+memory_contentCacheDestroyTexture(memory_row_content_cache_t *cache)
+{
+    if (!cache) {
+        return;
+    }
+    if (cache->texture) {
+        SDL_DestroyTexture(cache->texture);
+        cache->texture = NULL;
+    }
+    cache->renderer = NULL;
+    cache->font = NULL;
+    cache->columnWidth = 0;
+    cache->lineHeight = 0;
+    cache->colorEnabled = 0;
+    cache->textureW = 0;
+    cache->textureH = 0;
+    cache->textureValid = 0;
+}
+
+static void
+memory_contentCacheClear(memory_row_content_cache_t *cache)
+{
+    if (!cache) {
+        return;
+    }
+    memory_contentCacheDestroyTexture(cache);
+    memset(cache, 0, sizeof(*cache));
+}
+
+static void
+memory_formatContentText(memory_row_content_cache_t *cache, const uint8_t *rowData)
+{
+    static const char hexChars[] = "0123456789ABCDEF";
+
+    if (!cache) {
+        return;
+    }
+    for (unsigned int i = 0; i < MEMORY_BYTES_PER_ROW; ++i) {
+        unsigned char byte = rowData ? rowData[i] : 0;
+        unsigned int hexPos = i * 3u;
+        cache->hexText[hexPos] = hexChars[(byte >> 4) & 0x0fu];
+        cache->hexText[hexPos + 1u] = hexChars[byte & 0x0fu];
+        cache->hexText[hexPos + 2u] = ' ';
+        cache->asciiText[i] = (byte >= 32 && byte <= 126) ? (char)byte : '.';
+    }
+    cache->hexText[MEMORY_BYTES_PER_ROW * 3u] = '\0';
+    cache->asciiText[MEMORY_BYTES_PER_ROW] = '\0';
+}
+
+static memory_row_address_cache_t *
+memory_getAddressCache(memory_view_state_t *st, uint32_t rowAddr)
+{
+    if (!st || !memory_ensureRenderCaches(st)) {
+        return NULL;
+    }
+    unsigned long long tick = ++st->cacheTick;
+    for (int i = 0; i < st->addressCacheCount; ++i) {
+        memory_row_address_cache_t *entry = &st->addressCache[i];
+        if (entry->valid && entry->rowAddr == rowAddr) {
+            entry->lastUsed = tick;
+            return entry;
+        }
+    }
+
+    memory_row_address_cache_t *entry = NULL;
+    if (st->addressCacheCount < MEMORY_RENDER_CACHE_CAP) {
+        entry = &st->addressCache[st->addressCacheCount++];
+    } else {
+        int evict = 0;
+        unsigned long long oldest = st->addressCache[0].lastUsed;
+        for (int i = 1; i < MEMORY_RENDER_CACHE_CAP; ++i) {
+            if (st->addressCache[i].lastUsed < oldest) {
+                oldest = st->addressCache[i].lastUsed;
+                evict = i;
+            }
+        }
+        entry = &st->addressCache[evict];
+        memory_addressCacheClear(entry);
+    }
+
+    entry->valid = 1;
+    entry->rowAddr = rowAddr;
+    entry->lastUsed = tick;
+    memory_formatAddressText(entry->text, sizeof(entry->text), rowAddr);
+    return entry;
+}
+
+static memory_row_content_cache_t *
+memory_getContentCache(memory_view_state_t *st, const uint8_t *rowData)
+{
+    static const uint8_t zeroBytes[MEMORY_BYTES_PER_ROW] = {0};
+    const uint8_t *bytes = rowData ? rowData : zeroBytes;
+
+    if (!st || !memory_ensureRenderCaches(st)) {
+        return NULL;
+    }
+    unsigned long long tick = ++st->cacheTick;
+    for (int i = 0; i < st->contentCacheCount; ++i) {
+        memory_row_content_cache_t *entry = &st->contentCache[i];
+        if (entry->valid && memcmp(entry->bytes, bytes, sizeof(entry->bytes)) == 0) {
+            entry->lastUsed = tick;
+            return entry;
+        }
+    }
+
+    memory_row_content_cache_t *entry = NULL;
+    if (st->contentCacheCount < MEMORY_RENDER_CACHE_CAP) {
+        entry = &st->contentCache[st->contentCacheCount++];
+    } else {
+        int evict = 0;
+        unsigned long long oldest = st->contentCache[0].lastUsed;
+        for (int i = 1; i < MEMORY_RENDER_CACHE_CAP; ++i) {
+            if (st->contentCache[i].lastUsed < oldest) {
+                oldest = st->contentCache[i].lastUsed;
+                evict = i;
+            }
+        }
+        entry = &st->contentCache[evict];
+        memory_contentCacheClear(entry);
+    }
+
+    entry->valid = 1;
+    entry->lastUsed = tick;
+    memcpy(entry->bytes, bytes, sizeof(entry->bytes));
+    memory_formatContentText(entry, bytes);
+    return entry;
+}
+
+static void
+memory_drawColumnCharMode(e9ui_context_t *ctx,
+                          TTF_Font *font,
+                          char c,
+                          SDL_Color color,
+                          int x,
+                          int y,
+                          int rawAlpha)
+{
+    char text[2];
+    int w = 0;
+    int h = 0;
+
+    text[0] = c;
+    text[1] = '\0';
+    SDL_Texture *texture = e9ui_text_cache_getText(ctx->renderer, font, text, color, &w, &h);
+    if (!texture) {
+        return;
+    }
+
+    SDL_Rect dst = { x, y, w, h };
+    SDL_BlendMode oldBlend = SDL_BLENDMODE_BLEND;
+    if (rawAlpha && SDL_GetTextureBlendMode(texture, &oldBlend) == 0) {
+        SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
+    }
+    SDL_RenderCopy(ctx->renderer, texture, NULL, &dst);
+    if (rawAlpha) {
+        SDL_SetTextureBlendMode(texture, oldBlend);
+    }
+}
+
+static void
+memory_drawColumnChar(e9ui_context_t *ctx,
+                      TTF_Font *font,
+                      char c,
+                      SDL_Color color,
+                      int x,
+                      int y)
+{
+    memory_drawColumnCharMode(ctx, font, c, color, x, y, 0);
+}
+
+static int
+memory_drawAddressColumns(e9ui_context_t *ctx,
+                          TTF_Font *font,
+                          const memory_row_address_cache_t *cache,
+                          int baseX,
+                          int y,
+                          int columnWidth,
+                          int rawAlpha)
+{
+    SDL_Color addressColor = {160, 160, 200, 255};
+
+    for (int i = 0; i < 8; ++i) {
+        memory_drawColumnCharMode(ctx, font, cache->text[i], addressColor, baseX + i * columnWidth, y, rawAlpha);
+    }
+
+    return 8 * columnWidth;
+}
+
+static int
+memory_drawContentColumns(e9ui_context_t *ctx,
+                          TTF_Font *font,
+                          const memory_row_content_cache_t *cache,
+                          int baseX,
+                          int y,
+                          int columnWidth,
+                          int rawAlpha)
+{
+    SDL_Color baseColor = {200, 220, 200, 255};
+
+    for (unsigned int i = 0; i < MEMORY_BYTES_PER_ROW * 3u; ++i) {
+        int hexCol = (int)i;
+        if (hex_byte_color_isEnabled() && (i % 3u) < 2u) {
+            continue;
+        }
+        memory_drawColumnCharMode(ctx,
+                                  font,
+                                  cache->hexText[i],
+                                  baseColor,
+                                  baseX + hexCol * columnWidth,
+                                  y,
+                                  rawAlpha);
+    }
+
+    if (hex_byte_color_isEnabled()) {
+        static const char hexChars[] = "0123456789ABCDEF";
+        for (unsigned int i = 0; i < MEMORY_BYTES_PER_ROW; ++i) {
+            int hexCol = (int)i * 3;
+            uint8_t byte = cache->bytes[i];
+            SDL_Color color = hex_byte_color_get(byte);
+            memory_drawColumnCharMode(ctx,
+                                      font,
+                                      hexChars[(byte >> 4) & 0x0fu],
+                                      color,
+                                      baseX + hexCol * columnWidth,
+                                      y,
+                                      rawAlpha);
+            memory_drawColumnCharMode(ctx,
+                                      font,
+                                      hexChars[byte & 0x0fu],
+                                      color,
+                                      baseX + (hexCol + 1) * columnWidth,
+                                      y,
+                                      rawAlpha);
+        }
+    }
+
+    memory_drawColumnCharMode(ctx,
+                              font,
+                              ' ',
+                              baseColor,
+                              baseX + (MEMORY_ROW_ASCII_START_COL - MEMORY_ROW_HEX_START_COL - 1) * columnWidth,
+                              y,
+                              rawAlpha);
+    for (unsigned int i = 0; i < MEMORY_BYTES_PER_ROW; ++i) {
+        memory_drawColumnCharMode(ctx,
+                                  font,
+                                  cache->asciiText[i],
+                                  baseColor,
+                                  baseX + (MEMORY_ROW_ASCII_START_COL - MEMORY_ROW_HEX_START_COL + (int)i) * columnWidth,
+                                  y,
+                                  rawAlpha);
+    }
+
+    return (MEMORY_ROW_ASCII_START_COL - MEMORY_ROW_HEX_START_COL + (int)MEMORY_BYTES_PER_ROW) * columnWidth;
+}
+
+static int
+memory_drawCachedAddress(e9ui_context_t *ctx,
+                         TTF_Font *font,
+                         memory_row_address_cache_t *cache,
+                         int baseX,
+                         int y,
+                         int columnWidth,
+                         int lineHeight)
+{
+    int addressW = 8 * columnWidth;
+
+    if (cache->textureValid &&
+        cache->texture &&
+        cache->renderer == ctx->renderer &&
+        cache->font == font &&
+        cache->columnWidth == columnWidth &&
+        cache->lineHeight == lineHeight &&
+        cache->textureW == addressW) {
+        SDL_Rect dst = { baseX, y, cache->textureW, cache->textureH };
+        SDL_RenderCopy(ctx->renderer, cache->texture, NULL, &dst);
+        return addressW;
+    }
+
+    memory_addressCacheDestroyTexture(cache);
+
+    cache->texture = SDL_CreateTexture(ctx->renderer,
+                                       SDL_PIXELFORMAT_RGBA8888,
+                                       SDL_TEXTUREACCESS_TARGET,
+                                       addressW,
+                                       lineHeight);
+    if (!cache->texture) {
+        return memory_drawAddressColumns(ctx, font, cache, baseX, y, columnWidth, 0);
+    }
+    SDL_SetTextureBlendMode(cache->texture, SDL_BLENDMODE_BLEND);
+
+    SDL_Texture *oldTarget = SDL_GetRenderTarget(ctx->renderer);
+    SDL_BlendMode oldBlend = SDL_BLENDMODE_BLEND;
+    SDL_bool hadClip = SDL_RenderIsClipEnabled(ctx->renderer);
+    SDL_Rect oldClip = {0};
+    if (hadClip) {
+        SDL_RenderGetClipRect(ctx->renderer, &oldClip);
+    }
+    SDL_GetRenderDrawBlendMode(ctx->renderer, &oldBlend);
+
+    if (SDL_SetRenderTarget(ctx->renderer, cache->texture) != 0) {
+        memory_addressCacheDestroyTexture(cache);
+        return memory_drawAddressColumns(ctx, font, cache, baseX, y, columnWidth, 0);
+    }
+    SDL_RenderSetClipRect(ctx->renderer, NULL);
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 0);
+    SDL_RenderClear(ctx->renderer);
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    memory_drawAddressColumns(ctx, font, cache, 0, 0, columnWidth, 1);
+
+    SDL_SetRenderTarget(ctx->renderer, oldTarget);
+    SDL_SetRenderDrawBlendMode(ctx->renderer, oldBlend);
+    if (hadClip) {
+        SDL_RenderSetClipRect(ctx->renderer, &oldClip);
+    } else {
+        SDL_RenderSetClipRect(ctx->renderer, NULL);
+    }
+
+    cache->renderer = ctx->renderer;
+    cache->font = font;
+    cache->columnWidth = columnWidth;
+    cache->lineHeight = lineHeight;
+    cache->textureW = addressW;
+    cache->textureH = lineHeight;
+    cache->textureValid = 1;
+
+    SDL_Rect dst = { baseX, y, cache->textureW, cache->textureH };
+    SDL_RenderCopy(ctx->renderer, cache->texture, NULL, &dst);
+    return addressW;
+}
+
+static int
+memory_drawCachedContent(e9ui_context_t *ctx,
+                         TTF_Font *font,
+                         memory_row_content_cache_t *cache,
+                         int baseX,
+                         int y,
+                         int columnWidth,
+                         int lineHeight)
+{
+    int contentW = (MEMORY_ROW_ASCII_START_COL - MEMORY_ROW_HEX_START_COL + (int)MEMORY_BYTES_PER_ROW) * columnWidth;
+    int colorEnabled = hex_byte_color_isEnabled() ? 1 : 0;
+
+    if (cache->textureValid &&
+        cache->texture &&
+        cache->renderer == ctx->renderer &&
+        cache->font == font &&
+        cache->columnWidth == columnWidth &&
+        cache->lineHeight == lineHeight &&
+        cache->colorEnabled == colorEnabled &&
+        cache->textureW == contentW) {
+        SDL_Rect dst = { baseX, y, cache->textureW, cache->textureH };
+        SDL_RenderCopy(ctx->renderer, cache->texture, NULL, &dst);
+        return contentW;
+    }
+
+    memory_contentCacheDestroyTexture(cache);
+
+    cache->texture = SDL_CreateTexture(ctx->renderer,
+                                       SDL_PIXELFORMAT_RGBA8888,
+                                       SDL_TEXTUREACCESS_TARGET,
+                                       contentW,
+                                       lineHeight);
+    if (!cache->texture) {
+        return memory_drawContentColumns(ctx, font, cache, baseX, y, columnWidth, 0);
+    }
+    SDL_SetTextureBlendMode(cache->texture, SDL_BLENDMODE_BLEND);
+
+    SDL_Texture *oldTarget = SDL_GetRenderTarget(ctx->renderer);
+    SDL_BlendMode oldBlend = SDL_BLENDMODE_BLEND;
+    SDL_bool hadClip = SDL_RenderIsClipEnabled(ctx->renderer);
+    SDL_Rect oldClip = {0};
+    if (hadClip) {
+        SDL_RenderGetClipRect(ctx->renderer, &oldClip);
+    }
+    SDL_GetRenderDrawBlendMode(ctx->renderer, &oldBlend);
+
+    if (SDL_SetRenderTarget(ctx->renderer, cache->texture) != 0) {
+        memory_contentCacheDestroyTexture(cache);
+        return memory_drawContentColumns(ctx, font, cache, baseX, y, columnWidth, 0);
+    }
+    SDL_RenderSetClipRect(ctx->renderer, NULL);
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 0);
+    SDL_RenderClear(ctx->renderer);
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    memory_drawContentColumns(ctx, font, cache, 0, 0, columnWidth, 1);
+
+    SDL_SetRenderTarget(ctx->renderer, oldTarget);
+    SDL_SetRenderDrawBlendMode(ctx->renderer, oldBlend);
+    if (hadClip) {
+        SDL_RenderSetClipRect(ctx->renderer, &oldClip);
+    } else {
+        SDL_RenderSetClipRect(ctx->renderer, NULL);
+    }
+
+    cache->renderer = ctx->renderer;
+    cache->font = font;
+    cache->columnWidth = columnWidth;
+    cache->lineHeight = lineHeight;
+    cache->colorEnabled = colorEnabled;
+    cache->textureW = contentW;
+    cache->textureH = lineHeight;
+    cache->textureValid = 1;
+
+    SDL_Rect dst = { baseX, y, cache->textureW, cache->textureH };
+    SDL_RenderCopy(ctx->renderer, cache->texture, NULL, &dst);
+    return contentW;
+}
+
+static int
+memory_dataEditCursorForPoint(TTF_Font *font, const char *text, e9ui_data_edit_mode_t mode,
+                              int textX, int mx)
+{
+    int target = 0;
+    int len = 0;
+    int bestCursor = 0;
+    int bestDist = INT_MAX;
+    int fullWidth = 0;
+    int groupDigits = 0;
+
+    if (!font || !text) {
+        return 0;
+    }
+
+    target = mx - textX;
+    if (target <= 0) {
+        return 0;
+    }
+    len = (int)strlen(text);
+    fullWidth = memory_measureSegment(font, text, 0, len);
+    if (target >= fullWidth) {
+        return len;
+    }
+
+    switch (mode) {
+    case e9ui_data_edit_mode_hex_words16:
+        groupDigits = 4;
+        break;
+    case e9ui_data_edit_mode_hex_bytes:
+        groupDigits = 2;
+        break;
+    case e9ui_data_edit_mode_ascii_fixed:
+    default:
+        groupDigits = 0;
+        break;
+    }
+
+    for (int i = 0; i < len; ++i) {
+        int startWidth = 0;
+        int endWidth = 0;
+        int dist = 0;
+
+        if (groupDigits > 0 && (i % (groupDigits + 1)) == groupDigits) {
+            continue;
+        }
+        startWidth = memory_measureSegment(font, text, 0, i);
+        endWidth = memory_measureSegment(font, text, 0, i + 1);
+        if (target >= startWidth && target < endWidth) {
+            return i;
+        }
+        dist = startWidth - target;
+        if (dist < 0) {
+            dist = -dist;
+        }
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestCursor = i;
+        }
+    }
+
+    return bestCursor;
+}
+
+static void
+memory_markVisibleMatches(memory_view_state_t *st, const memory_search_pattern_t *pattern,
+                          const uint8_t *viewData, unsigned int viewByteCount,
+                          uint8_t *allMask, uint8_t *currentMask)
+{
+    if (!st || !pattern || !viewData || !allMask || !currentMask) {
+        return;
+    }
+    memset(allMask, 0, viewByteCount);
+    memset(currentMask, 0, viewByteCount);
     int maxLen = pattern->asciiLen > pattern->hexLen ? pattern->asciiLen : pattern->hexLen;
     if (maxLen <= 0) {
         return;
     }
-    for (unsigned int i = 0; i < st->size; ++i) {
+    for (unsigned int i = 0; i < viewByteCount; ++i) {
         int matchLen = 0;
-        if (!memory_patternMatchesAt(st->data + i, (int)(st->size - i), pattern, &matchLen)) {
+        if (!memory_patternMatchesAt(viewData + i, (int)(viewByteCount - i), pattern, &matchLen)) {
             continue;
         }
-        for (int j = 0; j < matchLen && i + (unsigned int)j < st->size; ++j) {
+        for (int j = 0; j < matchLen && i + (unsigned int)j < viewByteCount; ++j) {
             allMask[i + (unsigned int)j] = 1;
         }
     }
     if (st->searchMatchValid && st->searchMatchLen > 0) {
-        uint32_t viewStart = st->base & 0x00ffffffu;
-        uint32_t viewEnd = viewStart + st->size - 1u;
+        uint32_t viewStart = st->base;
+        uint32_t viewEnd = viewStart + viewByteCount - 1u;
         if (st->searchMatchAddr >= viewStart && st->searchMatchAddr <= viewEnd) {
             unsigned int start = (unsigned int)(st->searchMatchAddr - viewStart);
-            for (int i = 0; i < st->searchMatchLen && start + (unsigned int)i < st->size; ++i) {
+            for (int i = 0; i < st->searchMatchLen && start + (unsigned int)i < viewByteCount; ++i) {
                 currentMask[start + (unsigned int)i] = 1;
             }
         }
     }
+}
+
+static void
+memory_formatRowLine(char *line, size_t cap, uint32_t rowAddr, const uint8_t *rowData)
+{
+    int n = 0;
+
+    if (!line || cap == 0) {
+        return;
+    }
+
+    n = snprintf(line, cap, "%08X  ", rowAddr);
+    if (n < 0 || (size_t)n >= cap) {
+        line[cap - 1] = '\0';
+        return;
+    }
+    for (unsigned int i = 0; i < MEMORY_BYTES_PER_ROW; ++i) {
+        n += snprintf(line + n, cap - (size_t)n, "%02X ", (unsigned)(rowData ? rowData[i] : 0u));
+        if ((size_t)n >= cap) {
+            line[cap - 1] = '\0';
+            return;
+        }
+    }
+    n += snprintf(line + n, cap - (size_t)n, " ");
+    if ((size_t)n >= cap) {
+        line[cap - 1] = '\0';
+        return;
+    }
+    for (unsigned int i = 0; i < MEMORY_BYTES_PER_ROW && (size_t)n + 1 < cap; ++i) {
+        unsigned char c = rowData ? rowData[i] : 0;
+        line[n++] = (c >= 32 && c <= 126) ? (char)c : '.';
+    }
+    line[n] = '\0';
+}
+
+static void
+memory_inlineEditCancel(memory_view_state_t *st, e9ui_context_t *ctx)
+{
+    e9ui_component_t *editor = NULL;
+
+    if (!st) {
+        return;
+    }
+
+    editor = memory_inlineEditComponent(st);
+    st->inlineEditActive = 0;
+    st->inlineEditAddr = 0;
+    st->inlineEditByteCount = 0;
+    st->inlineEditMode = memory_inline_edit_mode_none;
+    memset(st->inlineEditOriginalBytes, 0, sizeof(st->inlineEditOriginalBytes));
+    st->inlineEditRect = (SDL_Rect){0, 0, 0, 0};
+    if (editor) {
+        e9ui_data_edit_setText(editor, "");
+        e9ui_setHidden(editor, 1);
+    }
+    if (ctx && editor && e9ui_getFocus(ctx) == editor) {
+        e9ui_setFocus(ctx, st->ownerView);
+    }
+    inline_edit_pauseEnd(&st->inlineEditAutoResume);
+}
+
+static int
+memory_inlineEditCommit(memory_view_state_t *st, e9ui_context_t *ctx)
+{
+    e9ui_component_t *editor = NULL;
+    const char *text = NULL;
+    uint8_t bytes[MEMORY_BYTES_PER_ROW];
+
+    if (!st || !st->inlineEditActive) {
+        return 0;
+    }
+    editor = memory_inlineEditComponent(st);
+    if (!editor) {
+        memory_inlineEditCancel(st, ctx);
+        return 0;
+    }
+
+    text = e9ui_data_edit_getText(editor);
+    memset(bytes, 0, sizeof(bytes));
+    switch (st->inlineEditMode) {
+    case memory_inline_edit_mode_ascii:
+        if (!memory_parseInlineAsciiBytes(text,
+                                          st->inlineEditOriginalBytes,
+                                          bytes,
+                                          st->inlineEditByteCount)) {
+            e9ui_showTransientMessage("STRING TOO LONG");
+            e9ui_data_edit_selectAllExternal(editor);
+            return 0;
+        }
+        break;
+    case memory_inline_edit_mode_hex:
+        if (!memory_parseInlineHexBytes(text, bytes, st->inlineEditByteCount)) {
+            e9ui_showTransientMessage("INVALID HEX FORMAT");
+            e9ui_data_edit_selectAllExternal(editor);
+            return 0;
+        }
+        break;
+    default:
+        memory_inlineEditCancel(st, ctx);
+        return 0;
+    }
+    if (!memory_writeHexBytes(st, st->inlineEditAddr, bytes, st->inlineEditByteCount)) {
+        e9ui_showTransientMessage("WRITE FAILED - NO CORE SUPPORT?");
+        e9ui_data_edit_selectAllExternal(editor);
+        return 0;
+    }
+    if (!memory_verifyHexBytes(st, st->inlineEditAddr, bytes, st->inlineEditByteCount)) {
+        e9ui_showTransientMessage("UNABLE TO WRITE DATA - ROM ?");
+        e9ui_data_edit_selectAllExternal(editor);
+        return 0;
+    }
+
+    memory_inlineEditCancel(st, ctx);
+    return 1;
+}
+
+static void
+memory_inlineEditSubmitted(e9ui_context_t *ctx, void *user)
+{
+    memory_view_state_t *st = (memory_view_state_t*)user;
+
+    (void)memory_inlineEditCommit(st, ctx);
+}
+
+static int
+memory_inlineEditKey(e9ui_context_t *ctx, SDL_Keycode key, SDL_Keymod mods, void *user)
+{
+    memory_view_state_t *st = (memory_view_state_t*)user;
+
+    (void)mods;
+    if (!st || !st->inlineEditActive) {
+        return 0;
+    }
+    if (key == SDLK_ESCAPE) {
+        memory_inlineEditCancel(st, ctx);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+memory_beginInlineEditAtPoint(e9ui_component_t *self, e9ui_context_t *ctx, memory_view_state_t *st, int mx, int my)
+{
+    TTF_Font *font = NULL;
+    int rightGutter = 0;
+    SDL_Rect contentClip;
+    int pad = 8;
+    int lineHeight = 0;
+    int y = 0;
+    int availableRows = 0;
+    int row = 0;
+    unsigned int off = 0;
+    uint32_t rowAddr = 0;
+    uint8_t rowData[MEMORY_BYTES_PER_ROW];
+    char editText[64];
+    char asciiText[MEMORY_BYTES_PER_ROW + 1];
+    char line[256];
+    int baseX = 0;
+    int hexStartX = 0;
+    int hexWidth = 0;
+    int asciiStartX = 0;
+    int asciiWidth = 0;
+    int initialCursor = 0;
+    SDL_Rect rect;
+    e9ui_component_t *editor = NULL;
+    memory_inline_edit_mode_t mode = memory_inline_edit_mode_none;
+    int autoResume = 0;
+
+    if (!self || !ctx || !st) {
+        return 0;
+    }
+    font = e9ui->theme.text.source ? e9ui->theme.text.source : ctx->font;
+    if (!font) {
+        return 0;
+    }
+
+    rightGutter = memory_stepButtonsGutterWidth(ctx, self);
+    if (rightGutter < 0) {
+        rightGutter = 0;
+    }
+    if (rightGutter > self->bounds.w) {
+        rightGutter = self->bounds.w;
+    }
+    contentClip = (SDL_Rect){ self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
+    contentClip.w -= rightGutter;
+    if (contentClip.w <= 0) {
+        return 0;
+    }
+
+    lineHeight = TTF_FontHeight(font);
+    if (lineHeight <= 0) {
+        lineHeight = 16;
+    }
+    y = self->bounds.y + pad;
+    if (st->error[0]) {
+        y += lineHeight;
+    }
+    availableRows = (self->bounds.h - pad - (y - self->bounds.y)) / lineHeight;
+    if (availableRows < 1) {
+        availableRows = 1;
+    }
+    if (mx < contentClip.x || mx >= contentClip.x + contentClip.w || my < y) {
+        return 0;
+    }
+
+    row = (my - y) / lineHeight;
+    if (row < 0 || row >= availableRows) {
+        return 0;
+    }
+
+    off = (unsigned int)row * MEMORY_BYTES_PER_ROW;
+    rowAddr = st->base + off;
+    if (!memory_readEditableRange(st, rowAddr, rowData, (int)MEMORY_BYTES_PER_ROW)) {
+        return 0;
+    }
+
+    memory_formatInlineHexBytes(editText, sizeof(editText), rowData, (int)MEMORY_BYTES_PER_ROW);
+    memory_formatInlineAsciiBytes(asciiText, sizeof(asciiText), rowData, (int)MEMORY_BYTES_PER_ROW);
+    memory_formatRowLine(line, sizeof(line), rowAddr, rowData);
+    baseX = self->bounds.x + pad - st->scrollX;
+    hexStartX = baseX + memory_measureSegment(font, line, 0, MEMORY_ROW_HEX_START_COL);
+    hexWidth = memory_measureSegment(font, line, MEMORY_ROW_HEX_START_COL, (int)strlen(editText));
+    asciiStartX = baseX + memory_measureSegment(font, line, 0, MEMORY_ROW_ASCII_START_COL);
+    asciiWidth = memory_measureSegment(font, line, MEMORY_ROW_ASCII_START_COL, (int)strlen(asciiText));
+    if (mx >= hexStartX - e9ui_scale_px(ctx, 4) &&
+        mx < hexStartX + hexWidth + e9ui_scale_px(ctx, 8)) {
+        mode = memory_inline_edit_mode_hex;
+        initialCursor = memory_dataEditCursorForPoint(font,
+                                                      editText,
+                                                      e9ui_data_edit_mode_hex_bytes,
+                                                      hexStartX,
+                                                      mx);
+        rect = (SDL_Rect){
+            hexStartX - e9ui_scale_px(ctx, 4),
+            y + row * lineHeight - e9ui_scale_px(ctx, 2),
+            hexWidth + e9ui_scale_px(ctx, 12),
+            lineHeight + e9ui_scale_px(ctx, 4)
+        };
+    } else if (mx >= asciiStartX - e9ui_scale_px(ctx, 4) &&
+               mx < asciiStartX + asciiWidth + e9ui_scale_px(ctx, 8)) {
+        mode = memory_inline_edit_mode_ascii;
+        initialCursor = memory_dataEditCursorForPoint(font,
+                                                      asciiText,
+                                                      e9ui_data_edit_mode_ascii_fixed,
+                                                      asciiStartX,
+                                                      mx);
+        rect = (SDL_Rect){
+            asciiStartX - e9ui_scale_px(ctx, 4),
+            y + row * lineHeight - e9ui_scale_px(ctx, 2),
+            asciiWidth + e9ui_scale_px(ctx, 12),
+            lineHeight + e9ui_scale_px(ctx, 4)
+        };
+    } else {
+        return 0;
+    }
+
+    editor = memory_inlineEditComponent(st);
+    if (!editor) {
+        return 0;
+    }
+    if (!inline_edit_pauseBegin(&autoResume)) {
+        return 0;
+    }
+    st->inlineEditActive = 1;
+    st->inlineEditAutoResume = autoResume;
+    st->inlineEditAddr = rowAddr;
+    st->inlineEditByteCount = (int)MEMORY_BYTES_PER_ROW;
+    st->inlineEditMode = mode;
+    memcpy(st->inlineEditOriginalBytes, rowData, sizeof(st->inlineEditOriginalBytes));
+    st->inlineEditRect = rect;
+    if (st->inlineEditRect.w < e9ui_scale_px(ctx, 80)) {
+        st->inlineEditRect.w = e9ui_scale_px(ctx, 80);
+    }
+    if (editor->preferredHeight) {
+        int preferredH = editor->preferredHeight(editor, ctx, st->inlineEditRect.w);
+        if (st->inlineEditRect.h < preferredH) {
+            st->inlineEditRect.h = preferredH;
+        }
+    }
+    if (mode == memory_inline_edit_mode_ascii) {
+        e9ui_data_edit_setMode(editor, e9ui_data_edit_mode_ascii_fixed);
+        e9ui_data_edit_setText(editor, asciiText);
+    } else {
+        e9ui_data_edit_setMode(editor, e9ui_data_edit_mode_hex_bytes);
+        e9ui_data_edit_setText(editor, editText);
+    }
+    e9ui_data_edit_setCursor(editor, initialCursor);
+    e9ui_setHidden(editor, 0);
+    if (editor->layout) {
+        editor->layout(editor, ctx, (e9ui_rect_t){
+            st->inlineEditRect.x,
+            st->inlineEditRect.y,
+            st->inlineEditRect.w,
+            st->inlineEditRect.h
+        });
+    } else {
+        editor->bounds = (e9ui_rect_t){
+            st->inlineEditRect.x,
+            st->inlineEditRect.y,
+            st->inlineEditRect.w,
+            st->inlineEditRect.h
+        };
+    }
+    e9ui_setFocus(ctx, editor);
+    return 1;
 }
 
 static void
@@ -1044,9 +2624,15 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
     if (!st) {
         return;
     }
+    e9ui_component_t *inlineEdit = memory_inlineEditComponent(st);
+    if (st->inlineEditActive && ctx && inlineEdit &&
+        e9ui_getFocus(ctx) != inlineEdit &&
+        e9ui_getFocus(ctx) != self) {
+        memory_inlineEditCancel(st, ctx);
+    }
     memory_step_buttons_action_ctx_t actionCtx = { st };
     {
-        int stepEnabled = machine_getRunning(debugger.machine) ? 0 : 1;
+        int stepEnabled = 1;
         e9ui_step_buttons_tick(ctx,
                                self->bounds,
                                0,
@@ -1056,13 +2642,17 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
                                memory_stepButtonsOnAction);
     }
     SDL_Rect r = { self->bounds.x, self->bounds.y, self->bounds.w, self->bounds.h };
+    SDL_BlendMode prevBlend = SDL_BLENDMODE_BLEND;
+    SDL_GetRenderDrawBlendMode(ctx->renderer, &prevBlend);
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_NONE);
     SDL_SetRenderDrawColor(ctx->renderer, 20, 22, 20, 255);
     SDL_RenderFillRect(ctx->renderer, &r);
+    SDL_SetRenderDrawBlendMode(ctx->renderer, prevBlend);
     TTF_Font *font = e9ui->theme.text.source ? e9ui->theme.text.source : ctx->font;
-    if (!font || !st->data) {
+    if (!font) {
         return;
     }
-    int stepEnabled = machine_getRunning(debugger.machine) ? 0 : 1;
+    int stepEnabled = 1;
     int rightGutter = memory_stepButtonsGutterWidth(ctx, self);
     if (rightGutter < 0) {
         rightGutter = 0;
@@ -1107,20 +2697,48 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
     if (lh <= 0) {
         lh = 16;
     }
-    unsigned int addr = st->base;
     int pad = 8;
     int y = r.y + pad;
-    uint8_t allMask[16u * 32u];
-    uint8_t currentMask[16u * 32u];
-    memset(allMask, 0, sizeof(allMask));
-    memset(currentMask, 0, sizeof(currentMask));
+    if (st->error[0]) {
+        y += lh;
+    }
+    int availableRows = (r.h - pad - (y - r.y)) / lh;
+    if (availableRows < 1) {
+        availableRows = 1;
+    }
+    st->rowsPerView = availableRows;
+    unsigned int viewByteCount = (unsigned int)availableRows * MEMORY_BYTES_PER_ROW;
+    int maxPatternLen = 0;
+    memory_search_pattern_t pattern;
+    int havePattern = 0;
     if (st->searchBox) {
-        memory_search_pattern_t pattern;
         const char *searchText = e9ui_textbox_getText(st->searchBox);
-        if (memory_buildSearchPattern(searchText, &pattern)) {
-            memory_markVisibleMatches(st, &pattern, allMask, currentMask);
+        havePattern = memory_buildSearchPattern(searchText, &pattern);
+        if (havePattern) {
+            maxPatternLen = pattern.asciiLen > pattern.hexLen ? pattern.asciiLen : pattern.hexLen;
         }
     }
+    unsigned int extraBytes = maxPatternLen > 1 ? (unsigned int)(maxPatternLen - 1) : 0u;
+    unsigned int viewReadCount = viewByteCount + extraBytes;
+    uint8_t *viewData = NULL;
+    uint8_t *allMask = NULL;
+    uint8_t *currentMask = NULL;
+    if (viewReadCount > 0) {
+        viewData = (uint8_t*)alloc_alloc(viewReadCount);
+    }
+    if (viewByteCount > 0 && havePattern) {
+        allMask = (uint8_t*)alloc_alloc(viewByteCount);
+        currentMask = (uint8_t*)alloc_alloc(viewByteCount);
+    }
+    if (viewData && viewReadCount > 0) {
+        memory_readRange(st, st->base, viewData, viewReadCount);
+    }
+    if (viewByteCount > 0 && allMask && currentMask) {
+        memory_markVisibleMatches(st, &pattern, viewData, viewByteCount, allMask, currentMask);
+    }
+    int columnWidth = memory_fontColumnWidth(font);
+    int haveRenderCache = e9ui_context_supportsTargetTexture(ctx) && memory_ensureRenderCaches(st);
+    y = r.y + pad;
     if (st->error[0]) {
         SDL_Color err = {220, 80, 80, 255};
         int tw = 0, th = 0;
@@ -1135,34 +2753,22 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
         }
         y += lh;
     }
-    char line[256];
-    for (unsigned int off = 0; off < st->size; off += 16) {
-        int n = snprintf(line, sizeof(line), "%08X: ", addr + off);
-        for (unsigned int i=0; i<16; ++i) {
-            if (off + i < st->size) {
-                n += snprintf(line + n, sizeof(line) - n, "%02X ", st->data[off + i]);
-            } else {
-                n += snprintf(line + n, sizeof(line) - n, "   ");
-            }
-        }
-        n += snprintf(line + n, sizeof(line) - n, " ");
-        for (unsigned int i=0; i<16 && off + i < st->size; ++i) {
-            unsigned char c = st->data[off + i];
-            line[n++] = (c >= 32 && c <= 126) ? (char)c : '.';
-        }
-        line[n] = '\0';
+    for (int row = 0; row < availableRows; ++row) {
+        unsigned int off = (unsigned int)row * MEMORY_BYTES_PER_ROW;
+        uint32_t rowAddr = st->base + off;
+        const uint8_t *rowData = viewData ? viewData + off : NULL;
         int baseX = r.x + pad - st->scrollX;
-        for (unsigned int i = 0; i < 16 && off + i < st->size; ++i) {
+        for (unsigned int i = 0; i < MEMORY_BYTES_PER_ROW; ++i) {
             unsigned int idx = off + i;
-            if (!allMask[idx]) {
+            if (!allMask || !currentMask || idx >= viewByteCount || !allMask[idx]) {
                 continue;
             }
-            int hexCol = 10 + (int)i * 3;
-            int asciiCol = 59 + (int)i;
-            int hexX = baseX + memory_measureSegment(font, line, 0, hexCol);
-            int asciiX = baseX + memory_measureSegment(font, line, 0, asciiCol);
-            int hexW = memory_measureSegment(font, line, hexCol, 2);
-            int asciiW = memory_measureSegment(font, line, asciiCol, 1);
+            int hexCol = MEMORY_ROW_HEX_START_COL + (int)i * 3;
+            int asciiCol = MEMORY_ROW_ASCII_START_COL + (int)i;
+            int hexX = baseX + hexCol * columnWidth;
+            int asciiX = baseX + asciiCol * columnWidth;
+            int hexW = columnWidth * 2;
+            int asciiW = columnWidth;
             SDL_Color hl = currentMask[idx] ? (SDL_Color){64, 112, 188, 220}
                                             : (SDL_Color){120, 100, 48, 170};
             SDL_SetRenderDrawColor(ctx->renderer, hl.r, hl.g, hl.b, hl.a);
@@ -1171,20 +2777,83 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
             SDL_RenderFillRect(ctx->renderer, &hexRect);
             SDL_RenderFillRect(ctx->renderer, &asciiRect);
         }
-        SDL_Color col = {200,220,200,255};
-        int tw = 0, th = 0;
-        SDL_Texture *t = e9ui_text_cache_getText(ctx->renderer, font, line, col, &tw, &th);
-        if (t) {
-            SDL_Rect tr = { r.x + pad - st->scrollX, y, tw, th };
-            SDL_RenderCopy(ctx->renderer, t, NULL, &tr);
-            if (tw + pad * 2 > st->contentPixelWidth) {
-                st->contentPixelWidth = tw + pad * 2;
+        int lineW = 0;
+        if (haveRenderCache) {
+            memory_row_address_cache_t *addressCache = memory_getAddressCache(st, rowAddr);
+            memory_row_content_cache_t *contentCache = memory_getContentCache(st, rowData);
+            if (addressCache) {
+                (void)memory_drawCachedAddress(ctx, font, addressCache, baseX, y, columnWidth, lh);
             }
+            if (contentCache) {
+                (void)memory_drawCachedContent(ctx,
+                                               font,
+                                               contentCache,
+                                               baseX + MEMORY_ROW_HEX_START_COL * columnWidth,
+                                               y,
+                                               columnWidth,
+                                               lh);
+            }
+            lineW = (MEMORY_ROW_ASCII_START_COL + (int)MEMORY_BYTES_PER_ROW) * columnWidth;
+        } else {
+            char line[256];
+            memory_formatRowLine(line, sizeof(line), rowAddr, rowData);
+            SDL_Color baseColor = {200, 220, 200, 255};
+            SDL_Color addressColor = {160, 160, 200, 255};
+            int lineLen = (int)strlen(line);
+            for (int col = 0; col < lineLen; ++col) {
+                if (hex_byte_color_isEnabled() &&
+                    col >= MEMORY_ROW_HEX_START_COL &&
+                    col < MEMORY_ROW_HEX_START_COL + (int)MEMORY_BYTES_PER_ROW * 3) {
+                    int rel = col - MEMORY_ROW_HEX_START_COL;
+                    if ((rel % 3) < 2) {
+                        continue;
+                    }
+                }
+                memory_drawColumnChar(ctx,
+                                      font,
+                                      line[col],
+                                      col < 8 ? addressColor : baseColor,
+                                      baseX + col * columnWidth,
+                                      y);
+            }
+            if (hex_byte_color_isEnabled() && rowData) {
+                static const char hexChars[] = "0123456789ABCDEF";
+                for (unsigned int i = 0; i < MEMORY_BYTES_PER_ROW; ++i) {
+                    int hexCol = MEMORY_ROW_HEX_START_COL + (int)i * 3;
+                    uint8_t byte = rowData[i];
+                    SDL_Color color = hex_byte_color_get(byte);
+                    memory_drawColumnChar(ctx,
+                                          font,
+                                          hexChars[(byte >> 4) & 0x0fu],
+                                          color,
+                                          baseX + hexCol * columnWidth,
+                                          y);
+                    memory_drawColumnChar(ctx,
+                                          font,
+                                          hexChars[byte & 0x0fu],
+                                          color,
+                                          baseX + (hexCol + 1) * columnWidth,
+                                          y);
+                }
+            }
+            lineW = (int)strlen(line) * columnWidth;
+        }
+        if (lineW + pad * 2 > st->contentPixelWidth) {
+            st->contentPixelWidth = lineW + pad * 2;
         }
         y += lh;
         if (y > r.y + r.h - pad) {
             break;
         }
+    }
+    if (viewData) {
+        alloc_free(viewData);
+    }
+    if (allMask) {
+        alloc_free(allMask);
+    }
+    if (currentMask) {
+        alloc_free(currentMask);
     }
     if (hadClip) {
         SDL_RenderSetClipRect(ctx->renderer, &prevClip);
@@ -1209,19 +2878,55 @@ memory_render(e9ui_component_t *self, e9ui_context_t *ctx)
                              0,
                              stepEnabled,
                              &st->stepButtons);
+    if (inlineEdit && !st->inlineEditActive) {
+        e9ui_setHidden(inlineEdit, 1);
+    }
+    if (inlineEdit && st->inlineEditActive) {
+        e9ui_setHidden(inlineEdit, 0);
+        if (inlineEdit->layout) {
+            inlineEdit->layout(inlineEdit, ctx, (e9ui_rect_t){
+                st->inlineEditRect.x,
+                st->inlineEditRect.y,
+                st->inlineEditRect.w,
+                st->inlineEditRect.h
+            });
+        } else {
+            inlineEdit->bounds = (e9ui_rect_t){
+                st->inlineEditRect.x,
+                st->inlineEditRect.y,
+                st->inlineEditRect.w,
+                st->inlineEditRect.h
+            };
+        }
+        inlineEdit->render(inlineEdit, ctx);
+    }
 }
 
 static void
 memory_dtor(e9ui_component_t *self, e9ui_context_t *ctx)
 {
-  (void)ctx;
-  if (!self) {
-    return;
-  }
-  memory_view_state_t *st = (memory_view_state_t*)self->state;
-  if (st) {
-    alloc_free(st->data);
-  }
+    (void)ctx;
+    if (!self || !self->state) {
+        return;
+    }
+    memory_view_state_t *st = (memory_view_state_t*)self->state;
+    if (st->addressCache) {
+        for (int i = 0; i < st->addressCacheCount; ++i) {
+            memory_addressCacheDestroyTexture(&st->addressCache[i]);
+        }
+        alloc_free(st->addressCache);
+        st->addressCache = NULL;
+    }
+    st->addressCacheCount = 0;
+    if (st->contentCache) {
+        for (int i = 0; i < st->contentCacheCount; ++i) {
+            memory_contentCacheDestroyTexture(&st->contentCache[i]);
+        }
+        alloc_free(st->contentCache);
+        st->contentCache = NULL;
+    }
+    st->contentCacheCount = 0;
+    st->cacheTick = 0;
 }
 
 e9ui_component_t *
@@ -1241,53 +2946,83 @@ memory_makeComponent(void)
     }
     c->name = "memory_view";
     c->state = st;
-    c->preferredHeight = memory_preferredHeight;
     c->layout = memory_layout;
     c->render = memory_render;
     c->handleEvent = memory_handleEvent;
     c->dtor = memory_dtor;
     c->focusable = 1;
+    st->ownerView = c;
+    memory_activeState = st;
+
+    target_memory_space_t spaces[MEMORY_MAX_SPACES];
+    e9ui_select_option_t options[MEMORY_MAX_SPACES];
+    size_t spaceCount = 0;
+    size_t spaceCap = sizeof(spaces) / sizeof(spaces[0]);
+    memset(spaces, 0, sizeof(spaces));
+    memset(options, 0, sizeof(options));
+    if (!memory_getSpaces(spaces, spaceCap, &spaceCount) || spaceCount == 0) {
+        spaces[0] = (target_memory_space_t){
+            .value = "main",
+            .label = "Main",
+            .minAddr = 0x00000000u,
+            .maxAddr = 0x00ffffffu,
+            .addressDigits = 6,
+            .processorMemory = 0,
+            .processorId = 0
+        };
+        spaceCount = 1;
+    }
+    if (spaceCount > spaceCap) {
+        spaceCount = spaceCap;
+    }
+    for (size_t i = 0; i < spaceCount; ++i) {
+        options[i].value = spaces[i].value ? spaces[i].value : "main";
+        options[i].label = spaces[i].label ? spaces[i].label : options[i].value;
+    }
+    if (spaces[0].value) {
+        memory_copySpaceValue(st, spaces[0].value);
+    }
     
     uint32_t minAddr = 0;
     uint32_t maxAddr = 0x00ffffffu;
-    if (memory_getAddressLimits(&minAddr, &maxAddr)) {
+    if (memory_getSelectedAddressLimits(st, &minAddr, &maxAddr)) {
         st->base = minAddr;
     } else {
         st->base = 0;
     }
     st->base = memory_clampBaseForView(st, st->base);
-    st->size = 16u * 32u;
-    st->data = (unsigned char*)alloc_alloc(st->size);
-    memory_clearData(st);
+    st->rowsPerView = MEMORY_DEFAULT_VIEW_ROWS;
     memory_setError(st, NULL);
 
-    st->addressBox = e9ui_textbox_make(32, memory_onAddressSubmit, NULL, st);
-    st->searchBox = e9ui_textbox_make(128, memory_onSearchSubmit, memory_onSearchChange, st);
-    if (!st->addressBox || !st->searchBox) {
-        if (st->addressBox) {
-            e9ui_childDestroy(st->addressBox, NULL);
-            st->addressBox = NULL;
-        }
-        if (st->searchBox) {
-            e9ui_childDestroy(st->searchBox, NULL);
-            st->searchBox = NULL;
-        }
-        e9ui_childDestroy(row, NULL);
-        alloc_free(st->data);
-        alloc_free(st);
-        alloc_free(c);
-        return NULL;
+    if (spaceCount > 1) {
+        st->spaceSelect = e9ui_labeled_select_make(NULL,
+                                                   0,
+                                                   88,
+                                                   options,
+                                                   (int)spaceCount,
+                                                   st->spaceValue,
+                                                   memory_onSpaceChanged,
+                                                   st);
     }
-    e9ui_setDisableVariable(st->addressBox, machine_getRunningState(debugger.machine), 1);
-    e9ui_setDisableVariable(st->searchBox, machine_getRunningState(debugger.machine), 1);
+    st->addressBox = e9ui_textbox_make(32, memory_onAddressSubmit, memory_onAddressChange, st);
+    st->searchBox = e9ui_textbox_make(128, memory_onSearchSubmit, memory_onSearchChange, st);
+    e9ui_component_t *inlineEdit = e9ui_data_edit_make((int)MEMORY_BYTES_PER_ROW, memory_inlineEditSubmitted, st);
     e9ui_textbox_setFocusBorderVisible(st->addressBox, 0);
     e9ui_textbox_setFocusBorderVisible(st->searchBox, 0);
     e9ui_textbox_setKeyHandler(st->searchBox, memory_onSearchKey, st);
+    e9ui_data_edit_setKeyHandler(inlineEdit, memory_inlineEditKey, st);
+    st->inlineEditMeta = alloc_strdup("inline_edit");
+
+    e9ui_child_add(c, inlineEdit, st->inlineEditMeta);
+    e9ui_setHidden(inlineEdit, 1);
 
     e9ui_textbox_setPlaceholder(st->addressBox, "Base address (hex)");
     e9ui_textbox_setPlaceholder(st->searchBox, "Search (hex/ascii)");
     memory_syncTextboxFromBase(st);
 
+    if (st->spaceSelect) {
+        e9ui_hstack_addFixed(row, st->spaceSelect, 88);
+    }
     e9ui_hstack_addFlex(row, st->addressBox);
     e9ui_hstack_addFlex(row, st->searchBox);
 
@@ -1295,23 +3030,5 @@ memory_makeComponent(void)
 
     e9ui_stack_addFlex(stack, c);
 
-    g_memory_view_state = st;
-
     return stack;
-}
-
-void
-memory_refreshOnBreak(void)
-{
-    if (!g_memory_view_state) {
-        return;
-    }
-    unsigned int addr = 0;
-    if (!memory_parseAddress(g_memory_view_state, &addr)) {
-        return;
-    }
-    g_memory_view_state->base = memory_clampBaseForView(g_memory_view_state, addr);
-    memory_syncTextboxFromBase(g_memory_view_state);
-    memory_fillFromram(g_memory_view_state, g_memory_view_state->base);
-    memory_runSearch(g_memory_view_state, 1, 0);
 }

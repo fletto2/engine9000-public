@@ -28,8 +28,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef GEO_LSPC_H
-#define GEO_LSPC_H
+#pragma once
+
+#include "e9k-geo.h"
 
 // HBlank, Back Porch, Active, Front Porch: 28 + 28 + 320 + 8
 #define LSPC_PIXELS     384
@@ -41,6 +42,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define LSPC_LINE_BUFSTART      6
 #define LSPC_LINE_BORDER_TOP    8
 #define LSPC_LINE_BORDER_BOTTOM 248
+#define LSPC_LINE_VBLANK_RELOAD 248
 
 #define LSPC_WIDTH          320 // Active drawing
 #define LSPC_WIDTH_VISIBLE  304 // 8 pixel horizontal overscan on left/right
@@ -51,6 +53,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define LSPC_FIXTILES_V     32
 #define LSPC_FIX_BOARD      0
 #define LSPC_FIX_CART       1
+#define LSPC_FIX_CD         2
 
 #define FIX_BANKSW_NONE 0
 #define FIX_BANKSW_LINE 1
@@ -92,6 +95,14 @@ void geo_lspc_set_fix(unsigned);
 void geo_lspc_set_sprlimit(unsigned);
 unsigned geo_lspc_get_sprlimit(void);
 void geo_lspc_set_palette(unsigned);
+void geo_lspc_set_skip_render(unsigned);
+void geo_lspc_disblspr_wr(unsigned);
+void geo_lspc_disblfix_wr(unsigned);
+void geo_lspc_envideo_wr(unsigned);
+void geo_lspc_setSpriteGrayscaleSelection(const e9k_debug_sprite_grayscale_selection_t*);
+void geo_lspc_setPaletteGrayscaleMask(const e9k_debug_palette_grayscale_mask_t*);
+size_t geo_lspc_getPaletteGrayscaleMask(e9k_debug_palette_grayscale_mask_t*, size_t);
+void geo_lspc_setFixLayerMode(e9k_debug_geo_fix_layer_mode_t);
 
 void geo_lspc_postload(void);
 
@@ -111,6 +122,10 @@ void geo_lspc_vrammod_wr(int16_t);
 
 uint16_t geo_lspc_mode_rd(void);
 void geo_lspc_mode_wr(uint16_t);
+unsigned
+geo_lspc_getAutoAnimationCounter(void);
+unsigned
+geo_lspc_getAutoAnimationDisabled(void);
 
 void geo_lspc_init(void);
 
@@ -123,5 +138,8 @@ void geo_lspc_state_save(uint8_t*);
 
 const void* geo_lspc_vram_ptr(void);
 const void* geo_lspc_palram_ptr(void);
-
-#endif
+const uint32_t* geo_lspc_palette_ptr(void);
+const void* geo_lspc_fixdata_ptr(void);
+size_t geo_lspc_fixdata_size(void);
+unsigned geo_lspc_active_palette_bank(void);
+unsigned geo_lspc_getScanline(void);

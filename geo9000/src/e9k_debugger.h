@@ -70,7 +70,7 @@ e9k_debugger_writeMemory(uint32_t addr, uint32_t value, size_t size);
 
 // Watchpoint table and watchbreak reporting.
 void     e9k_debugger_reset_watchpoints(void);
-int      e9k_debugger_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand, uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand);
+int      e9k_debugger_add_watchpoint(uint32_t addr, uint32_t op_mask, uint32_t diff_operand, uint32_t value_operand, uint32_t old_value_operand, uint32_t size_operand, uint32_t addr_mask_operand, uint32_t access_source_operand);
 void     e9k_debugger_remove_watchpoint(uint32_t index);
 size_t   e9k_debugger_read_watchpoints(e9k_debug_watchpoint_t *out, size_t cap);
 uint64_t e9k_debugger_get_watchpoint_enabled_mask(void);
@@ -82,5 +82,19 @@ void e9k_debugger_watchpoint_read(uint32_t addr, uint32_t value, uint32_t size_b
 void e9k_debugger_watchpoint_write(uint32_t addr, uint32_t value, uint32_t old_value, uint32_t size_bits, int old_value_valid);
 void e9k_debugger_watchpoint_suspend(void);
 void e9k_debugger_watchpoint_resume(void);
+
+#ifdef E9K_HACK_REGISTER_LOG
+int
+e9k_debugger_isRegisterLogEnabled(void);
+
+void
+e9k_debugger_setRegisterLogFrameCallback(e9k_debug_geo_register_log_frame_callback_t cb, void *user);
+
+void
+e9k_debugger_writeRegisterLog(uint16_t line, uint32_t reg, uint16_t value, uint8_t sourceKind, uint32_t sourceAddr);
+
+void
+e9k_debugger_commitRegisterLogFrame(void);
+#endif
 
 #endif // E9K_DEBUGGER_H

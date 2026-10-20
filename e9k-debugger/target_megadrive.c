@@ -1,19 +1,51 @@
+/*
+ * COPYRIGHT © 2026 Enable Software Pty Ltd - All Rights Reserved
+ *
+ * https://github.com/alpine9000/engine9000-public
+ *
+ * See COPYING for license details
+ */
+
 #include "debugger.h"
 #include "target.h"
 #include "emu_mega.h"
 #include "rom_config.h"
 #include "debugger_input_bindings.h"
 #include "megadrive_core_options.h"
-#include "debugger_platform.h"
 #include "core_options.h"
 #include "libretro_host.h"
+#include "mega_audio_vis.h"
 #include "system_badge.h"
 #include "alloc.h"
 #include "file.h"
 #include "strutil.h"
 
+#define TARGET_MEGADRIVE_Z80_PROCESSOR_ID 1u
+
+static char target_megadrive_activeRomMemorySpace[16];
+static char target_megadrive_activeRomMemoryAddress[32];
+static char target_megadrive_activeRomMemorySearch[128];
+
 static const char *
 target_megadrive_defaultCorePath(void);
+
+static const char *
+target_megadrive_memorySpaceOptionKey(void)
+{
+    return "e9k_debugger_megadrive_memory_space";
+}
+
+static const char *
+target_megadrive_memoryAddressOptionKey(void)
+{
+    return "e9k_debugger_megadrive_memory_address";
+}
+
+static const char *
+target_megadrive_memorySearchOptionKey(void)
+{
+    return "e9k_debugger_megadrive_memory_search";
+}
 
 static void
 target_megadrive_setConfigDefaults(e9k_system_config_t *config)
@@ -50,7 +82,7 @@ target_megadrive_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t
     out->footerWarning = NULL;
 
     const char *romExts[] = { "*.bin", "*.gen", "*.md", "*.smd", "*.sms", "*.zip" };
-    const char *elfExts[] = { "*.elf" };
+    const char *elfExts[] = { "*.elf", "*.txt" };
 
     settings_romselect_state_t *romState = (settings_romselect_state_t *)alloc_calloc(1, sizeof(*romState));
     if (romState) {
@@ -58,7 +90,7 @@ target_megadrive_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t
     }
 
     e9ui_component_t *fsRom = e9ui_fileSelect_make("ROM", 120, 600, "...", romExts, (int)countof(romExts), E9UI_FILESELECT_FILE);
-    e9ui_component_t *fsElf = e9ui_fileSelect_make("ELF", 120, 600, "...", elfExts, 1, E9UI_FILESELECT_FILE);
+    e9ui_component_t *fsElf = e9ui_fileSelect_make("ELF", 120, 600, "...", elfExts, (int)countof(elfExts), E9UI_FILESELECT_FILE);
     e9ui_component_t *fsBios = e9ui_fileSelect_make("BIOS FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsSaves = e9ui_fileSelect_make("SAVES FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsSource = e9ui_fileSelect_make("SOURCE FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
@@ -492,13 +524,28 @@ target_megadrive_getLibretroCliConfig(void)
 }
 
 static void
+target_megadrive_onCoreStarted(void)
+{
+}
+
+static void
 target_megadrive_onVblank(void)
 {
     e9k_debug_mega_sprite_state_t spriteState;
-    if (libretro_host_debugMegaGetSpriteState(&spriteState)) {
+    if (libretro_host_megadrive_getSpriteState(&spriteState)) {
         emu_mega_setSpriteState(&spriteState, 1);
     } else {
         emu_mega_setSpriteState(NULL, 0);
+    }
+    if (mega_audio_vis_isOpen()) {
+        e9k_debug_mega_audio_frame_t audioFrame;
+        if (libretro_host_megadrive_getAudioFrame(&audioFrame)) {
+            emu_mega_setAudioFrame(&audioFrame, 1);
+        } else {
+            emu_mega_setAudioFrame(NULL, 0);
+        }
+    } else {
+        emu_mega_setAudioFrame(NULL, 0);
     }
 }
 
@@ -536,8 +583,9 @@ static void
 target_megadrive_validateAPI(void)
 {
     emu_mega_setSpriteState(NULL, 0);
-    libretro_host_bindMegaDebugApis();
-    libretro_host_unbindNeogeoDebugApis();
+    emu_mega_setAudioFrame(NULL, 0);
+    libretro_host_megadrive_bindApis();
+    libretro_host_neogeo_unbindApis();
 }
 
 static int
@@ -596,6 +644,38 @@ target_megadrive_memoryGetLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
 }
 
 static int
+target_megadrive_memoryGetSpaces(target_memory_space_t *outSpaces, size_t cap, size_t *outCount)
+{
+    if (outCount) {
+        *outCount = 2;
+    }
+    if (!outSpaces || cap == 0) {
+        return 1;
+    }
+    outSpaces[0] = (target_memory_space_t){
+        .value = "68k",
+        .label = "68K",
+        .minAddr = 0x00000000u,
+        .maxAddr = 0x00ffffffu,
+        .addressDigits = 6,
+        .processorMemory = 0,
+        .processorId = 0
+    };
+    if (cap > 1) {
+        outSpaces[1] = (target_memory_space_t){
+            .value = "z80",
+            .label = "Z80",
+            .minAddr = 0x0000u,
+            .maxAddr = 0xffffu,
+            .addressDigits = 4,
+            .processorMemory = 1,
+            .processorId = TARGET_MEGADRIVE_Z80_PROCESSOR_ID
+        };
+    }
+    return 1;
+}
+
+static int
 target_megadrive_memoryTrackGetRanges(target_memory_range_t *outRanges, size_t cap, size_t *outCount)
 {
     if (outCount) {
@@ -606,6 +686,32 @@ target_megadrive_memoryTrackGetRanges(target_memory_range_t *outRanges, size_t c
     }
     outRanges[0].baseAddr = 0x00ff0000u;
     outRanges[0].size = 0x00010000u;
+    return 1;
+}
+
+static int
+target_megadrive_registersReadExtra(const char **outTitle, e9k_debug_processor_reg_t *outRegs, size_t cap, size_t *outCount)
+{
+    size_t count = 0;
+
+    if (outTitle) {
+        *outTitle = "Z80";
+    }
+    if (outCount) {
+        *outCount = 0;
+    }
+    if (!outRegs || cap == 0) {
+        return 1;
+    }
+    if (!libretro_host_debugReadProcessorRegs(TARGET_MEGADRIVE_Z80_PROCESSOR_ID, outRegs, cap, &count)) {
+        if (outTitle) {
+            *outTitle = NULL;
+        }
+        return 0;
+    }
+    if (outCount) {
+        *outCount = count;
+    }
     return 1;
 }
 
@@ -630,6 +736,84 @@ target_megadrive_controllerMapButton(SDL_GameControllerButton button, unsigned *
     }
 
     return 0;
+}
+
+static size_t
+target_megadrive_romConfigCustomOptionCount(void)
+{
+    return 3;
+}
+
+static const char *
+target_megadrive_romConfigCustomOptionKeyAt(size_t index)
+{
+    if (index == 0) {
+        return target_megadrive_memorySpaceOptionKey();
+    }
+    if (index == 1) {
+        return target_megadrive_memoryAddressOptionKey();
+    }
+    if (index == 2) {
+        return target_megadrive_memorySearchOptionKey();
+    }
+    return NULL;
+}
+
+static const char *
+target_megadrive_romConfigGetActiveCustomOptionValue(const char *key)
+{
+    if (!key) {
+        return NULL;
+    }
+    if (strcmp(key, target_megadrive_memorySpaceOptionKey()) == 0) {
+        return target_megadrive_activeRomMemorySpace[0] ? target_megadrive_activeRomMemorySpace : NULL;
+    }
+    if (strcmp(key, target_megadrive_memoryAddressOptionKey()) == 0) {
+        return target_megadrive_activeRomMemoryAddress[0] ? target_megadrive_activeRomMemoryAddress : NULL;
+    }
+    if (strcmp(key, target_megadrive_memorySearchOptionKey()) == 0) {
+        return target_megadrive_activeRomMemorySearch[0] ? target_megadrive_activeRomMemorySearch : NULL;
+    }
+    return NULL;
+}
+
+static void
+target_megadrive_romConfigSetActiveCustomOptionValue(const char *key, const char *value)
+{
+    if (!key) {
+        return;
+    }
+    if (strcmp(key, target_megadrive_memorySpaceOptionKey()) == 0) {
+        strutil_strlcpy(target_megadrive_activeRomMemorySpace, sizeof(target_megadrive_activeRomMemorySpace), value ? value : "");
+        return;
+    }
+    if (strcmp(key, target_megadrive_memoryAddressOptionKey()) == 0) {
+        strutil_strlcpy(target_megadrive_activeRomMemoryAddress, sizeof(target_megadrive_activeRomMemoryAddress), value ? value : "");
+        return;
+    }
+    if (strcmp(key, target_megadrive_memorySearchOptionKey()) == 0) {
+        strutil_strlcpy(target_megadrive_activeRomMemorySearch, sizeof(target_megadrive_activeRomMemorySearch), value ? value : "");
+    }
+}
+
+static void
+target_megadrive_romConfigClearActiveCustomOptions(void)
+{
+    target_megadrive_activeRomMemorySpace[0] = '\0';
+    target_megadrive_activeRomMemoryAddress[0] = '\0';
+    target_megadrive_activeRomMemorySearch[0] = '\0';
+}
+
+static int
+target_megadrive_memoryPanelOptions(target_memory_panel_options_t *outOptions)
+{
+    if (!outOptions) {
+        return 0;
+    }
+    outOptions->spaceKey = target_megadrive_memorySpaceOptionKey();
+    outOptions->addressKey = target_megadrive_memoryAddressOptionKey();
+    outOptions->searchKey = target_megadrive_memorySearchOptionKey();
+    return 1;
 }
 
 static target_iface_t _target_megadrive = {
@@ -658,6 +842,7 @@ static target_iface_t _target_megadrive = {
     .coreOptionsSaveClicked = target_megadrive_coreOptionsSaveClicked,
     .coreOptionGetValue = target_megadrive_coreOptionGetValue,
     .getLibretroCliConfig = target_megadrive_getLibretroCliConfig,
+    .onCoreStarted = target_megadrive_onCoreStarted,
     .onVblank = target_megadrive_onVblank,
     .coreIndex = TARGET_MEGADRIVE,
     .libretroSelectConfig = target_megadrive_libretroSelectConfig,
@@ -668,10 +853,18 @@ static target_iface_t _target_megadrive = {
     .audioEnable = target_megadrive_audioEnable,
     .mousePort = -1,
     .memoryGetLimits = target_megadrive_memoryGetLimits,
+    .memoryGetSpaces = target_megadrive_memoryGetSpaces,
     .memoryTrackGetRanges = target_megadrive_memoryTrackGetRanges,
+    .memoryPanelOptions = target_megadrive_memoryPanelOptions,
+    .registersReadExtra = target_megadrive_registersReadExtra,
     .getBadgeTexture = target_megadrive_getBadgeTexture,
     .configControllerPorts = target_megadrive_configControllerPorts,
     .controllerMapButton = target_megadrive_controllerMapButton,
+    .romConfigCustomOptionCount = target_megadrive_romConfigCustomOptionCount,
+    .romConfigCustomOptionKeyAt = target_megadrive_romConfigCustomOptionKeyAt,
+    .romConfigGetActiveCustomOptionValue = target_megadrive_romConfigGetActiveCustomOptionValue,
+    .romConfigSetActiveCustomOptionValue = target_megadrive_romConfigSetActiveCustomOptionValue,
+    .romConfigClearActiveCustomOptions = target_megadrive_romConfigClearActiveCustomOptions,
 };
 
 target_iface_t *

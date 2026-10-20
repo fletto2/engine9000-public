@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2022-2024 Rupert Carmichael
+Copyright (c) 2022-2026 Rupert Carmichael
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -31,6 +31,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifndef GEO_YMFM_H
 #define GEO_YMFM_H
 
+#ifdef E9K_HACK_AUDIO_VIS
+#include "e9k-geo.h"
+#endif
+
 int16_t* geo_ymfm_get_buffer(void);
 void geo_ymfm_init(void);
 void geo_ymfm_reset(void);
@@ -38,7 +42,13 @@ size_t geo_ymfm_exec(void);
 
 void geo_ymfm_adpcm_wrap(int);
 
-void geo_ymfm_state_load(uint8_t*);
+#ifdef E9K_HACK_AUDIO_VIS
+void geo_ymfm_setAudioVisEnabled(int enabled);
+void geo_ymfm_setAudioMuteMask(uint32_t mask);
+size_t geo_ymfm_readAudioFrame(e9k_debug_audio_frame_t *out, size_t cap);
+#endif
+
+void geo_ymfm_state_load(uint8_t*, unsigned);
 void geo_ymfm_state_save(uint8_t*);
 
 #endif

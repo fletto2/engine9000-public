@@ -7,6 +7,7 @@
  */
 
 #include "e9ui.h"
+
 #include <string.h>
 
 static int
@@ -19,7 +20,7 @@ e9ui_event_pointInBounds(const e9ui_component_t *comp, int x, int y)
            y >= comp->bounds.y && y < comp->bounds.y + comp->bounds.h;
 }
 
-static int
+int
 e9ui_event_componentContainsBlockingWindow(e9ui_component_t *comp)
 {
     if (!comp || e9ui_getHidden(comp)) {
@@ -43,6 +44,51 @@ e9ui_event_componentContainsBlockingWindow(e9ui_component_t *comp)
         if (e9ui_event_componentContainsBlockingWindow(it->child)) {
             return 1;
         }
+    }
+    return 0;
+}
+
+static int
+e9ui_event_componentTreeHasMousePress(e9ui_component_t *comp)
+{
+    if (!comp || e9ui_getHidden(comp)) {
+        return 0;
+    }
+    if (comp->mousePressed) {
+        return 1;
+    }
+
+    e9ui_child_iterator iter;
+    if (!e9ui_child_iterateChildren(comp, &iter)) {
+        return 0;
+    }
+    for (e9ui_child_iterator *it = e9ui_child_interateNext(&iter);
+         it;
+         it = e9ui_child_interateNext(&iter)) {
+        if (!it->child) {
+            continue;
+        }
+        if (e9ui_event_componentTreeHasMousePress(it->child)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+e9ui_event_pointerIsInsideComponent(const e9ui_component_t *comp, const e9ui_event_t *ev)
+{
+    if (!comp || !ev) {
+        return 0;
+    }
+    switch (ev->type) {
+    case SDL_MOUSEMOTION:
+        return e9ui_event_pointInBounds(comp, ev->motion.x, ev->motion.y);
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+        return e9ui_event_pointInBounds(comp, ev->button.x, ev->button.y);
+    default:
+        break;
     }
     return 0;
 }
@@ -181,6 +227,11 @@ e9ui_event_processChildren(e9ui_component_t *comp, e9ui_context_t *ctx, const e9
     if (comp->collapsed) {
         return 0;
     }
+    if (ev &&
+        ev->type == SDL_MOUSEBUTTONDOWN &&
+        !e9ui_event_pointerIsInsideComponent(comp, ev)) {
+        return 0;
+    }
     int allow_multiple = 0;
     if (ev && (ev->type == SDL_MOUSEMOTION || ev->type == SDL_MOUSEBUTTONUP)) {
         allow_multiple = 1;
@@ -204,6 +255,15 @@ e9ui_event_processChildren(e9ui_component_t *comp, e9ui_context_t *ctx, const e9
          it;
          it = e9ui_child_iteratePrev(&iter)) {
         if (!it->child) {
+            continue;
+        }
+        if ((ev->type == SDL_MOUSEMOTION ||
+             ev->type == SDL_MOUSEBUTTONDOWN ||
+             ev->type == SDL_MOUSEBUTTONUP) &&
+            it->child->name &&
+            strcmp(it->child->name, "e9ui_scroll") == 0 &&
+            !e9ui_event_pointerIsInsideComponent(it->child, ev) &&
+            !e9ui_event_componentTreeHasMousePress(it->child)) {
             continue;
         }
         if (e9ui_event_process(it->child, ctx, ev)) {

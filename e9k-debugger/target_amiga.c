@@ -1,3 +1,11 @@
+/*
+ * COPYRIGHT © 2026 Enable Software Pty Ltd - All Rights Reserved
+ *
+ * https://github.com/alpine9000/engine9000-public
+ *
+ * See COPYING for license details
+ */
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,13 +18,51 @@
 #include "debugger_input_bindings.h"
 #include "amiga_uae_options.h"
 #include "neogeo_core_options.h"
-#include "debugger_platform.h"
 #include "core_options.h"
 #include "libretro_host.h"
+#include "profile.h"
+#include "smoke_test.h"
 #include "system_badge.h"
+#include "ui_test.h"
 #include "alloc.h"
 #include "file.h"
 #include "strutil.h"
+
+#ifndef RETRO_DEVICE_PUAE_JOYPAD
+#define RETRO_DEVICE_PUAE_JOYPAD RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 0)
+#endif
+
+#ifndef RETRO_DEVICE_PUAE_CD32PAD
+#define RETRO_DEVICE_PUAE_CD32PAD RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_ANALOG, 1)
+#endif
+
+typedef struct target_amiga_romselect_extra {
+    e9ui_component_t *df0Select;
+    e9ui_component_t *df1Select;
+    e9ui_component_t *dh0FolderSelect;
+    e9ui_component_t *dh0HdfSelect;
+    e9ui_component_t *dh1FolderSelect;
+    e9ui_component_t *dh1HdfSelect;
+    struct target_amiga_toolchain_preset_state *toolchainPresetState;
+    int updatingMedia;
+} target_amiga_romselect_extra_t;
+
+typedef struct target_amiga_toolchain_preset_state {
+    e9ui_component_t *toolchainTextbox;
+    e9ui_component_t *vasmCheckbox;
+    e9ui_component_t *gccCheckbox;
+    int updating;
+} target_amiga_toolchain_preset_state_t;
+
+#if defined(_WIN32)
+static const char target_amiga_toolchainPrefixVasm[] = ".\\system\\v-hunk-";
+#else
+static const char target_amiga_toolchainPrefixVasm[] = "./system/v-hunk-";
+#endif
+static const char target_amiga_toolchainPrefixGcc[] = "m68k-amigaos-";
+
+static void
+target_amiga_toolchainPresetSync(target_amiga_toolchain_preset_state_t *st, e9ui_context_t *ctx, const char *prefix);
 
 static const char *
 target_amiga_defaultCorePath(void);
@@ -30,7 +76,39 @@ target_amiga_mouseCaptureOptionKey(void)
     return "e9k_debugger_amiga_mouse_capture";
 }
 
+static const char *
+target_amiga_memorySpaceOptionKey(void)
+{
+    return "e9k_debugger_amiga_memory_space";
+}
+
+static const char *
+target_amiga_memoryAddressOptionKey(void)
+{
+    return "e9k_debugger_amiga_memory_address";
+}
+
+static const char *
+target_amiga_memorySearchOptionKey(void)
+{
+    return "e9k_debugger_amiga_memory_search";
+}
+
+static const char *
+target_amiga_portDeviceOptionKeyAt(size_t index)
+{
+    static const char *keys[2] = {
+        "e9k_debugger_amiga_port1_device",
+        "e9k_debugger_amiga_port2_device"
+    };
+    if (index >= 2) {
+        return NULL;
+    }
+    return keys[index];
+}
+
 #define TARGET_AMIGA_FLOPPY_RECENTS_MAX 8
+#define TARGET_AMIGA_ROM_CONFIG_FIXED_OPTION_COUNT 6
 static const char target_amiga_floppyRecentClearLabel[] = "<CLEAR RECENTS>";
 static const char target_amiga_floppyRecentClearValue[] = "__e9k_amiga_clear_floppy_recents__";
 
@@ -89,6 +167,10 @@ target_amiga_normalizeMouseCaptureOverrideValue(const char *value)
 
 static char target_amiga_activeRomMouseCaptureOverride[16];
 static int target_amiga_hasActiveRomMouseCaptureOverride = 0;
+static char target_amiga_activeRomPortDevice[2][16];
+static char target_amiga_activeRomMemorySpace[16];
+static char target_amiga_activeRomMemoryAddress[32];
+static char target_amiga_activeRomMemorySearch[128];
 static char target_amiga_activeRomFloppyRecents[2][TARGET_AMIGA_FLOPPY_RECENTS_MAX][PATH_MAX];
 static int target_amiga_settingsMediaInitiallyEmpty = 0;
 static int target_amiga_settingsMediaNeedsRestart = 0;
@@ -100,34 +182,34 @@ target_amiga_pathHasValue(const char *path)
 }
 
 static int
-target_amiga_anyMediaConfigured(const char *df0, const char *df1, const char *dh0Folder, const char *dh0Hdf)
+target_amiga_anyMediaConfigured(void)
 {
+    const char *df0 = amiga_uaeGetFloppyPath(0);
+    const char *df1 = amiga_uaeGetFloppyPath(1);
+    const char *dh0Folder = amiga_uaeGetHardDriveFolderPathForUnit(0);
+    const char *dh0Hdf = amiga_uaeGetHardDriveHdfPathForUnit(0);
+    const char *dh1Folder = amiga_uaeGetHardDriveFolderPathForUnit(1);
+    const char *dh1Hdf = amiga_uaeGetHardDriveHdfPathForUnit(1);
     return target_amiga_pathHasValue(df0) ||
         target_amiga_pathHasValue(df1) ||
         target_amiga_pathHasValue(dh0Folder) ||
-        target_amiga_pathHasValue(dh0Hdf);
+        target_amiga_pathHasValue(dh0Hdf) ||
+        target_amiga_pathHasValue(dh1Folder) ||
+        target_amiga_pathHasValue(dh1Hdf);
 }
 
 static void
 target_amiga_captureSettingsMediaBaseline(void)
 {
-    const char *df0 = amiga_uaeGetFloppyPath(0);
-    const char *df1 = amiga_uaeGetFloppyPath(1);
-    const char *dh0Folder = amiga_uaeGetHardDriveFolderPath();
-    const char *dh0Hdf = amiga_uaeGetHardDriveHdfPath();
-    target_amiga_settingsMediaInitiallyEmpty = target_amiga_anyMediaConfigured(df0, df1, dh0Folder, dh0Hdf) ? 0 : 1;
+    target_amiga_settingsMediaInitiallyEmpty = target_amiga_anyMediaConfigured() ? 0 : 1;
     target_amiga_settingsMediaNeedsRestart = 0;
 }
 
 static void
 target_amiga_updateSettingsMediaRestartRequirement(void)
 {
-    const char *df0 = amiga_uaeGetFloppyPath(0);
-    const char *df1 = amiga_uaeGetFloppyPath(1);
-    const char *dh0Folder = amiga_uaeGetHardDriveFolderPath();
-    const char *dh0Hdf = amiga_uaeGetHardDriveHdfPath();
     target_amiga_settingsMediaNeedsRestart =
-        (target_amiga_settingsMediaInitiallyEmpty && target_amiga_anyMediaConfigured(df0, df1, dh0Folder, dh0Hdf)) ? 1 : 0;
+        (target_amiga_settingsMediaInitiallyEmpty && target_amiga_anyMediaConfigured()) ? 1 : 0;
     settings_updateSaveLabel();
 }
 
@@ -319,7 +401,7 @@ target_amiga_captureFloppyRecentsFromUae(void)
 static size_t
 target_amiga_romConfigCustomOptionCount(void)
 {
-    return 1 + (TARGET_AMIGA_FLOPPY_RECENTS_MAX * 2);
+    return TARGET_AMIGA_ROM_CONFIG_FIXED_OPTION_COUNT + (TARGET_AMIGA_FLOPPY_RECENTS_MAX * 2);
 }
 
 static const char *
@@ -328,7 +410,22 @@ target_amiga_romConfigCustomOptionKeyAt(size_t index)
     if (index == 0) {
         return target_amiga_mouseCaptureOptionKey();
     }
-    index--;
+    if (index == 1) {
+        return target_amiga_portDeviceOptionKeyAt(0);
+    }
+    if (index == 2) {
+        return target_amiga_portDeviceOptionKeyAt(1);
+    }
+    if (index == 3) {
+        return target_amiga_memorySpaceOptionKey();
+    }
+    if (index == 4) {
+        return target_amiga_memoryAddressOptionKey();
+    }
+    if (index == 5) {
+        return target_amiga_memorySearchOptionKey();
+    }
+    index -= TARGET_AMIGA_ROM_CONFIG_FIXED_OPTION_COUNT;
     if (index < TARGET_AMIGA_FLOPPY_RECENTS_MAX) {
         return target_amiga_df0RecentOptionKeyAt(index);
     }
@@ -348,6 +445,21 @@ target_amiga_romConfigGetActiveCustomOptionValue(const char *key)
     if (strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0) {
         return target_amiga_getActiveMouseCaptureOverride();
     }
+    if (strcmp(key, target_amiga_memorySpaceOptionKey()) == 0) {
+        return target_amiga_activeRomMemorySpace[0] ? target_amiga_activeRomMemorySpace : NULL;
+    }
+    if (strcmp(key, target_amiga_memoryAddressOptionKey()) == 0) {
+        return target_amiga_activeRomMemoryAddress[0] ? target_amiga_activeRomMemoryAddress : NULL;
+    }
+    if (strcmp(key, target_amiga_memorySearchOptionKey()) == 0) {
+        return target_amiga_activeRomMemorySearch[0] ? target_amiga_activeRomMemorySearch : NULL;
+    }
+    for (size_t i = 0; i < 2; ++i) {
+        const char *portKey = target_amiga_portDeviceOptionKeyAt(i);
+        if (portKey && strcmp(key, portKey) == 0) {
+            return target_amiga_activeRomPortDevice[i][0] ? target_amiga_activeRomPortDevice[i] : NULL;
+        }
+    }
     int drive = -1;
     size_t index = 0;
     if (target_amiga_parseFloppyRecentOptionKey(key, &drive, &index)) {
@@ -366,6 +478,27 @@ target_amiga_romConfigSetActiveCustomOptionValue(const char *key, const char *va
         target_amiga_setActiveMouseCaptureOverride(value);
         return;
     }
+    if (strcmp(key, target_amiga_memorySpaceOptionKey()) == 0) {
+        strutil_strlcpy(target_amiga_activeRomMemorySpace, sizeof(target_amiga_activeRomMemorySpace), value ? value : "");
+        return;
+    }
+    if (strcmp(key, target_amiga_memoryAddressOptionKey()) == 0) {
+        strutil_strlcpy(target_amiga_activeRomMemoryAddress, sizeof(target_amiga_activeRomMemoryAddress), value ? value : "");
+        return;
+    }
+    if (strcmp(key, target_amiga_memorySearchOptionKey()) == 0) {
+        strutil_strlcpy(target_amiga_activeRomMemorySearch, sizeof(target_amiga_activeRomMemorySearch), value ? value : "");
+        return;
+    }
+    for (size_t i = 0; i < 2; ++i) {
+        const char *portKey = target_amiga_portDeviceOptionKeyAt(i);
+        if (portKey && strcmp(key, portKey) == 0) {
+            const char *src = (value && *value) ? value : "";
+            strncpy(target_amiga_activeRomPortDevice[i], src, sizeof(target_amiga_activeRomPortDevice[i]) - 1);
+            target_amiga_activeRomPortDevice[i][sizeof(target_amiga_activeRomPortDevice[i]) - 1] = '\0';
+            return;
+        }
+    }
     int drive = -1;
     size_t index = 0;
     if (target_amiga_parseFloppyRecentOptionKey(key, &drive, &index)) {
@@ -377,7 +510,32 @@ static void
 target_amiga_romConfigClearActiveCustomOptions(void)
 {
     target_amiga_setActiveMouseCaptureOverride(NULL);
+    memset(target_amiga_activeRomPortDevice, 0, sizeof(target_amiga_activeRomPortDevice));
+    target_amiga_activeRomMemorySpace[0] = '\0';
+    target_amiga_activeRomMemoryAddress[0] = '\0';
+    target_amiga_activeRomMemorySearch[0] = '\0';
     target_amiga_clearActiveFloppyRecents();
+}
+
+static int
+target_amiga_memoryPanelOptions(target_memory_panel_options_t *outOptions)
+{
+    if (!outOptions) {
+        return 0;
+    }
+    outOptions->spaceKey = target_amiga_memorySpaceOptionKey();
+    outOptions->addressKey = target_amiga_memoryAddressOptionKey();
+    outOptions->searchKey = target_amiga_memorySearchOptionKey();
+    return 1;
+}
+
+static int
+target_amiga_coreOptionsHideOptionKey(const char *key)
+{
+    if (!key) {
+        return 0;
+    }
+    return strcmp(key, "puae_joyport") == 0 ? 1 : 0;
 }
 
 static int
@@ -386,32 +544,67 @@ target_amiga_coreOptionsIsSyntheticOptionKey(const char *key)
     if (!key) {
         return 0;
     }
-    return strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0 ? 1 : 0;
+    if (strcmp(key, target_amiga_mouseCaptureOptionKey()) == 0) {
+        return 1;
+    }
+    for (size_t i = 0; i < 2; ++i) {
+        const char *portKey = target_amiga_portDeviceOptionKeyAt(i);
+        if (portKey && strcmp(key, portKey) == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static size_t
 target_amiga_coreOptionsSyntheticDefCount(void)
 {
-    return 1;
+    return 3;
 }
 
 static const struct retro_core_option_v2_definition *
 target_amiga_coreOptionsSyntheticDefAt(size_t index)
 {
-    static const struct retro_core_option_v2_definition def = {
-        .key = "e9k_debugger_amiga_mouse_capture",
-        .desc = "Mouse Capture",
-        .default_value = "disabled",
-        .values = {
-            { "enabled", "Enabled" },
-            { "disabled", "Disabled" },
-            { NULL, NULL }
+    static const struct retro_core_option_v2_definition defs[] = {
+        {
+            .key = "e9k_debugger_amiga_mouse_capture",
+            .desc = "Capture Mouse on Click",
+            .default_value = "disabled",
+            .values = {
+                { "enabled", "Enabled" },
+                { "disabled", "Disabled" },
+                { NULL, NULL }
+            }
+        },
+        {
+            .key = "e9k_debugger_amiga_port1_device",
+            .desc = "Port 1 Device",
+            .default_value = "automatic",
+            .values = {
+                { "automatic", "Automatic" },
+                { "joystick", "Joystick" },
+                { "cd32pad", "CD32 Pad" },
+                { "mouse", "Mouse" },
+                { NULL, NULL }
+            }
+        },
+        {
+            .key = "e9k_debugger_amiga_port2_device",
+            .desc = "Port 2 Device",
+            .default_value = "automatic",
+            .values = {
+                { "automatic", "Automatic" },
+                { "joystick", "Joystick" },
+                { "cd32pad", "CD32 Pad" },
+                { "mouse", "Mouse" },
+                { NULL, NULL }
+            }
         }
     };
-    if (index != 0) {
+    if (index >= (sizeof(defs) / sizeof(defs[0]))) {
         return NULL;
     }
-    return &def;
+    return &defs[index];
 }
 
 static size_t
@@ -467,16 +660,6 @@ target_amiga_setConfigDefaults(e9k_system_config_t *config)
     config->amiga.libretro.exePath[0] = '\0';
 }
 
-
-typedef struct target_amiga_romselect_extra {
-    e9ui_component_t *df0Select;
-    e9ui_component_t *df1Select;
-    e9ui_component_t *dh0FolderSelect;
-    e9ui_component_t *dh0HdfSelect;
-    struct target_amiga_toolchain_preset_state *toolchainPresetState;
-    int updatingMedia;
-} target_amiga_romselect_extra_t;
-
 static void
 target_amiga_refreshFloppyRecentsDropdowns(target_amiga_romselect_extra_t *extra)
 {
@@ -491,22 +674,6 @@ target_amiga_refreshFloppyRecentsDropdowns(target_amiga_romselect_extra_t *extra
     }
 }
 
-typedef struct target_amiga_toolchain_preset_state {
-    e9ui_component_t *toolchainTextbox;
-    e9ui_component_t *vasmCheckbox;
-    e9ui_component_t *gccCheckbox;
-    int updating;
-} target_amiga_toolchain_preset_state_t;
-
-#if defined(_WIN32)
-static const char target_amiga_toolchainPrefixVasm[] = ".\\system\\v-hunk-";
-#else
-static const char target_amiga_toolchainPrefixVasm[] = "./system/v-hunk-";
-#endif
-static const char target_amiga_toolchainPrefixGcc[] = "m68k-amigaos-";
-
-static void
-target_amiga_toolchainPresetSync(target_amiga_toolchain_preset_state_t *st, e9ui_context_t *ctx, const char *prefix);
 
 static void
 target_amiga_applyActiveSettingsToCurrentSystem(void)
@@ -717,12 +884,20 @@ target_amiga_settingsRomPathChanged(settings_romselect_state_t* st)
     e9ui_fileSelect_setText(extra->df1Select, df1 ? df1 : "");
   }
   if (extra && extra->dh0FolderSelect) {
-    const char *dh0Folder = amiga_uaeGetHardDriveFolderPath();
+    const char *dh0Folder = amiga_uaeGetHardDriveFolderPathForUnit(0);
     e9ui_fileSelect_setText(extra->dh0FolderSelect, dh0Folder ? dh0Folder : "");
   }
   if (extra && extra->dh0HdfSelect) {
-    const char *dh0Hdf = amiga_uaeGetHardDriveHdfPath();
+    const char *dh0Hdf = amiga_uaeGetHardDriveHdfPathForUnit(0);
     e9ui_fileSelect_setText(extra->dh0HdfSelect, dh0Hdf ? dh0Hdf : "");
+  }
+  if (extra && extra->dh1FolderSelect) {
+    const char *dh1Folder = amiga_uaeGetHardDriveFolderPathForUnit(1);
+    e9ui_fileSelect_setText(extra->dh1FolderSelect, dh1Folder ? dh1Folder : "");
+  }
+  if (extra && extra->dh1HdfSelect) {
+    const char *dh1Hdf = amiga_uaeGetHardDriveHdfPathForUnit(1);
+    e9ui_fileSelect_setText(extra->dh1HdfSelect, dh1Hdf ? dh1Hdf : "");
   }
   if (extra && extra->toolchainPresetState) {
     target_amiga_toolchainPresetSync(extra->toolchainPresetState,
@@ -856,6 +1031,28 @@ target_amiga_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_state
       }
       continue;
     }
+    for (size_t portIndex = 0; portIndex < 2; ++portIndex) {
+      const char *portKey = target_amiga_portDeviceOptionKeyAt(portIndex);
+      if (portKey && strcmp(key, portKey) == 0) {
+        const char *existingPortDevice = target_amiga_activeRomPortDevice[portIndex][0] ? target_amiga_activeRomPortDevice[portIndex] : NULL;
+        const char *desiredPortDevice = (value && *value) ? value : NULL;
+        if (desiredPortDevice) {
+          const char *defValue = core_options_findDefaultValue(st, key);
+          if (defValue && strcmp(defValue, desiredPortDevice) == 0) {
+            desiredPortDevice = NULL;
+          }
+        }
+        if ((existingPortDevice && !desiredPortDevice) ||
+            (!existingPortDevice && desiredPortDevice) ||
+            (existingPortDevice && desiredPortDevice && !core_options_stringsEqual(existingPortDevice, desiredPortDevice))) {
+          target_amiga_romConfigSetActiveCustomOptionValue(key, desiredPortDevice);
+          anyChange = 1;
+          anyRestartChange = 1;
+          anyRomConfigBindingChange = 1;
+        }
+        goto next_entry;
+      }
+    }
     if (debugger_input_bindings_isOptionKey(key)) {
       const char *existingBinding = rom_config_getActiveInputBindingValue(key);
       const char *desiredBinding = (value && *value) ? value : NULL;
@@ -903,6 +1100,8 @@ target_amiga_coreOptionsSaveClicked(e9ui_context_t *ctx,core_options_modal_state
         anyRestartChange = 1;
       }
     }
+next_entry:
+    ;
   }
   if (anyChange) {
     settings_markCoreOptionsDirtyWithRestart(anyRestartChange);
@@ -932,6 +1131,10 @@ target_amiga_coreOptionGetValue(const char* key)
       const struct retro_core_option_v2_definition *def = target_amiga_coreOptionsSyntheticDefAt(0);
       value = def ? def->default_value : NULL;
     }
+  } else if (strcmp(key, target_amiga_portDeviceOptionKeyAt(0)) == 0) {
+    value = target_amiga_activeRomPortDevice[0][0] ? target_amiga_activeRomPortDevice[0] : "automatic";
+  } else if (strcmp(key, target_amiga_portDeviceOptionKeyAt(1)) == 0) {
+    value = target_amiga_activeRomPortDevice[1][0] ? target_amiga_activeRomPortDevice[1] : "automatic";
   } else if (debugger_input_bindings_isOptionKey(key)) {
     value = rom_config_getActiveInputBindingValue(key);
   } else {
@@ -945,6 +1148,33 @@ static e9k_libretro_config_t *
 target_amiga_getLibretroCliConfig(void)
 {
   return &debugger.cliConfig.amiga.libretro;
+}
+
+static void
+target_amiga_onCoreStarted(void)
+{
+    if (ui_test_isEnabled()) {
+        (void)libretro_host_amiga_setDeterministic(1);
+    }
+}
+
+static void
+target_amiga_onDebugExitFromCore(void)
+{
+    profile_analyseOnExitIfRunning();
+    debugger.exitRequested = 1;
+}
+
+static void
+target_amiga_onDebugSmokeStartFromCore(void)
+{
+    smoke_test_startFromFrame(debugger.frameCounter);
+}
+
+static void
+target_amiga_onDebugProfileStartFromCore(void)
+{
+    profile_startFromDebugWrite();
 }
 
 
@@ -979,28 +1209,41 @@ target_amiga_applyCoreOptions(void)
   if (uaePath && *uaePath) {
     amiga_uaeApplyPuaeOptionsToHost(uaePath);
   }
+  libretro_host_setCoreOption("puae_joyport", "joystick");
 }
 
 static void
 target_amiga_validateAPI(void)
 {
-  libretro_host_unbindMegaDebugApis();
-  libretro_host_unbindNeogeoDebugApis();
-  if (!libretro_host_setDebugBaseCallback(debugger_onSetDebugBaseFromCore)) {
+  libretro_host_megadrive_unbindApis();
+  libretro_host_neogeo_unbindApis();
+  if (!libretro_host_amiga_setDebugBaseCallback(debugger_onSetDebugBaseFromCore)) {
     debug_error("debug_base: core does not expose e9k_debug_set_debug_base_callback");
   }
-  if (!libretro_host_setDebugBaseStackCallback(debugger_onPushDebugBaseFromCore)) {
+  if (!libretro_host_amiga_setDebugBaseStackCallback(debugger_onPushDebugBaseFromCore)) {
     debug_error("debug_base_stack: core does not expose e9k_debug_set_debug_base_stack_callback");
   }
-  if (!libretro_host_setDebugBreakpointCallback(debugger_onAddBreakpointFromCore)) {
+  if (!libretro_host_amiga_setDebugBreakpointCallback(debugger_onAddBreakpointFromCore)) {
     debug_error("breakpoint: core does not expose e9k_debug_set_debug_breakpoint_callback");
   }
+  if (!libretro_host_amiga_setDebugExitCallback(target_amiga_onDebugExitFromCore)) {
+    debug_error("exit: core does not expose e9k_debug_set_debug_exit_callback");
+  }
+  if (!libretro_host_amiga_setDebugSmokeStartCallback(target_amiga_onDebugSmokeStartFromCore)) {
+    debug_error("smoke_start: core does not expose e9k_debug_set_debug_smoke_start_callback");
+  }
+  if (!libretro_host_amiga_setDebugProfileStartCallback(target_amiga_onDebugProfileStartFromCore)) {
+    debug_error("profile_start: core does not expose e9k_debug_set_debug_profile_start_callback");
+  }
+  if (!libretro_host_amiga_setDebugArgs(debugger.debugArgs, (size_t)debugger.debugArgCount)) {
+    debug_error("debug_args: core does not expose e9k_debug_set_debug_args");
+  }
   int *debugDma = NULL;
-  if (libretro_host_debugGetAmigaDebugDmaAddr(&debugDma)) {
+  if (libretro_host_amiga_getDmaAddr(&debugDma)) {
     debugger.amigaDebug.debugDma = debugDma;
   }
   int *debugCopper = NULL;
-  if (libretro_host_debugGetAmigaDebugCopperAddr(&debugCopper)) {
+  if (libretro_host_amiga_getCopperAddr(&debugCopper)) {
     debugger.amigaDebug.debugCopper = debugCopper;
   }
 }
@@ -1046,8 +1289,18 @@ target_amiga_getBadgeTexture(SDL_Renderer *renderer, target_iface_t* t, int* out
 static void
 target_amiga_configControllerPorts(void)
 {
-  libretro_host_setControllerPortDevice(0, RETRO_DEVICE_JOYPAD);
-  libretro_host_setControllerPortDevice(1, RETRO_DEVICE_JOYPAD);
+  for (unsigned port = 0; port < 2; ++port) {
+    const char *value = target_amiga_activeRomPortDevice[port][0] ? target_amiga_activeRomPortDevice[port] : "automatic";
+    unsigned device = RETRO_DEVICE_JOYPAD;
+    if (strcmp(value, "joystick") == 0) {
+      device = RETRO_DEVICE_PUAE_JOYPAD;
+    } else if (strcmp(value, "cd32pad") == 0) {
+      device = RETRO_DEVICE_PUAE_CD32PAD;
+    } else if (strcmp(value, "mouse") == 0) {
+      device = RETRO_DEVICE_NONE;
+    }
+    libretro_host_setControllerPortDevice(port, device);
+  }
 }
 
 
@@ -1057,6 +1310,12 @@ target_amiga_controllerMapButton(SDL_GameControllerButton button, unsigned *outI
   switch (button) {
   case SDL_CONTROLLER_BUTTON_A: *outId = RETRO_DEVICE_ID_JOYPAD_B; return 1;
   case SDL_CONTROLLER_BUTTON_B: *outId = RETRO_DEVICE_ID_JOYPAD_A; return 1;
+  case SDL_CONTROLLER_BUTTON_X: *outId = RETRO_DEVICE_ID_JOYPAD_Y; return 1;
+  case SDL_CONTROLLER_BUTTON_Y: *outId = RETRO_DEVICE_ID_JOYPAD_X; return 1;
+  case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: *outId = RETRO_DEVICE_ID_JOYPAD_L; return 1;
+  case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: *outId = RETRO_DEVICE_ID_JOYPAD_R; return 1;
+  case SDL_CONTROLLER_BUTTON_START: *outId = RETRO_DEVICE_ID_JOYPAD_START; return 1;
+  case SDL_CONTROLLER_BUTTON_BACK: *outId = RETRO_DEVICE_ID_JOYPAD_SELECT; return 1;
   case SDL_CONTROLLER_BUTTON_DPAD_UP: *outId = RETRO_DEVICE_ID_JOYPAD_UP; return 1;
   case SDL_CONTROLLER_BUTTON_DPAD_DOWN: *outId = RETRO_DEVICE_ID_JOYPAD_DOWN; return 1;
   case SDL_CONTROLLER_BUTTON_DPAD_LEFT: *outId = RETRO_DEVICE_ID_JOYPAD_LEFT; return 1;
@@ -1093,7 +1352,7 @@ target_amiga_settingsFloppyChanged(e9ui_context_t *ctx, e9ui_component_t *comp, 
     const char *path = text ? text : "";
     amiga_uaeSetFloppyPath(drive, path);
     if (target == target_amiga() && libretro_host_isRunning()) {
-        if (libretro_host_debugAmiSetFloppyPath(drive, path)) {
+        if (libretro_host_amiga_setFloppyPath(drive, path)) {
             amiga_uaeClearFloppyDirty(drive);
         }
     }
@@ -1104,16 +1363,17 @@ static void
 target_amiga_settingsHardDriveFolderChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *text, void *user)
 {
     (void)ctx;
-    (void)comp;
     target_amiga_romselect_extra_t *extra = (target_amiga_romselect_extra_t *)user;
     if (extra && extra->updatingMedia) {
         return;
     }
-    amiga_uaeSetHardDriveFolderPath(text ? text : "");
-    if (text && text[0] && extra && extra->dh0HdfSelect) {
+    int unit = (extra && comp == extra->dh1FolderSelect) ? 1 : 0;
+    e9ui_component_t *hdfSelect = unit == 1 && extra ? extra->dh1HdfSelect : (extra ? extra->dh0HdfSelect : NULL);
+    amiga_uaeSetHardDriveFolderPathForUnit(unit, text ? text : "");
+    if (text && text[0] && hdfSelect) {
         extra->updatingMedia = 1;
-        amiga_uaeSetHardDriveHdfPath("");
-        e9ui_fileSelect_setText(extra->dh0HdfSelect, "");
+        amiga_uaeSetHardDriveHdfPathForUnit(unit, "");
+        e9ui_fileSelect_setText(hdfSelect, "");
         extra->updatingMedia = 0;
     }
     target_amiga_updateSettingsMediaRestartRequirement();
@@ -1123,16 +1383,17 @@ static void
 target_amiga_settingsHardDriveHdfChanged(e9ui_context_t *ctx, e9ui_component_t *comp, const char *text, void *user)
 {
     (void)ctx;
-    (void)comp;
     target_amiga_romselect_extra_t *extra = (target_amiga_romselect_extra_t *)user;
     if (extra && extra->updatingMedia) {
         return;
     }
-    amiga_uaeSetHardDriveHdfPath(text ? text : "");
-    if (text && text[0] && extra && extra->dh0FolderSelect) {
+    int unit = (extra && comp == extra->dh1HdfSelect) ? 1 : 0;
+    e9ui_component_t *folderSelect = unit == 1 && extra ? extra->dh1FolderSelect : (extra ? extra->dh0FolderSelect : NULL);
+    amiga_uaeSetHardDriveHdfPathForUnit(unit, text ? text : "");
+    if (text && text[0] && folderSelect) {
         extra->updatingMedia = 1;
-        amiga_uaeSetHardDriveFolderPath("");
-        e9ui_fileSelect_setText(extra->dh0FolderSelect, "");
+        amiga_uaeSetHardDriveFolderPathForUnit(unit, "");
+        e9ui_fileSelect_setText(folderSelect, "");
         extra->updatingMedia = 0;
     }
     target_amiga_updateSettingsMediaRestartRequirement();
@@ -1232,9 +1493,9 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
     out->footerWarning = NULL;
 
     const char *romExts[] = { "*.uae" };
-    const char *floppyExts[] = { "*.adf", "*.adz", "*.fdi", "*.dms", "*.ipf", "*.raw" };
+    const char *floppyExts[] = { "*.adf", "*.adz", "*.fdi", "*.dms", "*.ipf", "*.raw", ".7z" };
     const char *hdfExts[] = { "*.hdf", "*.hdz" };
-    const char *elfExts[] = { "*.elf" };
+    const char *elfExts[] = { "*.elf", "*.txt" };
 
     settings_romselect_state_t *romState = (settings_romselect_state_t *)alloc_calloc(1, sizeof(*romState));
     if (romState) {
@@ -1256,6 +1517,8 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
     e9ui_component_t *fsDf1 = e9ui_fileSelect_make("DF1", 120, 600, "...", floppyExts, 6, E9UI_FILESELECT_FILE);
     e9ui_component_t *fsDh0Folder = e9ui_fileSelect_make("DH0 FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
     e9ui_component_t *fsDh0Hdf = e9ui_fileSelect_make("DH0 HDF", 120, 600, "...", hdfExts, 2, E9UI_FILESELECT_FILE);
+    e9ui_component_t *fsDh1Folder = e9ui_fileSelect_make("DH1 FOLDER", 120, 600, "...", NULL, 0, E9UI_FILESELECT_FOLDER);
+    e9ui_component_t *fsDh1Hdf = e9ui_fileSelect_make("DH1 HDF", 120, 600, "...", hdfExts, 2, E9UI_FILESELECT_FILE);
 
     if (fsDf0) {
         const char *df0 = amiga_uaeGetFloppyPath(0);
@@ -1272,19 +1535,31 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
         target_amiga_refreshFloppyRecentsDropdown(fsDf1, 1);
     }
     if (fsDh0Folder) {
-        const char *dh0Folder = amiga_uaeGetHardDriveFolderPath();
+        const char *dh0Folder = amiga_uaeGetHardDriveFolderPathForUnit(0);
         e9ui_fileSelect_setAllowEmpty(fsDh0Folder, 1);
         e9ui_fileSelect_setText(fsDh0Folder, dh0Folder ? dh0Folder : "");
         e9ui_fileSelect_setOnChange(fsDh0Folder, target_amiga_settingsHardDriveFolderChanged, extra);
     }
     if (fsDh0Hdf) {
-        const char *dh0Hdf = amiga_uaeGetHardDriveHdfPath();
+        const char *dh0Hdf = amiga_uaeGetHardDriveHdfPathForUnit(0);
         e9ui_fileSelect_setAllowEmpty(fsDh0Hdf, 1);
         e9ui_fileSelect_setText(fsDh0Hdf, dh0Hdf ? dh0Hdf : "");
         e9ui_fileSelect_setOnChange(fsDh0Hdf, target_amiga_settingsHardDriveHdfChanged, extra);
     }
+    if (fsDh1Folder) {
+        const char *dh1Folder = amiga_uaeGetHardDriveFolderPathForUnit(1);
+        e9ui_fileSelect_setAllowEmpty(fsDh1Folder, 1);
+        e9ui_fileSelect_setText(fsDh1Folder, dh1Folder ? dh1Folder : "");
+        e9ui_fileSelect_setOnChange(fsDh1Folder, target_amiga_settingsHardDriveFolderChanged, extra);
+    }
+    if (fsDh1Hdf) {
+        const char *dh1Hdf = amiga_uaeGetHardDriveHdfPathForUnit(1);
+        e9ui_fileSelect_setAllowEmpty(fsDh1Hdf, 1);
+        e9ui_fileSelect_setText(fsDh1Hdf, dh1Hdf ? dh1Hdf : "");
+        e9ui_fileSelect_setOnChange(fsDh1Hdf, target_amiga_settingsHardDriveHdfChanged, extra);
+    }
 
-    e9ui_component_t *fsElf = e9ui_fileSelect_make("EXE", 120, 600, "...", elfExts, 0, E9UI_FILESELECT_FILE);
+    e9ui_component_t *fsElf = e9ui_fileSelect_make("EXE", 120, 600, "...", elfExts, (int)countof(elfExts), E9UI_FILESELECT_FILE);
     if (fsElf) {
         e9ui_fileSelect_setAllowEmpty(fsElf, 1);
         e9ui_fileSelect_setText(fsElf, debugger.settingsEdit.amiga.libretro.exePath);
@@ -1384,6 +1659,8 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
         extra->df1Select = fsDf1;
         extra->dh0FolderSelect = fsDh0Folder;
         extra->dh0HdfSelect = fsDh0Hdf;
+        extra->dh1FolderSelect = fsDh1Folder;
+        extra->dh1HdfSelect = fsDh1Hdf;
         extra->toolchainPresetState = toolchainPresetState;
         if (romState) {
             romState->targetUser = extra;
@@ -1432,6 +1709,20 @@ target_amiga_settingsBuildModal(e9ui_context_t *ctx, target_settings_modal_t *ou
                 e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
             }
             e9ui_stack_addFixed(body, fsDh0Hdf);
+            first = 0;
+        }
+        if (fsDh1Folder) {
+            if (!first) {
+                e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
+            }
+            e9ui_stack_addFixed(body, fsDh1Folder);
+            first = 0;
+        }
+        if (fsDh1Hdf) {
+            if (!first) {
+                e9ui_stack_addFixed(body, e9ui_vspacer_make(12));
+            }
+            e9ui_stack_addFixed(body, fsDh1Hdf);
             first = 0;
         }
         if (fsElf) {
@@ -1502,8 +1793,68 @@ target_amiga_memoryGetLimits(uint32_t *outMinAddr, uint32_t *outMaxAddr)
 }
 
 static int
+target_amiga_memoryGetSpaces(target_memory_space_t *outSpaces, size_t cap, size_t *outCount)
+{
+    if (outCount) {
+        *outCount = 1;
+    }
+    if (!outSpaces || cap == 0) {
+        return 1;
+    }
+    outSpaces[0] = (target_memory_space_t){
+        .value = "main",
+        .label = "Main",
+        .minAddr = 0x00000000u,
+        .maxAddr = 0x00ffffffu,
+        .addressDigits = 6,
+        .processorMemory = 0,
+        .processorId = 0
+    };
+    return 1;
+}
+
+static int
 target_amiga_memoryTrackGetRanges(target_memory_range_t *outRanges, size_t cap, size_t *outCount)
 {
+    const struct retro_memory_descriptor *descriptors = NULL;
+    size_t descriptorCount = libretro_host_getMemoryMapDescriptors(&descriptors);
+    size_t write = 0;
+
+    if (descriptorCount > 0 && descriptors) {
+        for (size_t i = 0; i < descriptorCount; ++i) {
+            const struct retro_memory_descriptor *desc = &descriptors[i];
+            uint64_t start = 0;
+            uint64_t len = 0;
+
+            if (!(desc->flags & RETRO_MEMDESC_SYSTEM_RAM) ||
+                !desc->ptr ||
+                desc->len == 0 ||
+                desc->select != 0 ||
+                desc->disconnect != 0) {
+                continue;
+            }
+
+            start = (uint64_t)desc->start;
+            len = (uint64_t)desc->len;
+            if (start > UINT32_MAX || len > UINT32_MAX || (start + len - 1u) > UINT32_MAX) {
+                continue;
+            }
+
+            if (outRanges && write < cap) {
+                outRanges[write].baseAddr = (uint32_t)start;
+                outRanges[write].size = (uint32_t)len;
+            }
+            ++write;
+        }
+    }
+
+    if (write > 0) {
+        if (outCount) {
+            *outCount = write;
+        }
+        return 1;
+    }
+
     if (outCount) {
         *outCount = 2;
     }
@@ -1515,6 +1866,65 @@ target_amiga_memoryTrackGetRanges(target_memory_range_t *outRanges, size_t cap, 
     outRanges[1].baseAddr = 0x00000000u;
     outRanges[1].size = 0x00080000u;
     return 1;
+}
+
+static int
+target_amiga_registersReadExtra(const char **outTitle, e9k_debug_processor_reg_t *outRegs, size_t cap, size_t *outCount)
+{
+    (void)outRegs;
+    (void)cap;
+    if (outTitle) {
+        *outTitle = NULL;
+    }
+    if (outCount) {
+        *outCount = 0;
+    }
+    return 1;
+}
+
+static void
+target_amiga_appendText(char *out, size_t cap, size_t *pos, const char *text)
+{
+    if (!out || cap == 0 || !pos || !text) {
+        return;
+    }
+    while (*text && *pos + 1 < cap) {
+        out[*pos] = *text;
+        *pos += 1;
+        text++;
+    }
+    out[*pos] = '\0';
+}
+
+static void
+target_amiga_formatStatusBar(char *out, size_t cap)
+{
+    e9k_debug_counter_t counters[E9K_COUNTER_COUNT];
+    size_t bytes = 0;
+    size_t count = 0;
+    size_t pos = 0;
+
+    if (!out || cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+
+    bytes = libretro_host_debugReadCounters(counters, sizeof(counters));
+    count = bytes / sizeof(counters[0]);
+    if (count > E9K_COUNTER_COUNT) {
+        count = E9K_COUNTER_COUNT;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        char value[32];
+        if (counters[i].name[0] == '\0' || counters[i].count == 0) {
+            continue;
+        }
+        snprintf(value, sizeof(value), "%llu", (unsigned long long)counters[i].current);
+        target_amiga_appendText(out, cap, &pos, " ");
+        target_amiga_appendText(out, cap, &pos, counters[i].name);
+        target_amiga_appendText(out, cap, &pos, ": ");
+        target_amiga_appendText(out, cap, &pos, value);
+    }
 }
 
 static target_iface_t _target_amiga = {
@@ -1543,6 +1953,7 @@ static target_iface_t _target_amiga = {
     .coreOptionsSaveClicked = target_amiga_coreOptionsSaveClicked,
     .coreOptionGetValue = target_amiga_coreOptionGetValue,
     .getLibretroCliConfig = target_amiga_getLibretroCliConfig,
+    .onCoreStarted = target_amiga_onCoreStarted,
     .onVblank = target_amiga_onVblank,
     .coreIndex = TARGET_AMIGA,
     .libretroSelectConfig = target_amiga_libretroSelectConfig,
@@ -1553,7 +1964,10 @@ static target_iface_t _target_amiga = {
     .audioEnable = target_amiga_audioEnable,
     .mousePort = LIBRETRO_HOST_MAX_PORTS,
     .memoryGetLimits = target_amiga_memoryGetLimits,
+    .memoryGetSpaces = target_amiga_memoryGetSpaces,
     .memoryTrackGetRanges = target_amiga_memoryTrackGetRanges,
+    .memoryPanelOptions = target_amiga_memoryPanelOptions,
+    .registersReadExtra = target_amiga_registersReadExtra,
     .getBadgeTexture = target_amiga_getBadgeTexture,
     .configControllerPorts = target_amiga_configControllerPorts,
     .controllerMapButton = target_amiga_controllerMapButton,
@@ -1562,11 +1976,13 @@ static target_iface_t _target_amiga = {
     .romConfigGetActiveCustomOptionValue = target_amiga_romConfigGetActiveCustomOptionValue,
     .romConfigSetActiveCustomOptionValue = target_amiga_romConfigSetActiveCustomOptionValue,
     .romConfigClearActiveCustomOptions = target_amiga_romConfigClearActiveCustomOptions,
+    .coreOptionsHideOptionKey = target_amiga_coreOptionsHideOptionKey,
     .coreOptionsIsSyntheticOptionKey = target_amiga_coreOptionsIsSyntheticOptionKey,
     .coreOptionsSyntheticDefCount = target_amiga_coreOptionsSyntheticDefCount,
     .coreOptionsSyntheticDefAt = target_amiga_coreOptionsSyntheticDefAt,
     .coreOptionsMapDebuggerInputSpecIndex = target_amiga_coreOptionsMapDebuggerInputSpecIndex,
     .coreOptionsDebuggerInputLabel = target_amiga_coreOptionsDebuggerInputLabel,
+    .formatStatusBar = target_amiga_formatStatusBar,
   };
 
 target_iface_t *target_amiga(void) { return &_target_amiga; }  

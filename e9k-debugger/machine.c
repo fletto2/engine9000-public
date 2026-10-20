@@ -12,7 +12,7 @@
 #include <strings.h>
 #include <stdio.h>
 #include <limits.h>
-#include "resource.h"
+
 #include "machine.h"
 #include "debugger.h"
 #include "ui.h"
@@ -20,7 +20,39 @@
 #include "libretro_host.h"
 #include "addr2line.h"
 #include "base_map.h"
+#include "symbol_text_map.h"
 #include "strutil.h"
+
+static int
+machine_resolveTextMapFunction(uint32_t runtimeAddr, char *outFunction, size_t functionCap)
+{
+    if (!outFunction || functionCap == 0) {
+        return 0;
+    }
+    outFunction[0] = '\0';
+    if (!debugger.symbolValid || debugger.symbolFileKind != DEBUGGER_SYMBOL_FILE_KIND_TEXT_MAP) {
+        return 0;
+    }
+
+    const symbol_text_map_entry_t *entry = NULL;
+    if (!symbol_text_map_findNearest(debugger.libretro.exePath,
+                                     runtimeAddr & 0x00ffffffu,
+                                     SYMBOL_TEXT_MAP_SYMBOL_MASK_FUNCTION |
+                                     SYMBOL_TEXT_MAP_SYMBOL_MASK_UNKNOWN,
+                                     &entry)) {
+        (void)symbol_text_map_findNearest(debugger.libretro.exePath,
+                                          runtimeAddr & 0x00ffffffu,
+                                          SYMBOL_TEXT_MAP_SYMBOL_MASK_ALL,
+                                          &entry);
+    }
+    if (!entry || !entry->name || !entry->name[0]) {
+        return 0;
+    }
+
+    strncpy(outFunction, entry->name, functionCap - 1);
+    outFunction[functionCap - 1] = '\0';
+    return 1;
+}
 
 static void
 machine_clearRegs(machine_t *m)
@@ -145,6 +177,9 @@ machine_rebaseTextBreakpoints(machine_t *m, uint32_t oldBaseAddr, uint32_t newBa
     uint32_t newBase24 = newBaseAddr & 0x00ffffffu;
     for (int i = 0; i < m->breakpoint_count; ++i) {
         machine_breakpoint_t *bp = &m->breakpoints[i];
+        if (bp->processorId != MACHINE_PROCESSOR_PRIMARY) {
+            continue;
+        }
         uint32_t oldAddr24 = (uint32_t)(bp->addr & 0x00ffffffu);
         uint32_t relativeAddr = oldAddr24;
         if (oldBase24 != 0 && oldAddr24 >= oldBase24) {
@@ -162,12 +197,23 @@ machine_rebaseTextBreakpoints(machine_t *m, uint32_t oldBaseAddr, uint32_t newBa
 machine_breakpoint_t *
 machine_findBreakpointByAddr(machine_t *m, uint32_t addr)
 {
+    return machine_findProcessorBreakpointByAddr(m, MACHINE_PROCESSOR_PRIMARY, addr);
+}
+
+machine_breakpoint_t *
+machine_findProcessorBreakpointByAddr(machine_t *m, uint32_t processorId, uint32_t addr)
+{
     if (!m) {
         return NULL;
     }
-    addr &= 0x00ffffffu;
+    if (processorId == MACHINE_PROCESSOR_PRIMARY) {
+        addr &= 0x00ffffffu;
+    } else {
+        addr &= 0x0000ffffu;
+    }
     for (int i = 0; i < m->breakpoint_count; ++i) {
-        if ((uint32_t)m->breakpoints[i].addr == addr) {
+        if (m->breakpoints[i].processorId == processorId &&
+            (uint32_t)m->breakpoints[i].addr == addr) {
             return &m->breakpoints[i];
         }
     }
@@ -191,11 +237,21 @@ machine_findBreakpointByNumber(machine_t *m, int number)
 machine_breakpoint_t *
 machine_addBreakpoint(machine_t *m, uint32_t addr, int enabled)
 {
+    return machine_addProcessorBreakpoint(m, MACHINE_PROCESSOR_PRIMARY, addr, enabled);
+}
+
+machine_breakpoint_t *
+machine_addProcessorBreakpoint(machine_t *m, uint32_t processorId, uint32_t addr, int enabled)
+{
     if (!m) {
         return NULL;
     }
-    addr &= 0x00ffffffu;
-    machine_breakpoint_t *existing = machine_findBreakpointByAddr(m, addr);
+    if (processorId == MACHINE_PROCESSOR_PRIMARY) {
+        addr &= 0x00ffffffu;
+    } else {
+        addr &= 0x0000ffffu;
+    }
+    machine_breakpoint_t *existing = machine_findProcessorBreakpointByAddr(m, processorId, addr);
     if (existing) {
         if (enabled) {
             existing->enabled = 1;
@@ -212,9 +268,14 @@ machine_addBreakpoint(machine_t *m, uint32_t addr, int enabled)
     machine_breakpoint_t *bp = &m->breakpoints[m->breakpoint_count];
     memset(bp, 0, sizeof(*bp));
     bp->number = m->next_breakpoint_id++;
+    bp->processorId = processorId;
     bp->enabled = enabled ? 1 : 0;
     bp->addr = addr;
-    snprintf(bp->addr_text, sizeof(bp->addr_text), "0x%06X", (unsigned)addr);
+    if (processorId == MACHINE_PROCESSOR_PRIMARY) {
+        snprintf(bp->addr_text, sizeof(bp->addr_text), "0x%06X", (unsigned)addr);
+    } else {
+        snprintf(bp->addr_text, sizeof(bp->addr_text), "0x%04X", (unsigned)addr);
+    }
     strncpy(bp->type, "breakpoint", sizeof(bp->type) - 1);
     strncpy(bp->disp, "keep", sizeof(bp->disp) - 1);
     m->breakpoint_count = new_count;
@@ -241,12 +302,23 @@ machine_setBreakpointEnabled(machine_t *m, int number, int enabled, uint32_t *ou
 int
 machine_removeBreakpointByAddr(machine_t *m, uint32_t addr)
 {
+    return machine_removeProcessorBreakpointByAddr(m, MACHINE_PROCESSOR_PRIMARY, addr);
+}
+
+int
+machine_removeProcessorBreakpointByAddr(machine_t *m, uint32_t processorId, uint32_t addr)
+{
     if (!m) {
         return 0;
     }
-    addr &= 0x00ffffffu;
+    if (processorId == MACHINE_PROCESSOR_PRIMARY) {
+        addr &= 0x00ffffffu;
+    } else {
+        addr &= 0x0000ffffu;
+    }
     for (int i = 0; i < m->breakpoint_count; ++i) {
-        if ((uint32_t)m->breakpoints[i].addr == addr) {
+        if (m->breakpoints[i].processorId == processorId &&
+            (uint32_t)m->breakpoints[i].addr == addr) {
             int last = m->breakpoint_count - 1;
             if (i != last) {
                 memmove(&m->breakpoints[i], &m->breakpoints[i + 1],
@@ -331,7 +403,11 @@ machine_fillFrame(machine_frame_t *frame, int level, uint32_t addr, const char *
     uint32_t addr24 = addr & 0x00ffffffu;
     frame->addr = addr24;
     snprintf(frame->func, sizeof(frame->func), "0x%06X", (unsigned)addr24);
-    if (!exe || !*exe || !debugger.elfValid) {
+    if (!exe || !*exe || !debugger.symbolValid) {
+        return;
+    }
+    if (debugger.symbolFileKind == DEBUGGER_SYMBOL_FILE_KIND_TEXT_MAP) {
+        (void)machine_resolveTextMapFunction(addr24, frame->func, sizeof(frame->func));
         return;
     }
     if (!addr2line_start(exe)) {

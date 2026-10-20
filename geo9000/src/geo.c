@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2022-2024 Rupert Carmichael
+Copyright (c) 2022-2026 Rupert Carmichael
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -32,8 +32,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <stdlib.h>
 
 #include <miniz.h>
+#include "m68k/m68k.h"
 
 #include "geo.h"
+#include "geo_cd.h"
 #include "geo_export.h"
 #include "geo_lspc.h"
 #include "geo_m68k.h"
@@ -47,12 +49,21 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "e9k_checkpoint.h"
 #include "e9k_debugger.h"
 
+#define GEO_HACK_IRQ2_TIMERLOW_DISPLAY_COUNTER_OFFSET (-4)
+#define GEO_STATE_MAGIC 0x47395354u
+#define GEO_STATE_VERSION 5u
+#define GEO_STATE_VERSION_MIN 3u
+
 #define DIV_M68K 2
 #define DIV_Z80 6
 #define DIV_YM2610 72 // 72 for medium fidelity, 8 for high
 
 #define MCYC_PER_LINE 1536
 #define MCYC_PER_FRAME (MCYC_PER_LINE * 264) // 405504
+#define WATCHDOG_MCYCS 3244030
+
+unsigned m68k_read_disassembler_16(unsigned address);
+void geo_irq2_counterLoadDisplayCounter(void);
 
 // Log callback
 void (*geo_log)(int, const char *, ...);
@@ -69,12 +80,8 @@ ngsys_t ngsys;
 // ROM data
 static romdata_t romdata;
 
-static uint8_t state[485301]; // Maximum size
-static size_t state_sz = 0;
-
-// System being emulated
-static uint8_t sys = 0;
-static uint8_t region = 0;
+static uint8_t *state = NULL;
+static size_t stateCapacity = 0;
 
 static uint32_t mcycs = 0;
 static uint32_t zcycs = 0;
@@ -87,8 +94,13 @@ static unsigned icycs = 0;
 unsigned oc = 0;
 unsigned irq2_fragmask = 0x01;
 
-// Watchdog Frames
-static unsigned watchdog_frames = 8;
+// IRQ Levels
+unsigned irq_vbl_level = IRQ_VBLANK;
+unsigned irq_timer_level = IRQ_TIMER;
+
+// Watchdog Cycles
+static uint32_t watchdog_cycs = WATCHDOG_MCYCS;
+static uint8_t watchdog_enabled = 1;
 
 // Set the log callback
 void geo_log_set_callback(void (*cb)(int, const char *, ...)) {
@@ -123,22 +135,23 @@ void geo_vblank_notify(void) {
 
 // Set the region of the system to be emulated
 void geo_set_region(int r) {
-    region = r;
+    ngsys.region = r;
 }
 
 // Get the region of the system currently being emulated
 int geo_get_region(void) {
-    return region;
+    return ngsys.region;
 }
 
 // Set the system to be emulated
 void geo_set_system(int s) {
-    sys = s;
+    ngsys.sys = s;
+    ngsys.cdmode = s >= SYSTEM_CDF;
 }
 
 // Get the system currently being emulated
 int geo_get_system(void) {
-    return sys;
+    return ngsys.sys;
 }
 
 // Set the 68K Clock Divider on or off
@@ -151,12 +164,272 @@ void geo_set_adpcm_wrap(int w) {
     geo_ymfm_adpcm_wrap(w);
 }
 
-void geo_set_watchdog_frames(unsigned w) {
-    watchdog_frames = w;
+void geo_set_watchdog_tolerance(int t) {
+    watchdog_cycs += t;
+}
+
+static void
+geo_irq2_updateLine(void)
+{
+    geo_m68k_setInterruptLine(irq_timer_level,
+        (ngsys.irq2_pending || ngsys.irq2_lineClearDeferred) ? 1 : 0);
+}
+
+static uint64_t
+geo_irq2_displayCounterPeriod(void)
+{
+    /* Temporary hack to get the TTE Vaporous plasma/chunky effect
+       working. Avoid applying the offset to very small values so they do
+       not wrap to a huge unsigned period. */
+    uint32_t effectiveDisplayCounter = ngsys.irq2_displayCounter;
+    if (effectiveDisplayCounter >=
+        (uint32_t)(-GEO_HACK_IRQ2_TIMERLOW_DISPLAY_COUNTER_OFFSET)) {
+        effectiveDisplayCounter +=
+            GEO_HACK_IRQ2_TIMERLOW_DISPLAY_COUNTER_OFFSET;
+    }
+    return ((uint64_t)effectiveDisplayCounter + 1ULL) << 1;
+}
+
+static void
+geo_irq2_scheduleFromNow(void)
+{
+    ngsys.irq2_timerRemaining = geo_irq2_displayCounterPeriod();
+    ngsys.irq2_timerArmed = 1;
+}
+
+void
+geo_irq2_assertPending(void)
+{
+    ngsys.irq2_lineClearDeferred = 0;
+    ngsys.irq2_pending = 1;
+    geo_irq2_updateLine();
+}
+
+void
+geo_irq2_acknowledgePending(void)
+{
+    ngsys.irq2_pending = 0;
+    ngsys.irq2_lineClearDeferred = 1;
+}
+
+void
+geo_irq2_flushDeferredClear(void)
+{
+    if (!ngsys.irq2_lineClearDeferred) {
+        return;
+    }
+
+    ngsys.irq2_lineClearDeferred = 0;
+    geo_irq2_updateLine();
+}
+
+void
+geo_irq2_deferCounterLoadDisplayCounter(void)
+{
+    ngsys.irq2_reloadWriteDeferred = 1;
+}
+
+void
+geo_irq2_flushDeferredCounterLoadDisplayCounter(void)
+{
+    if (!ngsys.irq2_reloadWriteDeferred) {
+        return;
+    }
+
+    ngsys.irq2_reloadWriteDeferred = 0;
+    geo_irq2_counterLoadDisplayCounter();
+}
+
+void
+geo_irq2_processAdvance(uint32_t advance)
+{
+    uint64_t remainingAdvance = advance;
+
+    while (remainingAdvance) {
+        if (!ngsys.irq2_timerArmed) {
+            break;
+        }
+
+        if (ngsys.irq2_timerRemaining > remainingAdvance) {
+            ngsys.irq2_timerRemaining -= remainingAdvance;
+            break;
+        }
+
+        remainingAdvance -= ngsys.irq2_timerRemaining;
+
+        if (ngsys.irq2_ctrl & IRQ_TIMER_ENABLED) {
+            geo_irq2_assertPending();
+        }
+
+        if (ngsys.irq2_ctrl & IRQ_TIMER_RELOAD_COUNT0) {
+            geo_irq2_counterLoadDisplayCounter();
+        }
+        else {
+            ngsys.irq2_timerArmed = 0;
+            ngsys.irq2_timerRemaining = 0;
+        }
+    }
+}
+
+int
+geo_irq2_processAdvanceToVBlankReload(uint32_t advance)
+{
+    if (advance &&
+        ngsys.irq2_timerArmed &&
+        (ngsys.irq2_timerRemaining == (uint64_t)advance)) {
+        if (ngsys.irq2_ctrl & IRQ_TIMER_ENABLED) {
+            geo_irq2_assertPending();
+        }
+
+        geo_irq2_counterLoadDisplayCounter();
+        return 1;
+    }
+
+    geo_irq2_processAdvance(advance);
+    return 0;
+}
+
+void
+geo_irq2_counterLoadDisplayCounter(void)
+{
+    geo_irq2_scheduleFromNow();
+}
+
+void
+geo_irq2_displayCounterSetHigh(uint16_t value)
+{
+    ngsys.irq2_displayCounter =
+        (ngsys.irq2_displayCounter & 0x0000ffffu) | ((uint32_t)value << 16);
+}
+
+void
+geo_irq2_displayCounterSetLow(uint16_t value)
+{
+    ngsys.irq2_displayCounter =
+        (ngsys.irq2_displayCounter & 0xffff0000u) | ((uint32_t)value & 0xffffu);
 }
 
 romdata_t* geo_romdata_ptr(void) {
     return &romdata;
+}
+
+static void
+geo_state_serialize(uint8_t *dst)
+{
+    geo_serial_begin();
+    geo_serial_push32(dst, GEO_STATE_MAGIC);
+    geo_serial_push16(dst, GEO_STATE_VERSION);
+    geo_serial_push8(dst, ngsys.region);
+    geo_serial_push8(dst, ngsys.sys);
+    geo_serial_push32(dst, mcycs);
+    geo_serial_push32(dst, zcycs);
+    geo_serial_push32(dst, ymcycs);
+    geo_serial_push8(dst, ngsys.irq2_ctrl);
+    geo_serial_push32(dst, ngsys.irq2_displayCounter);
+    geo_serial_push64(dst, ngsys.irq2_timerRemaining);
+    geo_serial_push8(dst, ngsys.irq2_timerArmed);
+    geo_serial_push8(dst, ngsys.irq2_pending);
+    geo_serial_push8(dst, ngsys.irq2_lineClearDeferred);
+    geo_serial_push8(dst, ngsys.irq2_reloadWriteDeferred);
+    geo_serial_push32(dst, ngsys.irq2_frags);
+    geo_serial_push32(dst, ngsys.irq2_dec);
+    geo_serial_pushblk(dst, ngsys.nvram, SIZE_64K);
+    geo_serial_pushblk(dst, ngsys.memcard, SIZE_2K);
+
+    if (ngsys.sram_present)
+        geo_serial_pushblk(dst, ngsys.cartram, SIZE_8K);
+
+    geo_serial_push32(dst, ngsys.watchdog);
+    geo_serial_push8(dst, ngsys.sound_code);
+    geo_serial_push8(dst, ngsys.sound_reply);
+
+    e9k_checkpoint_stateSave(dst);
+    geo_cycles_state_save(dst);
+    geo_lspc_state_save(dst);
+    geo_m68k_state_save(dst);
+    geo_rtc_state_save(dst);
+    geo_ymfm_state_save(dst);
+    geo_z80_state_save(dst);
+
+    if (ngsys.cdmode) {
+        geo_serial_push8(dst, watchdog_enabled);
+        geo_cd_state_save(dst);
+    }
+}
+
+static size_t
+geo_state_serializedSize(void)
+{
+    geo_state_serialize(NULL);
+    return geo_serial_size();
+}
+
+static int
+geo_state_ensureCapacity(size_t required)
+{
+    if (stateCapacity >= required) {
+        return 1;
+    }
+
+    uint8_t *newState = (uint8_t*)realloc(state, required);
+    if (!newState) {
+        return 0;
+    }
+
+    state = newState;
+    stateCapacity = required;
+    return 1;
+}
+
+static int
+geo_state_loadDecoded(uint8_t *st, uint16_t version)
+{
+    uint8_t stregion = geo_serial_pop8(st);
+    uint8_t stsys = geo_serial_pop8(st);
+
+    if ((ngsys.region != stregion) || (ngsys.sys != stsys)) {
+        geo_log(GEO_LOG_WRN, "State load operation ignored: state is "
+        "for a different system type or region\n");
+        return 0;
+    }
+
+    mcycs = geo_serial_pop32(st);
+    zcycs = geo_serial_pop32(st);
+    ymcycs = geo_serial_pop32(st);
+    ngsys.irq2_ctrl = geo_serial_pop8(st);
+    ngsys.irq2_displayCounter = geo_serial_pop32(st);
+    ngsys.irq2_timerRemaining = geo_serial_pop64(st);
+    ngsys.irq2_timerArmed = geo_serial_pop8(st);
+    ngsys.irq2_pending = geo_serial_pop8(st);
+    ngsys.irq2_lineClearDeferred = geo_serial_pop8(st);
+    ngsys.irq2_reloadWriteDeferred = geo_serial_pop8(st);
+    ngsys.irq2_frags = geo_serial_pop32(st);
+    ngsys.irq2_dec = geo_serial_pop32(st);
+    geo_serial_popblk(ngsys.nvram, st, SIZE_64K);
+    geo_serial_popblk(ngsys.memcard, st, SIZE_2K);
+
+    if (ngsys.sram_present)
+        geo_serial_popblk(ngsys.cartram, st, SIZE_8K);
+
+    ngsys.watchdog = geo_serial_pop32(st);
+    ngsys.sound_code = geo_serial_pop8(st);
+    ngsys.sound_reply = geo_serial_pop8(st);
+
+    e9k_checkpoint_stateLoad(st);
+    geo_cycles_state_load(st);
+    geo_lspc_state_load(st);
+    geo_m68k_state_load(st);
+    geo_irq2_updateLine();
+    geo_rtc_state_load(st);
+    geo_ymfm_state_load(st, version);
+    geo_z80_state_load(st);
+
+    if (ngsys.cdmode) {
+        watchdog_enabled = geo_serial_pop8(st);
+        geo_cd_state_load(st, version);
+    }
+
+    return 1;
 }
 
 // Calculate a mask for an arbitrarily sized memory block
@@ -184,7 +457,7 @@ uint32_t geo_calc_mask(unsigned nbits, unsigned val) {
 static int geo_bios_load(mz_zip_archive *zip_archive) {
     const char *biosrom;
 
-    switch (geo_get_system()) {
+    switch (ngsys.sys) {
         default: case SYSTEM_AES: {
             biosrom = geo_get_region() == REGION_JP ?
                 "neo-po.bin" : "neo-epo.bin";
@@ -211,6 +484,22 @@ static int geo_bios_load(mz_zip_archive *zip_archive) {
             biosrom = "uni-bios_4_0.rom";
             break;
         }
+        case SYSTEM_CDF: {
+            biosrom = "front-sp1.bin"; // Front Loader
+            break;
+        }
+        case SYSTEM_CDT: {
+            biosrom = "top-sp1.bin"; // Top Loader
+            break;
+        }
+        case SYSTEM_CDZ: {
+            biosrom = "neocd.bin";
+            break;
+        }
+        case SYSTEM_CDU: {
+            biosrom = "uni-bioscd33.rom";
+            break;
+        }
     }
 
     geo_log(GEO_LOG_DBG, "Loading %s\n", biosrom);
@@ -228,14 +517,15 @@ static int geo_bios_load(mz_zip_archive *zip_archive) {
     // Load L0 ROM
     romdata.l0 = mz_zip_reader_extract_file_to_heap(zip_archive,
         "000-lo.lo", &(romdata.l0sz), 0);
-    if (romdata.l0 == NULL) {
+    if (romdata.l0 == NULL &&
+        (ngsys.sys != SYSTEM_CDF && ngsys.sys != SYSTEM_CDT)) {
         mz_zip_reader_end(zip_archive);
         geo_bios_unload();
         geo_log(GEO_LOG_ERR, "Failed to load 000-lo.lo from BIOS archive!\n");
         return 0;
     }
 
-    if (geo_get_system() != SYSTEM_AES) {
+    if (ngsys.sys == SYSTEM_MVS || ngsys.sys == SYSTEM_UNI) {
         // SFIX
         romdata.sfix = mz_zip_reader_extract_file_to_heap(zip_archive,
             "sfix.sfix", &(romdata.sfixsz), 0);
@@ -263,6 +553,39 @@ static int geo_bios_load(mz_zip_archive *zip_archive) {
     return 1;
 }
 
+static int geo_bios_load_aux(mz_zip_archive *zip_archive) {
+    if (ngsys.sys == SYSTEM_CDF || ngsys.sys == SYSTEM_CDT) {
+        // Load L0 ROM, not included in neocd.zip, but in neocdz.zip
+        romdata.l0 = mz_zip_reader_extract_file_to_heap(zip_archive,
+            "000-lo.lo", &(romdata.l0sz), 0);
+        if (romdata.l0 == NULL) {
+            mz_zip_reader_end(zip_archive);
+            geo_bios_unload();
+            geo_log(GEO_LOG_ERR,
+                "Failed to load 000-lo.lo from BIOS archive!\n");
+            return 0;
+        }
+    }
+    else {
+        if (romdata.b) {
+            free(romdata.b);
+        }
+        romdata.b = mz_zip_reader_extract_file_to_heap(zip_archive,
+            "236-bios.sp1", &(romdata.bsz), 0);
+        if (romdata.b == NULL) {
+            mz_zip_reader_end(zip_archive);
+            geo_bios_unload();
+            geo_log(GEO_LOG_ERR,
+                "Failed to load 236-bios.sp1 from BIOS archive!\n");
+            return 0;
+        }
+        geo_m68k_bios_bswap();
+    }
+
+    mz_zip_reader_end(zip_archive);
+    return 1;
+}
+
 // Load a zipped collection of System ROM data from a memory buffer
 int geo_bios_load_mem(void *data, size_t size) {
     mz_zip_archive zip_archive;
@@ -274,6 +597,16 @@ int geo_bios_load_mem(void *data, size_t size) {
     return geo_bios_load(&zip_archive);
 }
 
+int geo_bios_load_mem_aux(void *data, size_t size) {
+    mz_zip_archive zip_archive;
+    memset(&zip_archive, 0, sizeof(zip_archive));
+
+    // Make sure it's actually a zip file
+    if (!mz_zip_reader_init_mem(&zip_archive, data, size, 0))
+        return 0;
+    return geo_bios_load_aux(&zip_archive);
+}
+
 // Load a zipped collection of System ROM data from a file
 int geo_bios_load_file(const char *biospath) {
     mz_zip_archive zip_archive;
@@ -283,6 +616,17 @@ int geo_bios_load_file(const char *biospath) {
     if (!mz_zip_reader_init_file(&zip_archive, biospath, 0))
         return 0;
     return geo_bios_load(&zip_archive);
+}
+
+// Load a zipped collection of Auxiliary System ROM data from a file
+int geo_bios_load_file_aux(const char *biospath) {
+    mz_zip_archive zip_archive;
+    memset(&zip_archive, 0, sizeof(zip_archive));
+
+    // Make sure it's actually a zip file
+    if (!mz_zip_reader_init_file(&zip_archive, biospath, 0))
+        return 0;
+    return geo_bios_load_aux(&zip_archive);
 }
 
 void geo_bios_unload(void) {
@@ -303,17 +647,27 @@ int geo_savedata_load(unsigned datatype, const char *filename) {
 
     switch (datatype) {
         case GEO_SAVEDATA_NVRAM: {
-            if (geo_get_system() == SYSTEM_AES)
+            if (ngsys.sys == SYSTEM_AES || ngsys.cdmode)
                 return 2;
             dataptr = geo_mem_ptr(GEO_MEMTYPE_NVRAM, &datasize);
             break;
         }
         case GEO_SAVEDATA_CARTRAM: {
+            if (!ngsys.sram_present || ngsys.cdmode)
+                return 2;
             dataptr = geo_mem_ptr(GEO_MEMTYPE_CARTRAM, &datasize);
             break;
         }
         case GEO_SAVEDATA_MEMCARD: {
+            if (ngsys.cdmode)
+                return 2;
             dataptr = geo_mem_ptr(GEO_MEMTYPE_MEMCARD, &datasize);
+            break;
+        }
+        case GEO_SAVEDATA_CDBRAM: {
+            if (!ngsys.cdmode)
+                return 2;
+            dataptr = geo_mem_ptr(GEO_MEMTYPE_CDBRAM, &datasize);
             break;
         }
         default: return 2;
@@ -351,19 +705,27 @@ int geo_savedata_save(unsigned datatype, const char *filename) {
 
     switch (datatype) {
         case GEO_SAVEDATA_NVRAM: {
-            if (geo_get_system() == SYSTEM_AES)
+            if (ngsys.sys == SYSTEM_AES || ngsys.cdmode)
                 return 2;
             dataptr = geo_mem_ptr(GEO_MEMTYPE_NVRAM, &datasize);
             break;
         }
         case GEO_SAVEDATA_CARTRAM: {
-            if (!ngsys.sram_present)
+            if (!ngsys.sram_present || ngsys.cdmode)
                 return 2;
             dataptr = geo_mem_ptr(GEO_MEMTYPE_CARTRAM, &datasize);
             break;
         }
         case GEO_SAVEDATA_MEMCARD: {
+            if (ngsys.cdmode)
+                return 2;
             dataptr = geo_mem_ptr(GEO_MEMTYPE_MEMCARD, &datasize);
+            break;
+        }
+        case GEO_SAVEDATA_CDBRAM: {
+            if (!ngsys.cdmode)
+                return 2;
+            dataptr = geo_mem_ptr(GEO_MEMTYPE_CDBRAM, &datasize);
             break;
         }
         default: return 2;
@@ -392,10 +754,12 @@ void geo_reset(int hard) {
     ngsys.watchdog = 0;
 
     geo_m68k_reset();
-    geo_z80_reset();
-    geo_ymfm_reset(); // Reset the YM2610 to make sure everything is defaulted
+    geo_z80_reset(); // Also resets the YM2610
     geo_lspc_init();
-    e9k_checkpoint_reset();
+    if (ngsys.cdmode) {
+        geo_cd_reset();
+    }
+    e9k_checkpoint_resetHard();
     geo_cycles_reset();
 
     if (hard)
@@ -408,15 +772,22 @@ void geo_init(void) {
     geo_ymfm_init();
     geo_rtc_init();
     geo_lspc_init();
-    e9k_checkpoint_reset();
+    e9k_checkpoint_resetHard();
     geo_cycles_reset();
 
     ngsys.irq2_ctrl = 0;
-    ngsys.irq2_reload = 0;
-    ngsys.irq2_counter = 0;
     ngsys.irq2_frags = 0;
     ngsys.irq2_dec = 0;
-    watchdog_frames = 8;
+    ngsys.irq2_displayCounter = 0;
+    ngsys.irq2_timerRemaining = 0;
+    ngsys.irq2_timerArmed = 0;
+    ngsys.irq2_pending = 0;
+    ngsys.irq2_lineClearDeferred = 0;
+    ngsys.irq2_reloadWriteDeferred = 0;
+    watchdog_cycs = WATCHDOG_MCYCS;
+    watchdog_enabled = 1;
+    irq_vbl_level = IRQ_VBLANK;
+    irq_timer_level = IRQ_TIMER;
 
     memset(ngsys.nvram, 0x00, SIZE_64K);
     memset(ngsys.cartram, 0x00, SIZE_8K);
@@ -424,46 +795,74 @@ void geo_init(void) {
 
     // Pre-format the memory card in case there is no existing memory card data
     geo_memcard_format(ngsys.memcard);
+
+    // CD System Initialization
+    if (ngsys.cdmode) {
+        /* CD mode uses different IRQ levels:
+           Level 1 = VBLANK, Level 2 = CD, Level 3 = Timer/HBLANK
+           Int_ack returns custom vectors (not autovectors)
+        */
+        irq_vbl_level = IRQ_VBLANK;
+        irq_timer_level = IRQ_RESET;
+        watchdog_enabled = 0; // CD watchdog starts disabled
+
+        geo_m68k_set_memmap_cd();
+        geo_z80_set_cd_mode();
+        geo_cd_init();
+    }
+}
+
+void geo_deinit(void)
+{
+    free(state);
+    state = NULL;
+    stateCapacity = 0;
 }
 
 int geo_state_load_raw(const void *sstate) {
-    uint8_t *st = (uint8_t*)sstate;
-    geo_serial_begin();
-    uint8_t stregion = geo_serial_pop8(st);
-    uint8_t stsys = geo_serial_pop8(st);
+    return geo_state_load_rawSized(sstate, 0);
+}
 
-    if ((region != stregion) || (sys != stsys)) {
-        geo_log(GEO_LOG_WRN, "State load operation ignored: state is "
-        "for a different system type or region\n");
+int
+geo_state_load_rawSized(const void *sstate, size_t size)
+{
+    uint8_t *st = (uint8_t*)sstate;
+    size_t expectedSize = geo_state_serializedSize();
+
+    if (size && (size < 6u)) {
+        geo_log(GEO_LOG_WRN, "State load operation ignored: savestate too "
+        "small (%zu bytes)\n", size);
         return 0;
     }
 
-    mcycs = geo_serial_pop32(st);
-    zcycs = geo_serial_pop32(st);
-    ymcycs = geo_serial_pop32(st);
-    ngsys.irq2_ctrl = geo_serial_pop8(st);
-    ngsys.irq2_reload = geo_serial_pop32(st);
-    ngsys.irq2_counter = geo_serial_pop32(st);
-    ngsys.irq2_frags = geo_serial_pop32(st);
-    ngsys.irq2_dec = geo_serial_pop32(st);
-    geo_serial_popblk(ngsys.nvram, st, SIZE_64K);
-    geo_serial_popblk(ngsys.memcard, st, SIZE_2K);
+    geo_serial_begin();
 
-    if (ngsys.sram_present)
-        geo_serial_popblk(ngsys.cartram, st, SIZE_8K);
+    if (geo_serial_pop32(st) != GEO_STATE_MAGIC) {
+        geo_log(GEO_LOG_WRN, "State load operation ignored: unsupported "
+        "savestate format\n");
+        return 0;
+    }
 
-    ngsys.watchdog = geo_serial_pop32(st);
-    ngsys.sound_code = geo_serial_pop8(st);
-    ngsys.sound_reply = geo_serial_pop8(st);
+    uint16_t version = geo_serial_pop16(st);
+    if ((version < GEO_STATE_VERSION_MIN) || (version > GEO_STATE_VERSION)) {
+        geo_log(GEO_LOG_WRN, "State load operation ignored: unsupported "
+        "savestate version %u\n", version);
+        return 0;
+    }
 
-    e9k_checkpoint_state_load(st);
-    geo_cycles_state_load(st);
-    geo_lspc_state_load(st);
-    geo_m68k_state_load(st);
-    geo_rtc_state_load(st);
-    geo_ymfm_state_load(st);
-    geo_z80_state_load(st);
-    return 1;
+    if (size && (size != expectedSize)) {
+        size_t version3Size = expectedSize + sizeof(uint32_t);
+        int sizeAllowed = ((version == 3u) && (size == version3Size));
+        sizeAllowed = sizeAllowed || (ngsys.cdmode && (version < 5u));
+
+        if (!sizeAllowed) {
+            geo_log(GEO_LOG_WRN, "State load operation ignored: savestate size "
+            "mismatch (expected %zu, got %zu)\n", expectedSize, size);
+            return 0;
+        }
+    }
+
+    return geo_state_loadDecoded(st, version);
 }
 
 // Load a state from a file
@@ -498,7 +897,7 @@ int geo_state_load(const char *filename) {
     }
 
     // File has been read, now copy it into the emulator
-    int ret = geo_state_load_raw((const void*)sstatefile);
+    int ret = geo_state_load_rawSized((const void*)sstatefile, filesize);
 
     // Free the allocated memory and close file handle
     fclose(file);
@@ -508,34 +907,12 @@ int geo_state_load(const char *filename) {
 }
 
 const void* geo_state_save_raw(void) {
-    geo_serial_begin();
-    geo_serial_push8(state, region);
-    geo_serial_push8(state, sys);
-    geo_serial_push32(state, mcycs);
-    geo_serial_push32(state, zcycs);
-    geo_serial_push32(state, ymcycs);
-    geo_serial_push8(state, ngsys.irq2_ctrl);
-    geo_serial_push32(state, ngsys.irq2_reload);
-    geo_serial_push32(state, ngsys.irq2_counter);
-    geo_serial_push32(state, ngsys.irq2_frags);
-    geo_serial_push32(state, ngsys.irq2_dec);
-    geo_serial_pushblk(state, ngsys.nvram, SIZE_64K);
-    geo_serial_pushblk(state, ngsys.memcard, SIZE_2K);
+    size_t required = geo_state_serializedSize();
+    if (!geo_state_ensureCapacity(required)) {
+        return NULL;
+    }
 
-    if (ngsys.sram_present)
-        geo_serial_pushblk(state, ngsys.cartram, SIZE_8K);
-
-    geo_serial_push32(state, ngsys.watchdog);
-    geo_serial_push8(state, ngsys.sound_code);
-    geo_serial_push8(state, ngsys.sound_reply);
-
-    e9k_checkpoint_state_save(state);
-    geo_cycles_state_save(state);
-    geo_lspc_state_save(state);
-    geo_m68k_state_save(state);
-    geo_rtc_state_save(state);
-    geo_ymfm_state_save(state);
-    geo_z80_state_save(state);
+    geo_state_serialize(state);
 
     return (const void*)state;
 }
@@ -550,6 +927,10 @@ int geo_state_save(const char *filename) {
 
     // Snapshot the running state and get the memory address
     uint8_t *sstate = (uint8_t*)geo_state_save_raw();
+    if (!sstate) {
+        fclose(file);
+        return 0;
+    }
 
     // Write and close the file
     fwrite(sstate, geo_serial_size(), sizeof(uint8_t), file);
@@ -560,19 +941,17 @@ int geo_state_save(const char *filename) {
 
 // Return the size of the state
 size_t geo_state_size(void) {
-    // Perform a false state save to determine the size if it is unknown
-    if (!state_sz) {
-        const void *st = geo_state_save_raw();
-        (void)st;
-        state_sz = geo_serial_size();
-    }
-    return state_sz;
+    return geo_state_serializedSize();
 }
 
 // Return a pointer to a raw memory block
 const void* geo_mem_ptr(unsigned type, size_t *sz) {
     switch (type) {
         case GEO_MEMTYPE_MAINRAM: {
+            if (ngsys.cdmode) {
+                if (sz) *sz = SIZE_2M;
+                return geo_m68k_ram_ptr(); // Returns pram in CD mode
+            }
             if (sz) *sz = SIZE_64K;
             return geo_m68k_ram_ptr();
         }
@@ -608,22 +987,26 @@ const void* geo_mem_ptr(unsigned type, size_t *sz) {
             if (sz) *sz = SIZE_128K;
             return geo_m68k_dynfix_ptr();
         }
+        case GEO_MEMTYPE_CDBRAM: {
+            if (sz) *sz = SIZE_8K;
+            return geo_cd_bram_ptr();
+        }
     }
 
     return NULL;
 }
 
 // Increment the watchdog counter
-static inline void geo_watchdog_increment(void) {
+static inline void geo_watchdog_increment(unsigned cycs) {
     /* If 8 frames have passed since the Watchdog was kicked, assume a bug or
-       or hardware fault and recover by resetting the system. The true number
-       of cycles needed for this to happen in hardware is 3244030, or slightly
-       under 8 frames of video. Currently there is a single case where the
-       watchdog can be kicked a few cycles too early. Hardware verification
-       or an audit of 68K CPU timing will be required to understand the root
-       cause.
+       or hardware fault and recover by resetting the system.
     */
-    if (++ngsys.watchdog >= watchdog_frames) {
+    if (!watchdog_enabled) {
+        return;
+    }
+
+    ngsys.watchdog += cycs;
+    if (ngsys.watchdog >= watchdog_cycs) {
         geo_log(GEO_LOG_WRN, "Watchdog reset\n");
         geo_reset(0);
     }
@@ -634,20 +1017,46 @@ void geo_watchdog_reset(void) {
     ngsys.watchdog = 0;
 }
 
+void geo_watchdog_enable(unsigned enable) {
+    watchdog_enabled = enable;
+    if (enable) {
+        ngsys.watchdog = 0;
+    }
+}
+
+int
+geo_stepZ80Instruction(void)
+{
+    int scycs = geo_z80_stepInstruction();
+    if (scycs <= 0) {
+        return 0;
+    }
+    zcycs += (uint32_t)scycs * DIV_Z80;
+    ymcycs += (uint32_t)scycs;
+    while (ymcycs >= DIV_YM2610) {
+        ymcycs -= DIV_YM2610;
+        ymsamps += geo_ymfm_exec();
+    }
+    return 1;
+}
 
 void geo_exec(void) {
     int dbg_broke_midframe = 0;
+
     while (mcycs < MCYC_PER_FRAME) {
         // Allow debugger to halt mid-frame after a single-instruction step or breakpoint
         if (e9k_debugger_break_now()) { dbg_broke_midframe = 1; break; }
         icycs = geo_m68k_run(1);
         mcycs += (icycs * DIV_M68K) >> oc;
 
-        // If this is an arcade system, update the RTC
-        if (sys)
-            geo_rtc_sync(icycs >> oc);
+        // Watchdog counts real time, always at the base clock rate
+        geo_watchdog_increment(icycs * DIV_M68K);
 
-        // Handle IRQ2 counter
+        // If this is an arcade system, update the RTC
+        if (ngsys.sys == SYSTEM_MVS || ngsys.sys == SYSTEM_UNI) {
+            geo_rtc_sync(icycs >> oc);
+        }
+
         ngsys.irq2_dec = (icycs >> 1) >> oc; // Measured in pixel clocks
         ngsys.irq2_frags += icycs & irq2_fragmask;
         if (ngsys.irq2_frags >= (2U << oc)) {
@@ -655,26 +1064,21 @@ void geo_exec(void) {
             ++ngsys.irq2_dec;
         }
 
-        for (uint32_t i = 0; i < ngsys.irq2_dec; ++i) {
-            if (--ngsys.irq2_counter == 0) {
-                /* Reload counter when it reaches 0 - if this bit is not set,
-                   rely on unsigned integer underflow to prevent repeated
-                   assertion of the IRQ line.
-                */
-                if (ngsys.irq2_ctrl & IRQ_TIMER_RELOAD_COUNT0)
-                    ngsys.irq2_counter += ngsys.irq2_reload;
-
-                // Timer Interrupt Enabled
-                if (ngsys.irq2_ctrl & IRQ_TIMER_ENABLED)
-                    geo_m68k_interrupt(IRQ_TIMER);
-            }
-        }
-
         geo_lspc_run(icycs >> oc);
+        geo_irq2_flushDeferredCounterLoadDisplayCounter();
+        geo_irq2_flushDeferredClear();
+
+        if (ngsys.cdmode) {
+            geo_cd_tick((icycs * DIV_M68K) >> oc);
+        }
 
         // Catch the Z80 and YM2610 up to the 68K
         while (zcycs < mcycs) {
             size_t scycs = geo_z80_run(1);
+            if (e9k_debugger_break_now()) {
+                dbg_broke_midframe = 1;
+                break;
+            }
             zcycs += scycs * DIV_Z80;
             ymcycs += scycs;
             if (ymcycs >= DIV_YM2610) {
@@ -682,18 +1086,26 @@ void geo_exec(void) {
                 ymsamps += geo_ymfm_exec();
             }
         }
+        if (dbg_broke_midframe) {
+            break;
+        }
     }
 
     mcycs %= MCYC_PER_FRAME;
     zcycs %= MCYC_PER_FRAME;
 
     if (dbg_broke_midframe) {
-        // Skip audio and watchdog when breaking mid-frame to avoid unintended resets
+        // Skip audio when breaking mid-frame to avoid unintended output
         // Also drop any accumulated YM samples so we don't overflow the output buffer
         // on the next full-frame run after repeated mid-frame breaks (watch/breakpoint/step).
         ymsamps = 0;
         // Reset YM output buffer write position; geo_mixer_output() won't be called.
         (void)geo_ymfm_get_buffer();
+#ifdef E9K_HACK_REGISTER_LOG
+        if (e9k_debugger_isRegisterLogEnabled()) {
+            e9k_debugger_commitRegisterLogFrame();
+        }
+#endif
         return;
     }
 
@@ -701,6 +1113,13 @@ void geo_exec(void) {
     geo_mixer_output(ymsamps);
     ymsamps = 0;
 
-    // Increment the Watchdog counter at the end of each frame
-    geo_watchdog_increment();
+    if (ngsys.cdmode) {
+        geo_cd_frame_end();
+    }
+
+#ifdef E9K_HACK_REGISTER_LOG
+    if (e9k_debugger_isRegisterLogEnabled()) {
+        e9k_debugger_commitRegisterLogFrame();
+    }
+#endif
 }

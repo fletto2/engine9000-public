@@ -6,12 +6,13 @@
  * See COPYING for license details
  */
 
+#include "e9ui.h"
+
 #include <SDL.h>
 #include <stdint.h>
 #include <string.h>
 
 #include "alloc.h"
-#include "e9ui.h"
 #include "e9ui_window.h"
 
 typedef struct e9ui_window_overlay_state
@@ -19,10 +20,13 @@ typedef struct e9ui_window_overlay_state
     e9ui_window_t *owner;
     e9ui_rect_t rect;
     e9ui_rect_t dragStartRect;
+    e9ui_rect_t restoreRect;
     char title[128];
     e9ui_component_t *body;
     SDL_Rect closeRect;
     int dragging;
+    int dragStartMouseX;
+    int dragStartMouseY;
     int dragOffsetX;
     int dragOffsetY;
     int resizing;
@@ -31,6 +35,9 @@ typedef struct e9ui_window_overlay_state
     int resizeStartMouseY;
     int minWidthPx;
     int minHeightPx;
+    int maximized;
+    int restoreRectValid;
+    int closeOnEscape;
     e9ui_window_close_cb_t onClose;
     void *onCloseUser;
 } e9ui_window_overlay_state_t;
@@ -49,6 +56,7 @@ struct e9ui_window
     int open;
     int minWidthPx;
     int minHeightPx;
+    int closeOnEscape;
 };
 
 static SDL_Cursor *e9ui_window_overlayCursorArrow = NULL;
@@ -62,6 +70,12 @@ static SDL_Texture *e9ui_window_overlayCloseIcon = NULL;
 static int e9ui_window_overlayCloseIconW = 0;
 static int e9ui_window_overlayCloseIconH = 0;
 
+static void
+e9ui_window_overlaySyncMaximizedRect(e9ui_window_overlay_state_t *st, const e9ui_context_t *ctx);
+
+static void
+e9ui_window_overlayToggleMaximized(e9ui_window_overlay_state_t *st, const e9ui_context_t *ctx);
+
 enum
 {
     E9UI_WINDOW_OVERLAY_RESIZE_LEFT   = 1 << 0,
@@ -69,6 +83,17 @@ enum
     E9UI_WINDOW_OVERLAY_RESIZE_TOP    = 1 << 2,
     E9UI_WINDOW_OVERLAY_RESIZE_BOTTOM = 1 << 3
 };
+
+static int
+e9ui_window_overlayManualChangeThresholdPx(const e9ui_context_t *ctx)
+{
+    int px = e9ui_scale_px(ctx, 4);
+
+    if (px < 1) {
+        px = 1;
+    }
+    return px;
+}
 
 static void
 e9ui_window_overlayEnsureCursors(void)
@@ -293,6 +318,7 @@ e9ui_window_overlayLayout(e9ui_component_t *self, e9ui_context_t *ctx, e9ui_rect
         return;
     }
     e9ui_window_overlay_state_t *st = (e9ui_window_overlay_state_t *)self->state;
+    e9ui_window_overlaySyncMaximizedRect(st, ctx);
     self->bounds = st->rect;
     int titleH = e9ui_window_overlayTitlebarHeight(ctx);
     int frameInset = e9ui_scale_px(ctx, 4);
@@ -557,6 +583,49 @@ e9ui_window_overlayClampRectToBounds(e9ui_rect_t *rect, const e9ui_context_t *ct
 }
 
 static void
+e9ui_window_overlaySyncMaximizedRect(e9ui_window_overlay_state_t *st, const e9ui_context_t *ctx)
+{
+    if (!st || !ctx || !st->maximized) {
+        return;
+    }
+    int minW = e9ui_scale_px(ctx, (st->minWidthPx > 0) ? st->minWidthPx : 360);
+    int minH = e9ui_scale_px(ctx, (st->minHeightPx > 0) ? st->minHeightPx : 320);
+    st->rect = (e9ui_rect_t){ 0, 0, ctx->winW, ctx->winH };
+    e9ui_window_overlayClampRectToBounds(&st->rect, ctx, minW, minH);
+}
+
+static void
+e9ui_window_overlayToggleMaximized(e9ui_window_overlay_state_t *st, const e9ui_context_t *ctx)
+{
+    if (!st || !ctx) {
+        return;
+    }
+    int minW = e9ui_scale_px(ctx, (st->minWidthPx > 0) ? st->minWidthPx : 360);
+    int minH = e9ui_scale_px(ctx, (st->minHeightPx > 0) ? st->minHeightPx : 320);
+    if (st->maximized) {
+        st->maximized = 0;
+        if (st->restoreRectValid) {
+            st->rect = st->restoreRect;
+        }
+        e9ui_window_overlayClampRectToBounds(&st->rect, ctx, minW, minH);
+        return;
+    }
+    st->restoreRect = st->rect;
+    st->restoreRectValid = 1;
+    st->maximized = 1;
+    e9ui_window_overlaySyncMaximizedRect(st, ctx);
+}
+
+static void
+e9ui_window_overlayExitMaximizedForManualChange(e9ui_window_overlay_state_t *st)
+{
+    if (!st || !st->maximized) {
+        return;
+    }
+    st->maximized = 0;
+}
+
+static void
 e9ui_window_overlayApplyResizeDrag(e9ui_window_overlay_state_t *st, const e9ui_context_t *ctx, int mouseX, int mouseY)
 {
     if (!st || !ctx || !st->resizing || !st->resizeMask) {
@@ -719,6 +788,15 @@ e9ui_window_overlayHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, cons
             }
             return 1;
         }
+        if (e9ui_window_overlayPointInRect(&titleRect, mx, my) && ev->button.clicks >= 2) {
+            st->dragging = 0;
+            st->resizing = 0;
+            st->resizeMask = 0;
+            e9ui_cursorRelease(ctx, self);
+            e9ui_window_overlayToggleMaximized(st, ctx);
+            e9ui_window_overlayUpdateCursor(self, st, ctx, mx, my);
+            return 1;
+        }
         int resizeMask = e9ui_window_overlayResizeMaskAt(st, ctx, mx, my);
         if (resizeMask) {
             st->resizing = 1;
@@ -733,6 +811,8 @@ e9ui_window_overlayHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, cons
         if (e9ui_window_overlayPointInRect(&titleRect, mx, my)) {
             st->dragging = 1;
             st->dragStartRect = st->rect;
+            st->dragStartMouseX = mx;
+            st->dragStartMouseY = my;
             st->dragOffsetX = mx - st->rect.x;
             st->dragOffsetY = my - st->rect.y;
             e9ui_window_overlayUpdateCursor(self, st, ctx, mx, my);
@@ -773,17 +853,37 @@ e9ui_window_overlayHandleEvent(e9ui_component_t *self, e9ui_context_t *ctx, cons
     if (ev->type == SDL_KEYDOWN && ev->key.keysym.sym == SDLK_ESCAPE) {
         e9ui_component_t *focus = e9ui_getFocus(ctx);
         if (focus && e9ui_window_componentContainsComponent(self, focus)) {
-            if (st->onClose) {
+            if (st->closeOnEscape && st->onClose) {
                 e9ui_window_overlayNotifyCloseDeferred(ctx, st);
             }
             return 1;
         }
     }
     if (ev->type == SDL_MOUSEMOTION && st->resizing) {
+        if (st->maximized) {
+            int dx = ev->motion.x - st->resizeStartMouseX;
+            int dy = ev->motion.y - st->resizeStartMouseY;
+            int threshold = e9ui_window_overlayManualChangeThresholdPx(ctx);
+
+            if (abs(dx) < threshold && abs(dy) < threshold) {
+                return 1;
+            }
+        }
+        e9ui_window_overlayExitMaximizedForManualChange(st);
         e9ui_window_overlayApplyResizeDrag(st, ctx, ev->motion.x, ev->motion.y);
         return 1;
     }
     if (ev->type == SDL_MOUSEMOTION && st->dragging) {
+        if (st->maximized) {
+            int dx = ev->motion.x - st->dragStartMouseX;
+            int dy = ev->motion.y - st->dragStartMouseY;
+            int threshold = e9ui_window_overlayManualChangeThresholdPx(ctx);
+
+            if (abs(dx) < threshold && abs(dy) < threshold) {
+                return 1;
+            }
+        }
+        e9ui_window_overlayExitMaximizedForManualChange(st);
         int nextX = ev->motion.x - st->dragOffsetX;
         int nextY = ev->motion.y - st->dragOffsetY;
         st->rect.x = nextX;
@@ -877,6 +977,7 @@ e9ui_window_overlayMake(e9ui_window_t *owner,
     st->body = body;
     st->minWidthPx = owner ? owner->minWidthPx : 0;
     st->minHeightPx = owner ? owner->minHeightPx : 0;
+    st->closeOnEscape = owner ? owner->closeOnEscape : 1;
     st->onClose = onClose;
     st->onCloseUser = onCloseUser;
     if (title && *title) {
@@ -907,6 +1008,7 @@ e9ui_windowCreate(e9ui_window_backend_t backend)
         return NULL;
     }
     window->backend = backend;
+    window->closeOnEscape = 1;
     return window;
 }
 
@@ -923,6 +1025,20 @@ e9ui_windowSetMinSize(e9ui_window_t *window, int minWidthPx, int minHeightPx)
         e9ui_window_overlay_state_t *st = (e9ui_window_overlay_state_t *)window->windowComp->state;
         st->minWidthPx = window->minWidthPx;
         st->minHeightPx = window->minHeightPx;
+    }
+}
+
+void
+e9ui_windowSetCloseOnEscape(e9ui_window_t *window, int closeOnEscape)
+{
+    if (!window) {
+        return;
+    }
+    window->closeOnEscape = closeOnEscape ? 1 : 0;
+    if (window->windowComp && window->windowComp->state &&
+        window->backend == e9ui_window_backend_overlay) {
+        e9ui_window_overlay_state_t *st = (e9ui_window_overlay_state_t *)window->windowComp->state;
+        st->closeOnEscape = window->closeOnEscape;
     }
 }
 
@@ -969,6 +1085,9 @@ e9ui_windowOpen(e9ui_window_t *window,
     }
     window->windowComp = host;
     window->open = 1;
+    if (ctx->blockingWindowOpened) {
+        ctx->blockingWindowOpened(ctx);
+    }
     return 1;
 }
 
@@ -1049,6 +1168,54 @@ e9ui_windowCloseAllOverlay(void)
             }
         }
     }
+}
+
+int
+e9ui_windowCloseTopOverlay(void)
+{
+    if (!e9ui) {
+        return 0;
+    }
+    e9ui_component_t *hostRoot = e9ui_getOverlayHost();
+    if (!hostRoot) {
+        hostRoot = e9ui->root;
+    }
+    if (!hostRoot) {
+        return 0;
+    }
+    e9ui_child_reverse_iterator iter;
+    if (!e9ui_child_iterateChildrenReverse(hostRoot, &iter)) {
+        return 0;
+    }
+    for (e9ui_child_reverse_iterator *it = e9ui_child_iteratePrev(&iter);
+         it;
+         it = e9ui_child_iteratePrev(&iter)) {
+        if (!it->child || !it->child->name) {
+            continue;
+        }
+        if (strcmp(it->child->name, "e9ui_window_overlay") != 0) {
+            continue;
+        }
+        e9ui_window_overlay_state_t *st = (e9ui_window_overlay_state_t *)it->child->state;
+        if (st && !st->closeOnEscape) {
+            return 0;
+        }
+        if (st && st->onClose) {
+            e9ui_window_overlayNotifyCloseDeferred(&e9ui->ctx, st);
+            return 1;
+        }
+        if (st && st->owner) {
+            e9ui_windowClose(st->owner);
+            return 1;
+        }
+        if (hostRoot->name && strcmp(hostRoot->name, "e9ui_stack") == 0) {
+            e9ui_stack_remove(hostRoot, &e9ui->ctx, it->child);
+        } else {
+            e9ui_childRemove(hostRoot, it->child, &e9ui->ctx);
+        }
+        return 1;
+    }
+    return 0;
 }
 
 int
@@ -1144,6 +1311,18 @@ e9ui_windowClampRectSize(e9ui_rect_t *rect,
 }
 
 int
+e9ui_windowHasSavedPosition(int x, int y)
+{
+    return (x != E9UI_WINDOW_COORD_UNSET && y != E9UI_WINDOW_COORD_UNSET) ? 1 : 0;
+}
+
+int
+e9ui_windowHasSavedSize(int w, int h)
+{
+    return (w > 0 && h > 0) ? 1 : 0;
+}
+
+int
 e9ui_windowCaptureRectChanged(e9ui_window_t *window,
                               const e9ui_context_t *ctx,
                               int *hasSaved,
@@ -1177,12 +1356,12 @@ e9ui_windowCaptureRectChanged(e9ui_window_t *window,
 
 int
 e9ui_windowCaptureRectSnapshot(const e9ui_window_t *window,
-                                  const e9ui_context_t *ctx,
-                                  int *hasSaved,
-                                  int *x,
-                                  int *y,
-                                  int *w,
-                                  int *h)
+                               const e9ui_context_t *ctx,
+                               int *hasSaved,
+                               int *x,
+                               int *y,
+                               int *w,
+                               int *h)
 {
     if (!x || !y || !w || !h) {
         return 0;
@@ -1196,19 +1375,98 @@ e9ui_windowCaptureRectSnapshot(const e9ui_window_t *window,
     return 1;
 }
 
+int
+e9ui_windowCaptureStateRectChanged(e9ui_window_state_t *state,
+                                   const e9ui_context_t *ctx)
+{
+    if (!state) {
+        return 0;
+    }
+    return e9ui_windowCaptureRectChanged(state->windowHost,
+                                         ctx,
+                                         &state->winHasSaved,
+                                         &state->winX,
+                                         &state->winY,
+                                         &state->winW,
+                                         &state->winH);
+}
+
+int
+e9ui_windowCaptureStateRectSnapshot(e9ui_window_state_t *state,
+                                    const e9ui_context_t *ctx)
+{
+    if (!state) {
+        return 0;
+    }
+    return e9ui_windowCaptureRectSnapshot(state->windowHost,
+                                          ctx,
+                                          &state->winHasSaved,
+                                          &state->winX,
+                                          &state->winY,
+                                          &state->winW,
+                                          &state->winH);
+}
+
+void
+e9ui_windowPersistRect(FILE *file,
+                       const char *prefix,
+                       const e9ui_window_t *window,
+                       const e9ui_context_t *ctx,
+                       int *hasSaved,
+                       int *x,
+                       int *y,
+                       int *w,
+                       int *h)
+{
+    if (!file || !prefix || !prefix[0] || !hasSaved || !x || !y || !w || !h) {
+        return;
+    }
+    if (window && ctx) {
+        (void)e9ui_windowCaptureRectSnapshot(window, ctx, hasSaved, x, y, w, h);
+    }
+    *hasSaved = e9ui_windowHasSavedPosition(*x, *y);
+    if (!*hasSaved || !e9ui_windowHasSavedSize(*w, *h)) {
+        return;
+    }
+    fprintf(file, "%s.win_x=%d\n", prefix, *x);
+    fprintf(file, "%s.win_y=%d\n", prefix, *y);
+    fprintf(file, "%s.win_w=%d\n", prefix, *w);
+    fprintf(file, "%s.win_h=%d\n", prefix, *h);
+}
+
+void
+e9ui_windowPersistStateRect(FILE *file,
+                            const char *prefix,
+                            e9ui_window_state_t *state,
+                            const e9ui_context_t *ctx)
+{
+    if (!state) {
+        return;
+    }
+    e9ui_windowPersistRect(file,
+                           prefix,
+                           state->open ? state->windowHost : NULL,
+                           ctx,
+                           &state->winHasSaved,
+                           &state->winX,
+                           &state->winY,
+                           &state->winW,
+                           &state->winH);
+}
+
 e9ui_rect_t
 e9ui_windowResolveOpenRect(const e9ui_context_t *ctx,
-                                    e9ui_rect_t defaultRect,
-                                    int minWidthPx,
-                                    int minHeightPx,
-                                    int centerWhenNoSaved,
-                                    int hasPos,
-                                    int hasSize,
-                                    int x,
-                                    int y,
-                                    int w,
-                                    int h)
+                           e9ui_rect_t defaultRect,
+                           int minWidthPx,
+                           int minHeightPx,
+                           int centerWhenNoSaved,
+                           int x,
+                           int y,
+                           int w,
+                           int h)
 {
+    int hasPos = e9ui_windowHasSavedPosition(x, y);
+    int hasSize = e9ui_windowHasSavedSize(w, h);
     e9ui_rect_t rect = e9ui_windowRestoreRect(ctx, defaultRect, hasPos, hasSize, x, y, w, h);
     if (minWidthPx > 0 || minHeightPx > 0) {
         e9ui_windowClampRectSize(&rect, ctx, minWidthPx, minHeightPx);
@@ -1220,6 +1478,46 @@ e9ui_windowResolveOpenRect(const e9ui_context_t *ctx,
         rect.y = (winH - rect.h) / 2;
     }
     return rect;
+}
+
+e9ui_rect_t
+e9ui_windowResolveStateOpenRect(const e9ui_context_t *ctx,
+                                e9ui_rect_t defaultRect,
+                                const e9ui_window_state_t *state)
+{
+    int x = E9UI_WINDOW_COORD_UNSET;
+    int y = E9UI_WINDOW_COORD_UNSET;
+    int w = 0;
+    int h = 0;
+    int minWidthPx = 0;
+    int minHeightPx = 0;
+    int centerWhenNoSaved = 0;
+    if (state) {
+        x = state->winX;
+        y = state->winY;
+        w = state->winW;
+        h = state->winH;
+        minWidthPx = state->openMinWidthPx;
+        minHeightPx = state->openMinHeightPx;
+        centerWhenNoSaved = state->openCenterWhenNoSaved ? 1 : 0;
+        if (!e9ui_windowHasSavedSize(w, h)) {
+            if (state->openMinWidthNoSavedSizePx > minWidthPx) {
+                minWidthPx = state->openMinWidthNoSavedSizePx;
+            }
+            if (state->openMinHeightNoSavedSizePx > minHeightPx) {
+                minHeightPx = state->openMinHeightNoSavedSizePx;
+            }
+        }
+    }
+    return e9ui_windowResolveOpenRect(ctx,
+                                      defaultRect,
+                                      minWidthPx,
+                                      minHeightPx,
+                                      centerWhenNoSaved,
+                                      x,
+                                      y,
+                                      w,
+                                      h);
 }
 
 int

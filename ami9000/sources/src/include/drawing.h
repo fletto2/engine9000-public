@@ -12,6 +12,9 @@
 #ifndef E9K_HACK_AMI_SPRITE_VIS
 #define E9K_HACK_AMI_SPRITE_VIS 0
 #endif
+#ifndef E9K_HACK_AMI_PALETTE_VIS
+#define E9K_HACK_AMI_PALETTE_VIS 0
+#endif
 
 #define SMART_UPDATE 1
 
@@ -30,6 +33,7 @@ extern int lores_shift, shres_shift, interlace_seen;
 extern int visible_left_border, visible_right_border;
 extern int detected_screen_resolution;
 extern int hsync_end_left_border, denisehtotal;
+extern void drawing_setLibretroWinuaeWindowPositioning(int enabled);
 
 #define AMIGA_WIDTH_MAX (754 / 2)
 #define AMIGA_HEIGHT_MAX_PAL (576 / 2)
@@ -340,6 +344,14 @@ extern struct decision line_decisions[2 * (MAXVPOS + MAXVPOS_WRAPLINES) + 1];
 
 extern uae_u8 line_data[(MAXVPOS + MAXVPOS_WRAPLINES) * 2][MAX_PLANES * MAX_WORDS_PER_LINE * 2];
 #if E9K_HACK_BLITTER_VIS
+typedef struct drawing_blitter_vis_native_span
+{
+	uint16_t x;
+	uint16_t y;
+	uint16_t xEnd;
+	uae_u32 blitId;
+} drawing_blitter_vis_native_span_t;
+
 extern void drawing_blitterVisClearSourceFrame(void);
 extern void drawing_blitterVisClearFrame(void);
 extern void drawing_blitterVisClearAll(void);
@@ -347,9 +359,7 @@ extern void drawing_blitterVisSnapshotFrame(void);
 extern void drawing_blitterVisSetLineContext(int sourceLine, int nativeLine);
 extern void drawing_blitterVisMarkSourceRange(int lineno, int pixelStart, int pixelCount, uae_u32 blitId);
 extern void drawing_blitterVisMarkNativeRange(int pixelStart, int pixelCount, uae_u32 blitId);
-extern int drawing_blitterVisGetNativePixelBlitId(int pixelY, int pixelX, uae_u32 *blitId);
-extern int drawing_blitterVisTakeNativePixelBlitId(int pixelY, int pixelX, uae_u32 *blitId);
-extern uint32_t drawing_blitterVisGetSourceMarkCallsFrame(void);
+extern const drawing_blitter_vis_native_span_t *drawing_blitterVisGetSnapshotSpans(size_t *count);
 extern uint32_t drawing_blitterVisGetNativeMarkCallsFrame(void);
 extern uint32_t drawing_blitterVisGetNativeMarkCallsSnapshot(void);
 #endif
@@ -364,6 +374,11 @@ extern void drawing_spriteVisSetNativeLineContext(int nativeLine);
 extern void drawing_spriteVisMarkNativePixel(int pixelX, int spriteIndex, int attachedPair);
 extern void drawing_spriteVisClearNativeRange(int pixelStart, int pixelCount);
 extern int drawing_spriteVisGetNativePixelSpriteId(int pixelY, int pixelX, uae_u32 *spriteIndex, int *attachedPair);
+#endif
+
+#if E9K_HACK_AMI_PALETTE_VIS
+extern void drawing_setPaletteVisEnabled(int enabled);
+extern int drawing_getPaletteVisEnabled(void);
 #endif
 
 /* Functions in drawing.c.  */

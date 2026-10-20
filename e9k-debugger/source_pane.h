@@ -12,6 +12,7 @@
 #include <SDL_ttf.h>
 #include <stdint.h>
 #include <stddef.h>
+
 #include "e9ui_component.h"
 #include "e9ui_context.h"
 
@@ -19,7 +20,10 @@ typedef enum source_pane_mode {
     source_pane_mode_c = 0,
     source_pane_mode_a = 1,
     source_pane_mode_h = 2,
-    source_pane_mode_cpr = 3
+    source_pane_mode_cpr = 3,
+    source_pane_mode_sym = 4,
+    source_pane_mode_z80 = 5,
+    source_pane_mode_z80s = 6
 } source_pane_mode_t;
 e9ui_component_t *
 source_pane_make(void);
@@ -41,6 +45,9 @@ source_pane_centerOnAddress(e9ui_component_t *comp, e9ui_context_t *ctx, uint32_
 
 void
 source_pane_submitAddress(e9ui_component_t *comp, e9ui_context_t *ctx, uint32_t addr);
+
+void
+source_pane_openSourceLocation(e9ui_component_t *comp, e9ui_context_t *ctx, const char *file, int line);
 
 int
 source_pane_getCurrentFile(e9ui_component_t *comp, char *out, size_t cap);

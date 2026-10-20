@@ -13,10 +13,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "aux_window.h"
 #include "shader_ui.h"
 #include "alloc.h"
 #include "crt.h"
-#include "debug.h"
 #include "debugger.h"
 #include "config.h"
 #include "e9ui.h"
@@ -76,14 +76,8 @@ typedef struct shader_ui_overlay_body_state {
 } shader_ui_overlay_body_state_t;
 
 typedef struct e9k_shader_ui {
-    int open;
+    e9ui_window_state_t windowState;
     int dirty;
-    int winX;
-    int winY;
-    int winW;
-    int winH;
-    int winHasSaved;
-    e9ui_window_t *windowHost;
     SDL_Window *window;
     SDL_Renderer *renderer;
     e9ui_context_t ctx;
@@ -130,7 +124,17 @@ typedef struct e9k_shader_ui {
     float snapshotScanlineBorder;
 } e9k_shader_ui_t;
 
-static e9k_shader_ui_t shader_ui_state = {0};
+static e9k_shader_ui_t shader_ui_state = {
+    .windowState.winX = E9UI_WINDOW_COORD_UNSET,
+    .windowState.winY = E9UI_WINDOW_COORD_UNSET,
+    .windowState.openMinWidthPx = 420,
+    .windowState.openMinHeightPx = 420,
+    .windowState.openCenterWhenNoSaved = 1,
+};
+
+static const aux_window_ops_t shader_ui_auxWindowOps = {
+    .render = shader_ui_render,
+};
 
 static e9ui_window_backend_t
 shader_ui_windowBackend(void)
@@ -855,7 +859,7 @@ shader_ui_requestClose(e9ui_context_t *ctx, e9k_shader_ui_t *ui)
     if (!ui) {
         return;
     }
-    (void)e9ui_defer(ctx ? ctx : (e9ui ? &e9ui->ctx : &ui->ctx),
+    (void)e9ui_defer(ctx ? ctx : &e9ui->ctx,
                      shader_ui_deferredShutdown,
                      ui);
 }
@@ -906,106 +910,61 @@ shader_ui_buildRoot(e9k_shader_ui_t *ui)
     e9ui_component_t *checkboxRow = e9ui_hstack_make();
     e9ui_component_t *leftCol = shader_ui_columnMake();
     e9ui_component_t *rightCol = shader_ui_columnMake();
-    if (checkboxRow && leftCol && rightCol) {
-        e9ui_component_t *row = shader_ui_makeCheckbox("CRT Enabled", &ui->crtEnabled);
-        if (row) {
-            e9ui_child_add(leftCol, row, NULL);
-        }
-        row = shader_ui_makeCheckbox("Geometry", &ui->geometryEnabled);
-        if (row) {
-            e9ui_child_add(leftCol, row, NULL);
-        }
-        row = shader_ui_makeCheckbox("Mask", &ui->maskEnabled);
-        if (row) {
-            e9ui_child_add(leftCol, row, NULL);
-        }
-        row = shader_ui_makeCheckbox("Bloom", &ui->bloomEnabled);
-        if (row) {
-            e9ui_child_add(rightCol, row, NULL);
-        }
-        row = shader_ui_makeCheckbox("Halation", &ui->halationEnabled);
-        if (row) {
-            e9ui_child_add(rightCol, row, NULL);
-        }
-        row = shader_ui_makeCheckbox("Gamma", &ui->gammaEnabled);
-        if (row) {
-            e9ui_child_add(rightCol, row, NULL);
-        }
-        row = shader_ui_makeCheckbox("Chroma", &ui->chromaEnabled);
-        if (row) {
-            e9ui_child_add(rightCol, row, NULL);
-        }
-        row = shader_ui_makeCheckbox("Grille", &ui->grilleEnabled);
-        if (row) {
-            e9ui_child_add(leftCol, row, NULL);
-        }
-        e9ui_hstack_addFlex(checkboxRow, leftCol);
-        e9ui_hstack_addFixed(checkboxRow, e9ui_spacer_make(24), 24);
-        e9ui_hstack_addFlex(checkboxRow, rightCol);
-        e9ui_stack_addFixed(stack, checkboxRow);
-    }
+    e9ui_component_t *row = shader_ui_makeCheckbox("CRT Enabled", &ui->crtEnabled);
+    e9ui_child_add(leftCol, row, NULL);
+    row = shader_ui_makeCheckbox("Geometry", &ui->geometryEnabled);
+    e9ui_child_add(leftCol, row, NULL);
+    row = shader_ui_makeCheckbox("Mask", &ui->maskEnabled);
+    e9ui_child_add(leftCol, row, NULL);
+    row = shader_ui_makeCheckbox("Bloom", &ui->bloomEnabled);
+    e9ui_child_add(rightCol, row, NULL);
+    row = shader_ui_makeCheckbox("Halation", &ui->halationEnabled);
+    e9ui_child_add(rightCol, row, NULL);
+    row = shader_ui_makeCheckbox("Gamma", &ui->gammaEnabled);
+    e9ui_child_add(rightCol, row, NULL);
+    row = shader_ui_makeCheckbox("Chroma", &ui->chromaEnabled);
+    e9ui_child_add(rightCol, row, NULL);
+    row = shader_ui_makeCheckbox("Grille", &ui->grilleEnabled);
+    e9ui_child_add(leftCol, row, NULL);
+    e9ui_hstack_addFlex(checkboxRow, leftCol);
+    e9ui_hstack_addFixed(checkboxRow, e9ui_spacer_make(24), 24);
+    e9ui_hstack_addFlex(checkboxRow, rightCol);
+    e9ui_stack_addFixed(stack, checkboxRow);
 
     e9ui_stack_addFixed(stack, e9ui_vspacer_make(10));
 
-    e9ui_component_t *row = shader_ui_makeSlider("Scan Strength", &ui->scanStrength);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    row = shader_ui_makeSlider("Scan Strength", &ui->scanStrength);
+    e9ui_stack_addFixed(stack, row);
     row = shader_ui_makeSlider("Mask Strength", &ui->maskStrength);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    e9ui_stack_addFixed(stack, row);
     row = shader_ui_makeSlider("Mask Scale", &ui->maskScale);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    e9ui_stack_addFixed(stack, row);
     row = shader_ui_makeSlider("Beam Strength", &ui->beamStrength);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    e9ui_stack_addFixed(stack, row);
     row = shader_ui_makeSlider("Beam Width", &ui->beamWidth);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    e9ui_stack_addFixed(stack, row);
     row = shader_ui_makeSlider("Curvature", &ui->curvature);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    e9ui_stack_addFixed(stack, row);
+
     row = shader_ui_makeSlider("Overscan", &ui->overscan);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    e9ui_stack_addFixed(stack, row);
     row = shader_ui_makeSlider("Scanline Border", &ui->scanlineBorder);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    e9ui_stack_addFixed(stack, row);
     row = shader_ui_makeSlider("Halation Strength", &ui->halationStrength);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    e9ui_stack_addFixed(stack, row);
     row = shader_ui_makeSlider("Halation Threshold", &ui->halationThreshold);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    e9ui_stack_addFixed(stack, row);
     row = shader_ui_makeSlider("Halation Radius", &ui->halationRadius);
-    if (row) {
-        e9ui_stack_addFixed(stack, row);
-    }
+    e9ui_stack_addFixed(stack, row);
 
     e9ui_stack_addFixed(stack, e9ui_vspacer_make(SHADER_UI_RIGHT_MARGIN));
     e9ui_component_t *apply = e9ui_button_make("Apply", shader_ui_apply, ui);
     e9ui_component_t *defaults = e9ui_button_make("Defaults", shader_ui_defaults, ui);
     e9ui_component_t *cancel = e9ui_button_make("Cancel", shader_ui_cancel, ui);
-    if (apply) {
-        e9ui_button_setTheme(apply, e9ui_theme_button_preset_green());
-    }
-    if (cancel) {
-        e9ui_button_setTheme(cancel, e9ui_theme_button_preset_red());
-    }
+    e9ui_button_setTheme(apply, e9ui_theme_button_preset_green());
+    e9ui_button_setTheme(cancel, e9ui_theme_button_preset_red());
     e9ui_component_t *actions = shader_ui_actionRowMake(defaults, cancel, apply);
-    if (actions) {
-        e9ui_stack_addFixed(stack, actions);
-    }
+    e9ui_stack_addFixed(stack, actions);
     e9ui_stack_addFlex(stack, e9ui_vspacer_make(6));
     return stack;
 }
@@ -1030,15 +989,6 @@ shader_ui_measureRootHeight(e9ui_component_t *root, e9ui_context_t *ctx, int ava
         }
     }
     return total;
-}
-
-static int
-shader_ui_overlayBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
-{
-    (void)self;
-    (void)ctx;
-    (void)availW;
-    return 0;
 }
 
 static void
@@ -1104,7 +1054,6 @@ shader_ui_makeOverlayBodyHost(e9k_shader_ui_t *ui)
     st->ui = ui;
     host->name = "shader_ui_overlay_body";
     host->state = st;
-    host->preferredHeight = shader_ui_overlayBodyPreferredHeight;
     host->layout = shader_ui_overlayBodyLayout;
     host->render = shader_ui_overlayBodyRender;
     e9ui_child_add(host, ui->root, alloc_strdup("shader_ui_root"));
@@ -1122,13 +1071,13 @@ int
 shader_ui_init(void)
 {
     e9k_shader_ui_t *ui = &shader_ui_state;
-    if (ui->open) {
+    if (ui->windowState.open) {
         return 1;
     }
     shader_ui_buildBindings(ui);
 
-    ui->windowHost = e9ui_windowCreate(shader_ui_windowBackend());
-    if (!ui->windowHost) {
+    ui->windowState.windowHost = e9ui_windowCreate(shader_ui_windowBackend());
+    if (!ui->windowState.windowHost) {
         return 0;
     }
     memset(&ui->ctx, 0, sizeof(ui->ctx));
@@ -1138,23 +1087,15 @@ shader_ui_init(void)
 
     ui->root = shader_ui_buildRoot(ui);
     if (!ui->root) {
-        e9ui_windowDestroy(ui->windowHost);
-        ui->windowHost = NULL;
+        e9ui_windowDestroy(ui->windowState.windowHost);
+        ui->windowState.windowHost = NULL;
         return 0;
     }
     {
-        e9ui_rect_t rect = e9ui_windowResolveOpenRect(&e9ui->ctx,
-                                                               shader_ui_windowDefaultRect(&e9ui->ctx),
-                                                               420,
-                                                               420,
-                                                               1,
-                                                               ui->winHasSaved ? 1 : 0,
-                                                               (ui->winHasSaved && ui->winW > 0 && ui->winH > 0) ? 1 : 0,
-                                                               ui->winX,
-                                                               ui->winY,
-                                                               ui->winW,
-                                                               ui->winH);
-        if (!ui->winHasSaved) {
+        e9ui_rect_t rect = e9ui_windowResolveStateOpenRect(&e9ui->ctx,
+                                                           shader_ui_windowDefaultRect(&e9ui->ctx),
+                                                           &ui->windowState);
+        if (!e9ui_windowHasSavedSize(ui->windowState.winW, ui->windowState.winH)) {
             int desiredRenderH = shader_ui_measureRootHeight(ui->root, &e9ui->ctx, rect.w);
             if (desiredRenderH > 0) {
                 rect.h = desiredRenderH +
@@ -1164,31 +1105,21 @@ shader_ui_init(void)
             }
         }
         e9ui_component_t *overlayBodyHost = shader_ui_makeOverlayBodyHost(ui);
-        if (!overlayBodyHost) {
-            e9ui_childDestroy(ui->root, &e9ui->ctx);
-            ui->root = NULL;
-            e9ui_windowDestroy(ui->windowHost);
-            ui->windowHost = NULL;
-            return 0;
-        }
-        if (!e9ui_windowOpen(ui->windowHost,
-                                     "ENGINE9000 DEBUGGER - CRT SETTINGS",
+
+        e9ui_windowOpen(ui->windowState.windowHost,
+                                     "CRT SETTINGS",
                                      rect,
                                      overlayBodyHost,
                                      shader_ui_overlayWindowCloseRequested,
                                      ui,
-                                     &e9ui->ctx)) {
-            ui->root = NULL;
-            e9ui_childDestroy(overlayBodyHost, &e9ui->ctx);
-            e9ui_windowDestroy(ui->windowHost);
-            ui->windowHost = NULL;
-            return 0;
-        }
+			             &e9ui->ctx);
+
         ui->window = e9ui->ctx.window;
         ui->renderer = e9ui->ctx.renderer;
         ui->ctx = e9ui->ctx;
     }
-    ui->open = 1;
+    ui->windowState.open = 1;
+    aux_window_register(&shader_ui_auxWindowOps, ui);
     return 1;
 }
 
@@ -1196,26 +1127,21 @@ void
 shader_ui_shutdown(void)
 {
     e9k_shader_ui_t *ui = &shader_ui_state;
-    if (!ui->open) {
+    if (!ui->windowState.open) {
         return;
     }
-    (void)e9ui_windowCaptureRectSnapshot(ui->windowHost,
-                                            (e9ui ? &e9ui->ctx : &ui->ctx),
-                                            &ui->winHasSaved,
-                                            &ui->winX,
-                                            &ui->winY,
-                                            &ui->winW,
-                                            &ui->winH);
+    aux_window_unregister(&shader_ui_auxWindowOps, ui);
+    (void)e9ui_windowCaptureStateRectSnapshot(&ui->windowState, &e9ui->ctx);
     config_saveConfig();
     e9ui_text_cache_clearRenderer(ui->renderer);
     ui->root = NULL;
-    if (ui->windowHost) {
-        e9ui_windowDestroy(ui->windowHost);
-        ui->windowHost = NULL;
+    if (ui->windowState.windowHost) {
+        e9ui_windowDestroy(ui->windowState.windowHost);
+        ui->windowState.windowHost = NULL;
     }
     ui->renderer = NULL;
     ui->window = NULL;
-    ui->open = 0;
+    ui->windowState.open = 0;
     ui->dirty = 0;
     memset(&ui->ctx, 0, sizeof(ui->ctx));
 }
@@ -1223,41 +1149,17 @@ shader_ui_shutdown(void)
 int
 shader_ui_isOpen(void)
 {
-    return shader_ui_state.open ? 1 : 0;
-}
-
-uint32_t
-shader_ui_getWindowId(void)
-{
-    return 0;
-}
-
-void
-shader_ui_setMainWindowFocused(int focused)
-{
-    (void)focused;
-}
-
-void
-shader_ui_handleEvent(SDL_Event *ev)
-{
-    (void)ev;
+    return shader_ui_state.windowState.open ? 1 : 0;
 }
 
 void
 shader_ui_render(void)
 {
     e9k_shader_ui_t *ui = &shader_ui_state;
-    if (!ui->open || !ui->root) {
+    if (!ui->windowState.open || !ui->root) {
         return;
     }
-    if (e9ui_windowCaptureRectChanged(ui->windowHost,
-                                      (e9ui ? &e9ui->ctx : &ui->ctx),
-                                      &ui->winHasSaved,
-                                      &ui->winX,
-                                      &ui->winY,
-                                      &ui->winW,
-                                      &ui->winH)) {
+    if (e9ui_windowCaptureStateRectChanged(&ui->windowState, &e9ui->ctx)) {
         config_saveConfig();
     }
 }
@@ -1269,22 +1171,10 @@ shader_ui_persistConfig(FILE *file)
         return;
     }
     e9k_shader_ui_t *ui = &shader_ui_state;
-    if (ui->open) {
-        (void)e9ui_windowCaptureRectSnapshot(ui->windowHost,
-                                                (e9ui ? &e9ui->ctx : &ui->ctx),
-                                                &ui->winHasSaved,
-                                                &ui->winX,
-                                                &ui->winY,
-                                                &ui->winW,
-                                                &ui->winH);
-    }
-    if (!ui->winHasSaved) {
-        return;
-    }
-    fprintf(file, "comp.shader_ui.win_x=%d\n", ui->winX);
-    fprintf(file, "comp.shader_ui.win_y=%d\n", ui->winY);
-    fprintf(file, "comp.shader_ui.win_w=%d\n", ui->winW);
-    fprintf(file, "comp.shader_ui.win_h=%d\n", ui->winH);
+    e9ui_windowPersistStateRect(file,
+                                "comp.shader_ui",
+                                &ui->windowState,
+                                &e9ui->ctx);
 }
 
 int
@@ -1296,25 +1186,26 @@ shader_ui_loadConfigProperty(const char *prop, const char *value)
         if (!shader_ui_parseInt(value, &intValue)) {
             return 0;
         }
-        ui->winX = intValue;
+        ui->windowState.winX = intValue;
     } else if (strcmp(prop, "win_y") == 0) {
         if (!shader_ui_parseInt(value, &intValue)) {
             return 0;
         }
-        ui->winY = intValue;
+        ui->windowState.winY = intValue;
     } else if (strcmp(prop, "win_w") == 0) {
         if (!shader_ui_parseInt(value, &intValue)) {
             return 0;
         }
-        ui->winW = intValue;
+        ui->windowState.winW = intValue;
     } else if (strcmp(prop, "win_h") == 0) {
         if (!shader_ui_parseInt(value, &intValue)) {
             return 0;
         }
-        ui->winH = intValue;
+        ui->windowState.winH = intValue;
     } else {
         return 0;
     }
-    ui->winHasSaved = 1;
+    ui->windowState.winHasSaved =
+        e9ui_windowHasSavedPosition(ui->windowState.winX, ui->windowState.winY);
     return 1;
 }

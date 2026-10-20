@@ -24,7 +24,17 @@
 #include "memory.h"
 #include "sounddep/sound.h"
 
+#ifndef E9K_HACK_DEBUGGER_HOST
+#define E9K_HACK_DEBUGGER_HOST 0
+#endif
+
+#ifndef E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING
+#define E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING 1
+#endif
+
+#if E9K_HACK_DEBUGGER_HOST
 #include "e9k_debug.h"
+#endif
 
 #ifndef MAX_STOP
 #define MAX_STOP 30000
@@ -58,8 +68,6 @@ static const TCHAR *csmode[] = { _T("ocs"), _T("ecs_agnus"), _T("ecs_denise"), _
    } \
 } \
 
-#define E9K_DEBUG_EXPORT RETRO_API
-
 bool libretro_runloop_active = false;
 bool libretro_frame_end = false;
 unsigned short int retro_bmp[RETRO_BMP_SIZE] = {0};
@@ -75,6 +83,10 @@ unsigned short int retroh_crop = 0;
 unsigned short int retrox_crop = 0;
 unsigned short int retroy_crop = 0;
 float aspect_ratio = 0;
+
+#ifndef E9K_HACK_LIBRETRO_WINUAE_BOTTOM_CROP_DEBUG
+#define E9K_HACK_LIBRETRO_WINUAE_BOTTOM_CROP_DEBUG 0
+#endif
 
 extern int bplcon0;
 extern int detected_screen_resolution;
@@ -92,6 +104,9 @@ char opt_model_fd[10] = {0};
 char opt_model_hd[10] = {0};
 char opt_model_cd[10] = {0};
 char opt_kickstart[64] = {0};
+#if E9K_HACK_DEBUGGER_HOST
+int libretro_serial_console = 0;
+#endif
 
 struct preset_options
 {
@@ -113,6 +128,9 @@ static struct preset_options preset_opt;
 static bool opt_region_auto = true;
 static char opt_video_resolution_auto = RESOLUTION_AUTO_NONE;
 static bool opt_video_vresolution_auto = false;
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING
+static bool opt_video_winuae_window_positioning = false;
+#endif
 bool opt_floppy_sound_empty_mute = false;
 bool opt_floppy_multidrive = false;
 bool opt_floppy_write_redirect = false;
@@ -209,6 +227,10 @@ extern int retro_thisframe_last_drawn_line;
 static int retro_thisframe_last_drawn_line_old = -1;
 static int retro_thisframe_last_drawn_line_start = -1;
 extern int thisframe_y_adjust;
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING && E9K_HACK_LIBRETRO_WINUAE_BOTTOM_CROP_DEBUG
+extern int drawing_firstContentDestLine;
+extern int drawing_lastContentDestLine;
+#endif
 static int thisframe_y_adjust_old = -1;
 
 static int opt_horizontal_offset = 0;
@@ -766,6 +788,7 @@ static void free_puae_core_options(void)
    }
 }
 
+#if E9K_HACK_DEBUGGER_HOST
 static uae_u64
 libretro_estimateSaveStateSize(void)
 {
@@ -796,6 +819,7 @@ libretro_estimateSaveStateSize(void)
    size += 2 * 1024 * 1024;
    return size;
 }
+#endif
 
 static void retro_set_core_options()
 {
@@ -956,6 +980,22 @@ static void retro_set_core_options()
          },
          "auto"
       },
+#if E9K_HACK_DEBUGGER_HOST
+      {
+         "puae_serial",
+         "System > Serial",
+         "Serial",
+         "Route Amiga serial output.",
+         NULL,
+         "system",
+         {
+            { "none", "None" },
+            { "console", "Console" },
+            { NULL, NULL },
+         },
+         "none"
+      },
+#endif
       {
          "puae_chipmem_size",
          "System > Chip RAM",
@@ -1539,6 +1579,22 @@ static void retro_set_core_options()
          },
          "auto"
       },
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING
+      {
+         "puae_video_winuae_window_positioning",
+         "Video > WinUAE Window Positioning",
+         "WinUAE Window Positioning",
+         "Use WinUAE visible window positioning - currently unsure if this is incompatible with other PUAE window position/scaling code",
+         NULL,
+         "video",
+         {
+            { "disabled", NULL },
+            { "enabled", NULL },
+            { NULL, NULL },
+         },
+         "disabled"
+      },
+#endif
       {
          "puae_immediate_blits",
          "Video > Immediate/Waiting Blits",
@@ -2520,7 +2576,7 @@ static void retro_set_core_options()
             { "mouse", "Mouse (Port 2)" },
             { NULL, NULL },
          },
-         "mouse"
+         "joystick"
       },
       {
          "puae_joyport_order",
@@ -3175,6 +3231,10 @@ static void retro_set_options_display(void)
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
    option_display.key = "puae_horizontal_pos";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING
+   option_display.key = "puae_video_winuae_window_positioning";
+   environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+#endif
    option_display.key = "puae_collision_level";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
    option_display.key = "puae_immediate_blits";
@@ -3367,6 +3427,10 @@ static void retro_set_geometry(unsigned video_config, bool init)
       case PUAE_VIDEO_PAL_HI:
          w = PUAE_VIDEO_WIDTH;
          h = PUAE_VIDEO_HEIGHT_PAL / 2;
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING
+         if (init && opt_video_winuae_window_positioning)
+            h = PUAE_VIDEO_HEIGHT_PAL;
+#endif
          break;
       case PUAE_VIDEO_PAL_HI_DL:
          w = PUAE_VIDEO_WIDTH;
@@ -3388,6 +3452,10 @@ static void retro_set_geometry(unsigned video_config, bool init)
       case PUAE_VIDEO_NTSC_HI:
          w = PUAE_VIDEO_WIDTH;
          h = PUAE_VIDEO_HEIGHT_NTSC / 2;
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING
+         if (init && opt_video_winuae_window_positioning)
+            h = PUAE_VIDEO_HEIGHT_NTSC;
+#endif
          break;
       case PUAE_VIDEO_NTSC_HI_DL:
          w = PUAE_VIDEO_WIDTH;
@@ -3426,6 +3494,12 @@ static void update_variables(void)
 
    uae_model_config[0] = '\0';
    uae_config[0]       = '\0';
+#if E9K_HACK_DEBUGGER_HOST
+   libretro_serial_console = 0;
+#endif
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING
+   opt_video_winuae_window_positioning = false;
+#endif
 
    GET_VAR("model")
    {
@@ -3476,6 +3550,13 @@ static void update_variables(void)
             strcpy(changed_prefs.romfile, uae_kickstart);
       }
    }
+
+#if E9K_HACK_DEBUGGER_HOST
+   GET_VAR("serial")
+   {
+      libretro_serial_console = !strcmp(var.value, "console");
+   }
+#endif
 
    GET_VAR("cart_file")
    {
@@ -4469,6 +4550,18 @@ static void update_variables(void)
       }
    }
 
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING
+   GET_VAR("video_winuae_window_positioning")
+   {
+      if (!strcmp(var.value, "enabled"))
+         opt_video_winuae_window_positioning = true;
+   }
+#endif
+
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING
+   drawing_setLibretroWinuaeWindowPositioning(opt_video_winuae_window_positioning);
+#endif
+
    GET_VAR("use_whdload")
    {
       if      (!strcmp(var.value, "disabled")) opt_use_whdload = 0;
@@ -4880,6 +4973,7 @@ static void update_variables(void)
 }
 
 /*****************************************************************************/
+#if E9K_HACK_DEBUGGER_HOST
 static void
 e9k_debug_ami_sync_floppy_dc_slot(int drive, const char *path)
 {
@@ -4947,8 +5041,8 @@ e9k_debug_ami_sync_floppy_dc_slot(int drive, const char *path)
    }
 }
 
-E9K_DEBUG_EXPORT bool
-e9k_debug_ami_set_floppy_path(int drive, const char *path)
+RETRO_API bool
+e9k_debug_amiga_set_floppy_path(int drive, const char *path)
 {
    if (!libretro_runloop_active)
    {
@@ -5052,6 +5146,7 @@ e9k_debug_ami_set_floppy_path(int drive, const char *path)
 
    return true;
 }
+#endif
 
 /* Disk Control */
 bool retro_disk_set_eject_state(bool ejected)
@@ -5837,10 +5932,19 @@ static void retro_config_boot_hd(void)
 static void retro_config_kickstart(void)
 {
    char kickstart[RETRO_PATH_MAX];
+   const char *kickstartRequested = NULL;
+   const char *kickstartFallback = NULL;
    bool valid = false;
+   bool autoKickstart = !strcmp(opt_kickstart, "auto");
 
    /* Wrong place for logging model but still the best place */
    log_cb(RETRO_LOG_INFO, "Model: \"%s\".\n", uae_preset);
+
+   if (autoKickstart)
+   {
+      kickstartRequested = uae_kickstart;
+      log_cb(RETRO_LOG_INFO, "ami9000: automatic kickstart requested \"%s\"\n", kickstartRequested);
+   }
 
    /* Forced Kickstart */
    if (strcmp(opt_kickstart, "auto"))
@@ -5877,12 +5981,16 @@ static void retro_config_kickstart(void)
 
       path_join(kickstart, retro_system_directory, uae_kickstarts[i].aforever);
       valid = path_is_valid(kickstart);
+      if (valid)
+         kickstartFallback = uae_kickstarts[i].aforever;
       if (!valid)
       {
          if (!string_is_empty(uae_kickstarts[i].tosec_mod))
          {
             path_join(kickstart, retro_system_directory, uae_kickstarts[i].tosec_mod);
             valid = path_is_valid(kickstart);
+            if (valid)
+               kickstartFallback = uae_kickstarts[i].tosec_mod;
          }
          if (!valid)
          {
@@ -5890,6 +5998,8 @@ static void retro_config_kickstart(void)
             {
                path_join(kickstart, retro_system_directory, uae_kickstarts[i].tosec);
                valid = path_is_valid(kickstart);
+               if (valid)
+                  kickstartFallback = uae_kickstarts[i].tosec;
             }
          }
       }
@@ -5902,6 +6012,8 @@ static void retro_config_kickstart(void)
    /* Final append + logging */
    if (valid)
    {
+      if (autoKickstart && kickstartFallback && strcmp(kickstartRequested, kickstartFallback))
+         log_cb(RETRO_LOG_INFO, "ami9000: automatic kickstart fallback \"%s\"\n", kickstartFallback);
       log_cb(RETRO_LOG_INFO, "Kickstart: \"%s\".\n", path_basename(kickstart));
       if (strcmp(opt_kickstart, "aros"))
          retro_config_append("kickstart_rom_file=%s\n", kickstart);
@@ -8667,6 +8779,22 @@ static bool retro_update_av_info(void)
          retrow_crop = retrow;
    }
 
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING && E9K_HACK_LIBRETRO_WINUAE_BOTTOM_CROP_DEBUG
+   if (opt_video_winuae_window_positioning)
+   {
+      int drawHeight = gfxvidinfo->drawbuffer.inheight;
+      int visibleHeight = retro_thisframe_last_drawn_line - minfirstline + 1;
+
+      if (visibleHeight > 0 && visibleHeight <= drawHeight)
+         drawHeight = visibleHeight;
+
+      if (drawHeight > 0 && drawHeight > retroh)
+         retroh = drawHeight;
+      if (drawHeight > 0 && drawHeight > retroh_crop)
+         retroh_crop = drawHeight;
+   }
+#endif
+
    /* Must do full av_info update if max size grows */
    if (retrow > retrow_max)
    {
@@ -8682,6 +8810,32 @@ static bool retro_update_av_info(void)
    /* Offset centerings */
    update_video_center_vertical();
    update_video_center_horizontal();
+
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING && E9K_HACK_LIBRETRO_WINUAE_BOTTOM_CROP_DEBUG
+   if (opt_video_winuae_window_positioning)
+   {
+      int visibleHeight = get_vertical_visible_height(false);
+
+      retroy_crop = 0;
+      if (visibleHeight > 0)
+      {
+         retroh_crop = visibleHeight;
+         if (retroh_crop > retroh)
+         {
+            retroh_crop = retroh;
+         }
+      }
+      if (drawing_firstContentDestLine >= 0 && drawing_lastContentDestLine >= drawing_firstContentDestLine)
+      {
+         retroy_crop = drawing_firstContentDestLine;
+         retroh_crop = drawing_lastContentDestLine - drawing_firstContentDestLine + 1;
+         if (retroy_crop + retroh_crop > retroh)
+         {
+            retroh_crop = retroh - retroy_crop;
+         }
+      }
+   }
+#endif
 
    /* Fetch default av_info (not current!) */
    struct retro_system_av_info new_av_info;
@@ -8773,6 +8927,7 @@ void retro_run(void)
    input_poll_cb();
    retro_poll_event();
 
+#if E9K_HACK_DEBUGGER_HOST
    if (e9k_debug_is_paused())
    {
       old_frame = 1;
@@ -8781,6 +8936,7 @@ void retro_run(void)
       upload_output_audio_buffer();
       return;
    }
+#endif
 
    /* Check if a restart is required */
    if (restart_pending)
@@ -8831,6 +8987,28 @@ void retro_run(void)
          init_custom();
    }
 
+#if E9K_HACK_LIBRETRO_WINUAE_WINDOW_POSITIONING && E9K_HACK_LIBRETRO_WINUAE_BOTTOM_CROP_DEBUG
+	if (opt_video_winuae_window_positioning)
+	{
+		printf("ypresent lines=%d/%d crop=%d yoff=%d full=%d req=%d old=%d init=%d canvas=%d/%d actual=%d/%d vby=%d/%d yadj=%d\n",
+			retro_thisframe_first_drawn_line,
+			retro_thisframe_last_drawn_line,
+			retroh_crop,
+			retroy_crop,
+			retroh,
+			request_update_av_info ? 1 : 0,
+			old_frame,
+			request_init_custom_timer,
+			defaultw,
+			defaulth,
+			retrow,
+			retroh,
+			gfxvidinfo->drawbuffer.yoffset,
+			gfxvidinfo->drawbuffer.outheight,
+			thisframe_y_adjust);
+	}
+#endif
+
    /* Warning messages */
    if (retro_message)
    {
@@ -8857,13 +9035,17 @@ void retro_run(void)
    if ((!retro_statusbar && opt_statusbar & STATUSBAR_MESSAGES && statusbar_message_timer) || retro_statusbar)
       print_statusbar();
 
+#if E9K_HACK_DEBUGGER_HOST
    e9k_vblank_notify();
-
    video_cb((old_frame || e9k_debug_is_paused()) ? NULL : retro_bmp + retro_bmp_offset, retrow_crop, retroh_crop, retrow << (pix_bytes >> 1));
-   e9k_debug_ami_on_video_presented();
-   if (e9k_debug_is_paused()) {
+   e9k_debug_amiga_on_video_presented();
+   if (e9k_debug_is_paused())
+   {
       output_audio_buffer.size = 0;
    }
+#else
+   video_cb(old_frame ? NULL : retro_bmp + retro_bmp_offset, retrow_crop, retroh_crop, retrow << (pix_bytes >> 1));
+#endif
    upload_output_audio_buffer();
 
    if (old_frame)
@@ -8935,12 +9117,14 @@ bool retro_load_game(const struct retro_game_info *info)
    savestate_fname[0] = '\0';
 
    /* Estimate necessary save state size */
+#if E9K_HACK_DEBUGGER_HOST
    save_state_file_size = libretro_estimateSaveStateSize();
+#endif
 
    struct retro_memory_descriptor memdesc[] = {
-      {RETRO_MEMDESC_SYSTEM_RAM, chipmem_bank.baseaddr, 0, 0, 0, 0, chipmem_bank.allocated_size, "CHIP"},
-      {RETRO_MEMDESC_SYSTEM_RAM, bogomem_bank.baseaddr, 0, 0, 0, 0, bogomem_bank.allocated_size, "SLOW"},
-      {RETRO_MEMDESC_SYSTEM_RAM, fastmem_bank[0].baseaddr, 0, 0, 0, 0, fastmem_bank[0].allocated_size, "FAST"}
+      {RETRO_MEMDESC_SYSTEM_RAM, chipmem_bank.baseaddr, 0, chipmem_bank.start, 0, 0, chipmem_bank.allocated_size, "CHIP"},
+      {RETRO_MEMDESC_SYSTEM_RAM, bogomem_bank.baseaddr, 0, bogomem_bank.start, 0, 0, bogomem_bank.allocated_size, "SLOW"},
+      {RETRO_MEMDESC_SYSTEM_RAM, fastmem_bank[0].baseaddr, 0, fastmem_bank[0].start, 0, 0, fastmem_bank[0].allocated_size, "FAST"}
    };
 
    struct retro_memory_map mmap = {
@@ -9091,7 +9275,9 @@ bool retro_unserialize(const void *data_, size_t size)
                frame_counter++;
             }
             libretro_runloop_active = true;
+#if E9K_HACK_DEBUGGER_HOST
             e9k_debug_reapply_memhooks();
+#endif
 
             /* If the above while loop times out, then
              * everything is completely broken. We cannot

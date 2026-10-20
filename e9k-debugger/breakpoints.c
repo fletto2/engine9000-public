@@ -6,6 +6,8 @@
  * See COPYING for license details
  */
 
+#include <strings.h>
+
 #include "breakpoints.h"
 #include "e9ui.h"
 #include "machine.h"
@@ -14,6 +16,7 @@
 #include "addr2line.h"
 #include "e9ui_scroll.h"
 #include "hotkeys.h"
+#include "symbol_text_map.h"
 #include "strutil.h"
 
 typedef struct breakpoints_record {
@@ -51,6 +54,104 @@ static char breakpoints_tipAddCurrent[96];
 static void breakpoints_listMarkDirty(breakpoints_list_state_t *st);
 static void breakpoints_listRefreshAndMarkDirty(breakpoints_list_state_t *st);
 static void breakpoints_componentDtor(e9ui_component_t *self, e9ui_context_t *ctx);
+
+static int
+breakpoints_readActiveProcessorPc(uint32_t processorId, uint32_t *outAddr)
+{
+    if (outAddr) {
+        *outAddr = 0;
+    }
+    if (!outAddr) {
+        return 0;
+    }
+    if (processorId == MACHINE_PROCESSOR_PRIMARY) {
+        unsigned long pc = 0;
+        if (!machine_findReg(&debugger.machine, "PC", &pc)) {
+            return 0;
+        }
+        *outAddr = (uint32_t)pc & 0x00ffffffu;
+        return 1;
+    }
+
+    e9k_debug_processor_reg_t regs[32];
+    size_t count = 0;
+    if (!libretro_host_debugReadProcessorRegs(processorId, regs, countof(regs), &count)) {
+        return 0;
+    }
+    if (count > countof(regs)) {
+        count = countof(regs);
+    }
+    for (size_t i = 0; i < count; ++i) {
+        if (strcasecmp(regs[i].name, "PC") == 0) {
+            uint64_t mask = regs[i].bits >= 32 ? 0xffffffffull : ((1ull << regs[i].bits) - 1ull);
+            *outAddr = (uint32_t)(regs[i].value & mask);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+breakpoints_formatProcessorLabel(uint32_t processorId, char *out, size_t cap)
+{
+    e9k_debug_processor_info_t processors[8];
+    size_t count = 0;
+
+    if (!out || cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (libretro_host_debugReadProcessors(processors,
+                                          sizeof(processors) / sizeof(processors[0]),
+                                          &count)) {
+        for (size_t i = 0; i < count && i < sizeof(processors) / sizeof(processors[0]); ++i) {
+            if (processors[i].id == processorId) {
+                if (strcmp(processors[i].name, "M68000") == 0) {
+                    snprintf(out, cap, "68K");
+                } else if (processors[i].name[0]) {
+                    snprintf(out, cap, "%s", processors[i].name);
+                } else {
+                    snprintf(out, cap, "CPU %u", (unsigned)processorId);
+                }
+                out[cap - 1] = '\0';
+                return;
+            }
+        }
+    }
+    snprintf(out, cap, "CPU %u", (unsigned)processorId);
+    out[cap - 1] = '\0';
+}
+
+static int
+breakpoints_resolveTextMapFunction(uint32_t runtimeAddr, char *outFunction, size_t functionCap)
+{
+    if (!outFunction || functionCap == 0) {
+        return 0;
+    }
+    outFunction[0] = '\0';
+    if (!debugger.symbolValid || debugger.symbolFileKind != DEBUGGER_SYMBOL_FILE_KIND_TEXT_MAP) {
+        return 0;
+    }
+
+    const symbol_text_map_entry_t *entry = NULL;
+    if (!symbol_text_map_findNearest(debugger.libretro.exePath,
+                                     runtimeAddr & 0x00ffffffu,
+                                     SYMBOL_TEXT_MAP_SYMBOL_MASK_FUNCTION |
+                                     SYMBOL_TEXT_MAP_SYMBOL_MASK_UNKNOWN,
+                                     &entry)) {
+        (void)symbol_text_map_findNearest(debugger.libretro.exePath,
+                                          runtimeAddr & 0x00ffffffu,
+                                          SYMBOL_TEXT_MAP_SYMBOL_MASK_ALL,
+                                          &entry);
+    }
+    if (!entry || !entry->name || !entry->name[0]) {
+        return 0;
+    }
+
+    strncpy(outFunction, entry->name, functionCap - 1);
+    outFunction[functionCap - 1] = '\0';
+    return 1;
+}
 
 void
 breakpoints_refreshHotkeyTooltips(void)
@@ -216,11 +317,24 @@ static breakpoints_list_state_t *breakpoints_listState = NULL;
 void
 breakpoints_resolveLocation(machine_breakpoint_t *bp)
 {
+    if (bp && bp->processorId != MACHINE_PROCESSOR_PRIMARY) {
+        return;
+    }
     if (!bp || (bp->file[0] && bp->line > 0 && bp->func[0])) {
         return;
     }
     const char *elf = debugger.libretro.exePath;
-    if (!elf || !*elf || !debugger.elfValid) {
+    if (!elf || !*elf || !debugger.symbolValid) {
+        return;
+    }
+    if (debugger.symbolFileKind == DEBUGGER_SYMBOL_FILE_KIND_TEXT_MAP) {
+        char functionName[512];
+        if (breakpoints_resolveTextMapFunction((uint32_t)(bp->addr & 0x00ffffffu),
+                                               functionName,
+                                               sizeof(functionName))) {
+            strncpy(bp->func, functionName, sizeof(bp->func) - 1);
+            bp->func[sizeof(bp->func) - 1] = '\0';
+        }
         return;
     }
     if (!addr2line_start(elf)) {
@@ -313,6 +427,17 @@ breakpoints_formatLocation(const machine_breakpoint_t *bp, char *dst, size_t cap
         snprintf(dst, cap, "<unknown>");
         return;
     }
+    if (bp->processorId != MACHINE_PROCESSOR_PRIMARY) {
+        char processorLabel[32];
+        const char *addrText = bp->addr_text[0] ? bp->addr_text : NULL;
+        breakpoints_formatProcessorLabel(bp->processorId, processorLabel, sizeof(processorLabel));
+        if (addrText) {
+            snprintf(dst, cap, "%s %s", processorLabel, addrText);
+        } else {
+            snprintf(dst, cap, "%s 0x%04X", processorLabel, (unsigned)(bp->addr & 0xffffu));
+        }
+        return;
+    }
 
     const char *file = breakpoints_stripCliSrcPrefix(bp->file);
     if (file && file[0] && bp->line > 0) {
@@ -396,14 +521,17 @@ breakpoints_entryCheckboxCB(e9ui_component_t *self, e9ui_context_t *ctx, int sel
     breakpoints_entry_state_t *st = (breakpoints_entry_state_t*)user;
     if (!st || !st->record) return;
 
-    uint32_t addr = 0;
-    if (!machine_setBreakpointEnabled(&debugger.machine, st->record->data.number, selected ? 1 : 0, &addr)) {
+    uint32_t processorId = st->record->data.processorId;
+    uint32_t addr = processorId == MACHINE_PROCESSOR_PRIMARY
+        ? (uint32_t)(st->record->data.addr & 0x00ffffffu)
+        : (uint32_t)(st->record->data.addr & 0x0000ffffu);
+    if (!machine_setBreakpointEnabled(&debugger.machine, st->record->data.number, selected ? 1 : 0, NULL)) {
         return;
     }
     if (selected) {
-        libretro_host_debugAddBreakpoint(addr);
+        libretro_host_debugAddProcessorBreakpoint(processorId, addr);
     } else {
-        libretro_host_debugRemoveBreakpoint(addr);
+        libretro_host_debugRemoveProcessorBreakpoint(processorId, addr);
     }
     if (st->list) {
         breakpoints_listRefreshAndMarkDirty(st->list);
@@ -766,7 +894,10 @@ breakpoints_updateRecords(breakpoints_list_state_t *st, const machine_breakpoint
     }
 
     for (int i = 0; i < count; ++i) {
-        const machine_breakpoint_t *bp = &bps[i];
+        machine_breakpoint_t *bp = (machine_breakpoint_t*)&bps[i];
+        if (!bp->func[0] || (!bp->file[0] && bp->line <= 0)) {
+            breakpoints_resolveLocation(bp);
+        }
         breakpoints_record_t *rec = breakpoints_recordFind(st, bp->number);
 
         if (!rec) {
@@ -776,13 +907,6 @@ breakpoints_updateRecords(breakpoints_list_state_t *st, const machine_breakpoint
         } else {
             if (memcmp(&rec->data, bp, sizeof(rec->data)) != 0) {
                 memcpy(&rec->data, bp, sizeof(rec->data));
-                changed = 1;
-            }
-        }
-        if (!rec->data.func[0] || (!rec->data.file[0] && rec->data.line <= 0)) {
-            machine_breakpoint_t before = rec->data;
-            breakpoints_resolveLocation(&rec->data);
-            if (memcmp(&before, &rec->data, sizeof(rec->data)) != 0) {
                 changed = 1;
             }
         }
@@ -915,22 +1039,24 @@ breakpoints_addCurrentCB(e9ui_context_t *ctx, void *user)
 {
     (void)ctx;
     (void)user;
-    unsigned long pc = 0;
-    if (!machine_findReg(&debugger.machine, "PC", &pc)) {
+    uint32_t processorId = debugger.activeDebugProcessorId;
+    uint32_t addr = 0;
+    if (!breakpoints_readActiveProcessorPc(processorId, &addr)) {
         return;
     }
-    uint32_t addr = (uint32_t)pc & 0x00ffffffu;
-    machine_breakpoint_t *bp = machine_findBreakpointByAddr(&debugger.machine, addr);
+    machine_breakpoint_t *bp = machine_findProcessorBreakpointByAddr(&debugger.machine,
+                                                                      processorId,
+                                                                      addr);
     if (bp) {
         if (!bp->enabled) {
             bp->enabled = 1;
-            libretro_host_debugAddBreakpoint(addr);
+            libretro_host_debugAddProcessorBreakpoint(processorId, addr);
         }
         breakpoints_resolveLocation(bp);
     } else {
-        bp = machine_addBreakpoint(&debugger.machine, addr, 1);
+        bp = machine_addProcessorBreakpoint(&debugger.machine, processorId, addr, 1);
         if (bp) {
-            libretro_host_debugAddBreakpoint(addr);
+            libretro_host_debugAddProcessorBreakpoint(processorId, addr);
             breakpoints_resolveLocation(bp);
         }
     }
@@ -947,8 +1073,10 @@ breakpoints_clearAllCB(e9ui_context_t *ctx, void *user)
     machine_getBreakpoints(&debugger.machine, &bps, &count);
     if (bps && count > 0) {
         for (int i = 0; i < count; ++i) {
-            uint32_t addr = (uint32_t)(bps[i].addr & 0x00ffffffu);
-            libretro_host_debugRemoveBreakpoint(addr);
+            uint32_t addr = bps[i].processorId == MACHINE_PROCESSOR_PRIMARY
+                ? (uint32_t)(bps[i].addr & 0x00ffffffu)
+                : (uint32_t)(bps[i].addr & 0x0000ffffu);
+            libretro_host_debugRemoveProcessorBreakpoint(bps[i].processorId, addr);
         }
     }
     machine_clearBreakpoints(&debugger.machine);
@@ -975,12 +1103,14 @@ breakpoints_toggleAllCB(e9ui_context_t *ctx, void *user)
     }
     int targetEnabled = anyEnabled ? 0 : 1;
     for (int i = 0; i < count; ++i) {
-        uint32_t addr = (uint32_t)(bps[i].addr & 0x00ffffffu);
+        uint32_t addr = bps[i].processorId == MACHINE_PROCESSOR_PRIMARY
+            ? (uint32_t)(bps[i].addr & 0x00ffffffu)
+            : (uint32_t)(bps[i].addr & 0x0000ffffu);
         machine_setBreakpointEnabled(&debugger.machine, bps[i].number, targetEnabled, NULL);
         if (targetEnabled) {
-            libretro_host_debugAddBreakpoint(addr);
+            libretro_host_debugAddProcessorBreakpoint(bps[i].processorId, addr);
         } else {
-            libretro_host_debugRemoveBreakpoint(addr);
+            libretro_host_debugRemoveProcessorBreakpoint(bps[i].processorId, addr);
         }
     }
     breakpoints_markDirty();

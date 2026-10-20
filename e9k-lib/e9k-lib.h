@@ -1,11 +1,15 @@
+/*
+ * COPYRIGHT © 2026 Enable Software Pty Ltd - All Rights Reserved
+ *
+ * https://github.com/alpine9000/engine9000-public
+ *
+ * See COPYING for license details
+ */
+
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#ifndef E9K_HACK_AMI_SPRITE_VIS
-#define E9K_HACK_AMI_SPRITE_VIS 0
-#endif
 
 typedef enum e9k_debug_option
 {
@@ -34,57 +38,118 @@ typedef enum e9k_debug_option
     E9K_DEBUG_OPTION_AMIGA_BPLCON1_DELAY_SCROLL = 22,
     E9K_DEBUG_OPTION_AMIGA_BLITTER_VIS_DECAY = 23,
     E9K_DEBUG_OPTION_AMIGA_BLITTER_VIS_MODE = 24,
-    E9K_DEBUG_OPTION_AMIGA_BLITTER_VIS_BLINK = 25,
-    E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_ENABLED = 26,
-    E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_START = 27,
-    E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_END = 28,
-    E9K_DEBUG_OPTION_AMIGA_BPLPTR_BLOCK_ALL = 29,
-    E9K_DEBUG_OPTION_AMIGA_BPLPTR1_BLOCK = 30,
-    E9K_DEBUG_OPTION_AMIGA_BPLPTR2_BLOCK = 31,
-    E9K_DEBUG_OPTION_AMIGA_BPLPTR3_BLOCK = 32,
-    E9K_DEBUG_OPTION_AMIGA_BPLPTR4_BLOCK = 33,
-    E9K_DEBUG_OPTION_AMIGA_BPLPTR5_BLOCK = 34,
-    E9K_DEBUG_OPTION_AMIGA_BPLPTR6_BLOCK = 35,
-    E9K_DEBUG_OPTION_AMIGA_BPLPTR_LINE_LIMIT_START = 36,
-    E9K_DEBUG_OPTION_AMIGA_BPLPTR_LINE_LIMIT_END = 37,
-    E9K_DEBUG_OPTION_AMIGA_CUSTOM_LOGGER = 38
+    E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_ENABLED = 25,
+    E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_START = 26,
+    E9K_DEBUG_OPTION_AMIGA_COPPER_LINE_LIMIT_END = 27,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR_BLOCK_ALL = 28,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR1_BLOCK = 29,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR2_BLOCK = 30,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR3_BLOCK = 31,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR4_BLOCK = 32,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR5_BLOCK = 33,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR6_BLOCK = 34,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR_LINE_LIMIT_START = 35,
+    E9K_DEBUG_OPTION_AMIGA_BPLPTR_LINE_LIMIT_END = 36,
+    E9K_DEBUG_OPTION_AMIGA_CUSTOM_LOGGER = 38,
+    E9K_DEBUG_OPTION_AMIGA_PALETTE_VIS = 39,
+    E9K_DEBUG_OPTION_MEGA_VDP_SPRITES = 40,
+    E9K_DEBUG_OPTION_MEGA_VDP_PLANE_A = 41,
+    E9K_DEBUG_OPTION_MEGA_VDP_PLANE_B = 42
 } e9k_debug_option_t;
 
+#define E9K_DEBUG_PROCESSOR_PRIMARY          (1u << 0)
+#define E9K_DEBUG_PROCESSOR_CAN_STEP         (1u << 1)
+#define E9K_DEBUG_PROCESSOR_CAN_BREAKPOINT   (1u << 2)
+#define E9K_DEBUG_PROCESSOR_CAN_DISASSEMBLE  (1u << 3)
+#define E9K_DEBUG_PROCESSOR_CAN_WRITE_MEMORY (1u << 4)
+
+typedef struct e9k_debug_processor_info
+{
+    uint32_t id;
+    char name[32];
+    char role[32];
+    uint32_t addressBits;
+    uint32_t flags;
+} e9k_debug_processor_info_t;
+
+typedef struct e9k_debug_processor_reg
+{
+    char name[16];
+    uint64_t value;
+    uint8_t bits;
+    uint8_t reserved[7];
+} e9k_debug_processor_reg_t;
+
 #define E9K_CHECKPOINT_COUNT 64
+#define E9K_CHECKPOINT_NAME_MAX 48
+#define E9K_COUNTER_COUNT E9K_CHECKPOINT_COUNT
+#define E9K_COUNTER_NAME_MAX E9K_CHECKPOINT_NAME_MAX
 
 typedef struct e9k_debug_checkpoint {
+    char name[E9K_CHECKPOINT_NAME_MAX];
     uint64_t current;
     uint64_t accumulator;
     uint64_t count;
     uint64_t average;
     uint64_t minimum;
     uint64_t maximum;
+    uint64_t scanlineLast;
+    uint64_t scanlineCount;
+    uint64_t scanlineAccumulator;
+    uint64_t scanlineAverage;
+    uint64_t scanlineMinimum;
+    uint64_t scanlineMaximum;
+    uint64_t scanlineSpanLast;
+    uint64_t scanlineSpanCount;
+    uint64_t scanlineSpanAccumulator;
+    uint64_t scanlineSpanAverage;
+    uint64_t scanlineSpanMinimum;
+    uint64_t scanlineSpanMaximum;
 } e9k_debug_checkpoint_t;
 
-typedef struct e9k_debug_ami_blitter_vis_point {
+typedef e9k_debug_checkpoint_t e9k_debug_counter_t;
+
+typedef struct e9k_debug_ami_blitter_vis_span {
     uint16_t x;
     uint16_t y;
+    uint16_t xEnd;
+    uint16_t widthWords;
+    uint16_t heightLines;
+    uint16_t sourceRowBytes;
+    int16_t sourceModulo;
     uint32_t blitId;
-} e9k_debug_ami_blitter_vis_point_t;
+    uint32_t sourceAddr;
+    uint32_t sourceDataAddr;
+    uint32_t channelAAddr;
+    uint32_t channelBAddr;
+    uint32_t channelCAddr;
+    uint32_t channelDAddr;
+    int16_t channelAModulo;
+    int16_t channelBModulo;
+    int16_t channelCModulo;
+    int16_t channelDModulo;
+    uint8_t sourceChannelsMask;
+    uint8_t minterm;
+    uint8_t sourceIsCopper;
+    uint8_t sourceDescending;
+    uint8_t lineMode;
+} e9k_debug_ami_blitter_vis_span_t;
+
+typedef e9k_debug_ami_blitter_vis_span_t e9k_debug_ami_blitter_vis_point_t;
 
 typedef struct e9k_debug_ami_blitter_vis_stats {
     uint32_t enabled;
     uint32_t mode;
-    uint32_t blink;
-    uint32_t livePhase;
     uint32_t activeCount;
     uint32_t blitsThisFrame;
     uint32_t writesThisFrame;
     uint32_t writeBytesThisFrame;
     uint32_t writeBytesMaxEstimateFrame;
     uint32_t frameCounter;
-    uint32_t fetchQueriesThisFrame;
-    uint32_t fetchHitsThisFrame;
     uint32_t drawMarkCallsFrame;
     uint32_t drawMarkCallsSnapshot;
 } e9k_debug_ami_blitter_vis_stats_t;
 
-#if E9K_HACK_AMI_SPRITE_VIS
 #define E9K_DEBUG_AMI_SPRITE_VIS_FLAG_ATTACHED 0x00000001u
 
 typedef struct e9k_debug_ami_sprite_vis_point {
@@ -93,7 +158,6 @@ typedef struct e9k_debug_ami_sprite_vis_point {
     uint32_t spriteIndex;
     uint32_t flags;
 } e9k_debug_ami_sprite_vis_point_t;
-#endif
 
 #define E9K_DEBUG_AMI_DMA_DEBUG_FRAME_LATEST_COMPLETE 0u
 #define E9K_DEBUG_AMI_DMA_DEBUG_FRAME_ACTIVE 1u
@@ -200,6 +264,39 @@ typedef void (*e9k_debug_ami_custom_log_frame_callback_t)(const e9k_debug_ami_cu
                                                           uint64_t frameNo,
                                                           void *user);
 
+#define E9K_DEBUG_AMI_VIDEO_LINE_INVALID_PTR 0xffffffffu
+
+typedef struct e9k_debug_ami_video_line_state {
+    uint32_t ptr[8];
+    uint8_t bplres;
+    uint8_t reserved[3];
+} e9k_debug_ami_video_line_state_t;
+
+typedef struct e9k_debug_ami_custom_reg_state {
+    uint16_t value;
+    uint32_t pc;
+} e9k_debug_ami_custom_reg_state_t;
+
+typedef enum e9k_debug_geo_register_log_source {
+    E9K_DEBUG_GEO_REGISTER_LOG_SOURCE_68K = 0,
+    E9K_DEBUG_GEO_REGISTER_LOG_SOURCE_Z80 = 1
+} e9k_debug_geo_register_log_source_t;
+
+typedef struct e9k_debug_geo_register_log_entry {
+    uint16_t line;
+    uint16_t value;
+    uint32_t reg;
+    uint32_t sourceAddr;
+    uint8_t sourceKind;
+    uint8_t reserved[3];
+} e9k_debug_geo_register_log_entry_t;
+
+typedef void (*e9k_debug_geo_register_log_frame_callback_t)(const e9k_debug_geo_register_log_entry_t *entries,
+                                                            size_t count,
+                                                            uint32_t dropped,
+                                                            uint64_t frameNo,
+                                                            void *user);
+
 
 #define E9K_WATCHPOINT_COUNT 64
 
@@ -212,10 +309,22 @@ typedef void (*e9k_debug_ami_custom_log_frame_callback_t)(const e9k_debug_ami_cu
 #define E9K_WATCH_OP_OLD_VALUE_EQ         (1u << 4) // (5) Existing value == operand
 #define E9K_WATCH_OP_ACCESS_SIZE          (1u << 5) // (6) Access size (operand: 8/16/32 bits)
 #define E9K_WATCH_OP_ADDR_COMPARE_MASK    (1u << 6) // (7) Address compare mask (operand: mask)
+#define E9K_WATCH_OP_ACCESS_SOURCE        (1u << 7) // (8) Access source (operand: E9K_WATCH_ACCESS_SOURCE_*)
 
 // Access kind for watchbreak reporting.
 #define E9K_WATCH_ACCESS_READ             1u
 #define E9K_WATCH_ACCESS_WRITE            2u
+
+// Access source for watchbreak reporting.
+#define E9K_WATCH_ACCESS_SOURCE_UNKNOWN   0u
+#define E9K_WATCH_ACCESS_SOURCE_CPU       1u
+#define E9K_WATCH_ACCESS_SOURCE_DMA       2u
+#define E9K_WATCH_ACCESS_SOURCE_BLITTER   3u
+#define E9K_WATCH_ACCESS_SOURCE_COPPER    4u
+#define E9K_WATCH_ACCESS_SOURCE_AUDIO     5u
+#define E9K_WATCH_ACCESS_SOURCE_VIDEO     6u
+#define E9K_WATCH_ACCESS_SOURCE_PERIPHERAL 7u
+#define E9K_WATCH_ACCESS_SOURCE_DISK      8u
 
 typedef struct e9k_debug_watchpoint
 {
@@ -226,6 +335,7 @@ typedef struct e9k_debug_watchpoint
     uint32_t old_value_operand; // (5) operand value
     uint32_t size_operand;      // (6) operand size, 8/16/32 (bits)
     uint32_t addr_mask_operand; // (7) operand mask, 0 => always match
+    uint32_t access_source_operand; // (8) operand source, 0 => unspecified
 } e9k_debug_watchpoint_t;
 
 typedef struct e9k_debug_watchbreak
@@ -240,6 +350,7 @@ typedef struct e9k_debug_watchbreak
     uint32_t old_value_operand;
     uint32_t size_operand;      // 8/16/32 (bits)
     uint32_t addr_mask_operand;
+    uint32_t access_source_operand;
 
     // Access details.
     uint32_t access_addr;       // address used for the access (base)
@@ -248,6 +359,8 @@ typedef struct e9k_debug_watchbreak
     uint32_t value;             // value read/written (size-truncated)
     uint32_t old_value;         // existing value (if known; for reads, equals value)
     uint32_t old_value_valid;   // 1 if old_value is valid
+    uint32_t access_source;     // E9K_WATCH_ACCESS_SOURCE_*
+    uint32_t access_source_detail; // core-specific detail, 0 if unused
 } e9k_debug_watchbreak_t;
 
 

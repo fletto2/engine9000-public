@@ -6,7 +6,6 @@
  * See COPYING for license details
  */
 
-
 #include <SDL.h>
 #include <SDL_image.h>
 #include <ctype.h>
@@ -25,8 +24,110 @@
 
 static char smoke_test_folder[PATH_MAX];
 static int smoke_test_enabled = 0;
+static int smoke_test_startOnWrite = 0;
+static int smoke_test_started = 0;
+static uint64_t smoke_test_frameBase = 0;
 static smoke_test_mode_t smoke_test_mode = SMOKE_TEST_MODE_NONE;
 static int smoke_test_openOnFail = 0;
+static int smoke_test_threshold = 1;
+static int smoke_test_compareFailures = 0;
+static FILE *smoke_test_audioOut = NULL;
+static FILE *smoke_test_audioIn = NULL;
+static uint64_t smoke_test_audioBytesWritten = 0;
+static uint64_t smoke_test_audioBytesRead = 0;
+static uint64_t smoke_test_audioExpectedBytes = 0;
+static int smoke_test_audioSampleRate = 44100;
+static int smoke_test_audioChannels = 2;
+static int smoke_test_audioFailed = 0;
+static int smoke_test_audioFormatSet = 0;
+static int smoke_test_audioCompareOpened = 0;
+
+enum {
+    SMOKE_TEST_WAV_HEADER_SIZE = 44
+};
+
+static void
+smoke_test_writeLe16(uint8_t *dst, uint16_t value)
+{
+    dst[0] = (uint8_t)(value & 0xffu);
+    dst[1] = (uint8_t)((value >> 8) & 0xffu);
+}
+
+static void
+smoke_test_writeLe32(uint8_t *dst, uint32_t value)
+{
+    dst[0] = (uint8_t)(value & 0xffu);
+    dst[1] = (uint8_t)((value >> 8) & 0xffu);
+    dst[2] = (uint8_t)((value >> 16) & 0xffu);
+    dst[3] = (uint8_t)((value >> 24) & 0xffu);
+}
+
+static uint16_t
+smoke_test_readLe16(const uint8_t *src)
+{
+    return (uint16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
+}
+
+static uint32_t
+smoke_test_readLe32(const uint8_t *src)
+{
+    return (uint32_t)src[0] |
+           ((uint32_t)src[1] << 8) |
+           ((uint32_t)src[2] << 16) |
+           ((uint32_t)src[3] << 24);
+}
+
+static void
+smoke_test_makeWavHeader(uint8_t *header, uint32_t dataBytes)
+{
+    uint16_t channels = (uint16_t)(smoke_test_audioChannels > 0 ? smoke_test_audioChannels : 2);
+    uint32_t sampleRate = (uint32_t)(smoke_test_audioSampleRate > 0 ? smoke_test_audioSampleRate : 44100);
+    uint16_t bitsPerSample = 16;
+    uint16_t blockAlign = (uint16_t)(channels * (bitsPerSample / 8u));
+    uint32_t byteRate = sampleRate * (uint32_t)blockAlign;
+
+    memcpy(header + 0, "RIFF", 4);
+    smoke_test_writeLe32(header + 4, 36u + dataBytes);
+    memcpy(header + 8, "WAVE", 4);
+    memcpy(header + 12, "fmt ", 4);
+    smoke_test_writeLe32(header + 16, 16u);
+    smoke_test_writeLe16(header + 20, 1u);
+    smoke_test_writeLe16(header + 22, channels);
+    smoke_test_writeLe32(header + 24, sampleRate);
+    smoke_test_writeLe32(header + 28, byteRate);
+    smoke_test_writeLe16(header + 32, blockAlign);
+    smoke_test_writeLe16(header + 34, bitsPerSample);
+    memcpy(header + 36, "data", 4);
+    smoke_test_writeLe32(header + 40, dataBytes);
+}
+
+static void
+smoke_test_closeAudioOut(void)
+{
+    if (!smoke_test_audioOut) {
+        return;
+    }
+    uint8_t header[SMOKE_TEST_WAV_HEADER_SIZE];
+    uint32_t dataBytes = UINT32_MAX;
+    if (smoke_test_audioBytesWritten < UINT32_MAX) {
+        dataBytes = (uint32_t)smoke_test_audioBytesWritten;
+    }
+    smoke_test_makeWavHeader(header, dataBytes);
+    if (fseek(smoke_test_audioOut, 0, SEEK_SET) == 0) {
+        fwrite(header, 1, sizeof(header), smoke_test_audioOut);
+    }
+    fclose(smoke_test_audioOut);
+    smoke_test_audioOut = NULL;
+}
+
+static void
+smoke_test_closeAudioIn(void)
+{
+    if (smoke_test_audioIn) {
+        fclose(smoke_test_audioIn);
+        smoke_test_audioIn = NULL;
+    }
+}
 
 void
 smoke_test_setFolder(const char *path)
@@ -55,6 +156,18 @@ void
 smoke_test_setOpenOnFail(int enable)
 {
     smoke_test_openOnFail = enable ? 1 : 0;
+}
+
+void
+smoke_test_setThreshold(int threshold)
+{
+    smoke_test_threshold = threshold > 0 ? threshold : 1;
+}
+
+void
+smoke_test_setStartOnWrite(int enabled)
+{
+    smoke_test_startOnWrite = enabled ? 1 : 0;
 }
 
 static int
@@ -98,6 +211,7 @@ smoke_test_clearFolderEntry(const char *path, void *user)
     const char *base = slash > back ? slash : back;
     const char *name = base ? base + 1 : path;
     if (smoke_test_hasSuffix(name, ".png") ||
+        smoke_test_hasSuffix(name, ".wav") ||
         (clearInputs && smoke_test_hasSuffix(name, ".inp"))) {
         remove(path);
     }
@@ -113,9 +227,106 @@ smoke_test_clearFolder(const char *path, int clearInputs)
     debugger_platform_scanFolder(path, smoke_test_clearFolderEntry, &clearInputs);
 }
 
+static int
+smoke_test_audioPath(char *out, size_t cap)
+{
+    if (!out || cap == 0 || !smoke_test_folder[0]) {
+        return 0;
+    }
+    return debugger_platform_pathJoin(out, cap, smoke_test_folder, "audio.wav");
+}
+
+static int
+smoke_test_openAudioOut(void)
+{
+    char path[PATH_MAX];
+    if (!smoke_test_audioPath(path, sizeof(path))) {
+        return 0;
+    }
+    smoke_test_audioOut = fopen(path, "wb");
+    if (!smoke_test_audioOut) {
+        debug_error("smoke-test: failed to open audio output %s", path);
+        return 0;
+    }
+    uint8_t header[SMOKE_TEST_WAV_HEADER_SIZE];
+    smoke_test_makeWavHeader(header, 0);
+    if (fwrite(header, 1, sizeof(header), smoke_test_audioOut) != sizeof(header)) {
+        debug_error("smoke-test: failed to write audio header %s", path);
+        smoke_test_closeAudioOut();
+        return 0;
+    }
+    smoke_test_audioBytesWritten = 0;
+    return 1;
+}
+
+static int
+smoke_test_openAudioIn(void)
+{
+    char path[PATH_MAX];
+    if (!smoke_test_audioPath(path, sizeof(path))) {
+        return 0;
+    }
+    smoke_test_audioIn = fopen(path, "rb");
+    if (!smoke_test_audioIn) {
+        debug_printf("smoke-test: expected audio not found, skipping audio compare (%s)", path);
+        return 1;
+    }
+    uint8_t header[SMOKE_TEST_WAV_HEADER_SIZE];
+    if (fread(header, 1, sizeof(header), smoke_test_audioIn) != sizeof(header)) {
+        debug_error("smoke-test: failed to read expected audio header %s", path);
+        smoke_test_audioFailed = 1;
+        smoke_test_closeAudioIn();
+        return 0;
+    }
+    if (memcmp(header + 0, "RIFF", 4) != 0 ||
+        memcmp(header + 8, "WAVE", 4) != 0 ||
+        memcmp(header + 12, "fmt ", 4) != 0 ||
+        memcmp(header + 36, "data", 4) != 0 ||
+        smoke_test_readLe32(header + 16) != 16u ||
+        smoke_test_readLe16(header + 20) != 1u ||
+        smoke_test_readLe16(header + 22) != 2u ||
+        smoke_test_readLe16(header + 34) != 16u) {
+        debug_error("smoke-test: unsupported expected audio format %s", path);
+        smoke_test_audioFailed = 1;
+        smoke_test_closeAudioIn();
+        return 0;
+    }
+    uint32_t sampleRate = smoke_test_readLe32(header + 24);
+    if (smoke_test_audioFormatSet && sampleRate != (uint32_t)smoke_test_audioSampleRate) {
+        debug_error("smoke-test: expected audio sample rate %u, got %d",
+                    sampleRate, smoke_test_audioSampleRate);
+        smoke_test_audioFailed = 1;
+        smoke_test_closeAudioIn();
+        return 0;
+    }
+    smoke_test_audioExpectedBytes = smoke_test_readLe32(header + 40);
+    smoke_test_audioBytesRead = 0;
+    smoke_test_audioCompareOpened = 1;
+    return 1;
+}
+
+static void
+smoke_test_resetAudioState(void)
+{
+    smoke_test_closeAudioOut();
+    smoke_test_closeAudioIn();
+    smoke_test_audioBytesWritten = 0;
+    smoke_test_audioBytesRead = 0;
+    smoke_test_audioExpectedBytes = 0;
+    smoke_test_audioSampleRate = 44100;
+    smoke_test_audioChannels = 2;
+    smoke_test_audioFailed = 0;
+    smoke_test_audioFormatSet = 0;
+    smoke_test_audioCompareOpened = 0;
+}
+
 int
 smoke_test_init(void)
 {
+    smoke_test_resetAudioState();
+    smoke_test_started = smoke_test_startOnWrite ? 0 : 1;
+    smoke_test_frameBase = 0;
+    smoke_test_compareFailures = 0;
     if (!smoke_test_folder[0]) {
         smoke_test_enabled = 0;
         return 1;
@@ -134,6 +345,22 @@ smoke_test_init(void)
         smoke_test_enabled = 0;
         return 1;
     }
+    if (!smoke_test_started) {
+        smoke_test_enabled = 1;
+        return 1;
+    }
+    if (smoke_test_mode == SMOKE_TEST_MODE_RECORD ||
+        smoke_test_mode == SMOKE_TEST_MODE_REMAKE) {
+        if (!smoke_test_openAudioOut()) {
+            smoke_test_enabled = 0;
+            return 0;
+        }
+    } else if (smoke_test_mode == SMOKE_TEST_MODE_COMPARE) {
+        if (!smoke_test_openAudioIn()) {
+            smoke_test_enabled = 0;
+            return 0;
+        }
+    }
     smoke_test_enabled = 1;
     return 1;
 }
@@ -141,15 +368,63 @@ smoke_test_init(void)
 void
 smoke_test_shutdown(void)
 {
+    smoke_test_closeAudioOut();
+    smoke_test_closeAudioIn();
     smoke_test_enabled = 0;
+    smoke_test_startOnWrite = 0;
+    smoke_test_started = 0;
+    smoke_test_frameBase = 0;
     smoke_test_mode = SMOKE_TEST_MODE_NONE;
     smoke_test_openOnFail = 0;
+    smoke_test_threshold = 1;
+    smoke_test_compareFailures = 0;
 }
 
 int
 smoke_test_isEnabled(void)
 {
     return smoke_test_enabled ? 1 : 0;
+}
+
+int
+smoke_test_isWaitingForStart(void)
+{
+    return smoke_test_enabled && smoke_test_startOnWrite && !smoke_test_started;
+}
+
+int
+smoke_test_hasStarted(void)
+{
+    return smoke_test_started ? 1 : 0;
+}
+
+int
+smoke_test_startFromFrame(uint64_t frame)
+{
+    if (!smoke_test_isWaitingForStart()) {
+        return 0;
+    }
+    int sampleRate = smoke_test_audioSampleRate;
+    int channels = smoke_test_audioChannels;
+    int formatSet = smoke_test_audioFormatSet;
+    smoke_test_resetAudioState();
+    smoke_test_audioSampleRate = sampleRate;
+    smoke_test_audioChannels = channels;
+    smoke_test_audioFormatSet = formatSet;
+    if (smoke_test_mode == SMOKE_TEST_MODE_RECORD ||
+        smoke_test_mode == SMOKE_TEST_MODE_REMAKE) {
+        if (!smoke_test_openAudioOut()) {
+            return 0;
+        }
+    } else if (smoke_test_mode == SMOKE_TEST_MODE_COMPARE) {
+        if (!smoke_test_openAudioIn()) {
+            return 0;
+        }
+    }
+    smoke_test_started = 1;
+    smoke_test_frameBase = frame;
+    debug_printf("smoke-test: started on debug write at frame #%llu", (unsigned long long)frame);
+    return 1;
 }
 
 int
@@ -173,6 +448,8 @@ smoke_test_reset(struct e9k_debugger *dbg)
     dbg->smokeTestFailed = 0;
     dbg->smokeTestExitCode = -1;
     dbg->smokeTestOpenOnFail = 0;
+    dbg->smokeTestStartOnWrite = 0;
+    dbg->smokeTestThreshold = 1;
 }
 
 int
@@ -182,6 +459,10 @@ smoke_test_bootstrap(struct e9k_debugger *dbg)
         return 0;
     }
     if (dbg->smokeTestMode == SMOKE_TEST_MODE_NONE) {
+        if (dbg->smokeTestStartOnWrite) {
+            debug_error("smoke-start-on-write: requires --make-smoke, --remake-smoke, or --smoke-test");
+            return 0;
+        }
         return 1;
     }
     if (ui_test_getMode() != UI_TEST_MODE_NONE) {
@@ -208,6 +489,8 @@ smoke_test_bootstrap(struct e9k_debugger *dbg)
     smoke_test_setFolder(dbg->smokeTestPath);
     smoke_test_setMode((smoke_test_mode_t)dbg->smokeTestMode);
     smoke_test_setOpenOnFail(dbg->smokeTestOpenOnFail);
+    smoke_test_setThreshold(dbg->smokeTestThreshold);
+    smoke_test_setStartOnWrite(dbg->smokeTestStartOnWrite);
     if (!smoke_test_init()) {
         return 0;
     }
@@ -324,11 +607,36 @@ smoke_test_openImage(const char *path)
     if (!path || !*path) {
         return;
     }
-    char url[PATH_MAX + 16];
-    snprintf(url, sizeof(url), "file://%s", path);
-    if (SDL_OpenURL(url) != 0) {
-        SDL_OpenURL(path);
+    char absolutePath[PATH_MAX];
+    if (path[0] == '/' || path[0] == '\\' || path[1] == ':') {
+        strutil_strlcpy(absolutePath, sizeof(absolutePath), path);
+    } else {
+        char cwd[PATH_MAX];
+        if (!debugger_platform_getCurrentDir(cwd, sizeof(cwd)) ||
+            !debugger_platform_pathJoin(absolutePath, sizeof(absolutePath), cwd, path)) {
+            strutil_strlcpy(absolutePath, sizeof(absolutePath), path);
+        }
     }
+    char url[PATH_MAX + 16];
+    strutil_join2Trunc(url, sizeof(url), "file://", absolutePath);
+    if (SDL_OpenURL(url) != 0) {
+        SDL_OpenURL(absolutePath);
+    }
+}
+
+int
+smoke_test_finishScreenCompare(void)
+{
+    if (smoke_test_compareFailures >= smoke_test_threshold) {
+        debug_error("smoke-test: screen compare failed with %d mismatched frames (threshold %d)",
+                    smoke_test_compareFailures, smoke_test_threshold);
+        return 1;
+    }
+    if (smoke_test_compareFailures > 0) {
+        debug_printf("smoke-test: screen compare tolerated %d mismatched frames (threshold %d)",
+                     smoke_test_compareFailures, smoke_test_threshold);
+    }
+    return 0;
 }
 
 static int
@@ -354,7 +662,7 @@ smoke_test_compareFrame(uint64_t frame, const uint8_t *data, int width, int heig
     struct stat st;
     if (stat(path, &st) != 0) {
         if (errno == ENOENT) {
-            return 2;
+            return smoke_test_finishScreenCompare() != 0 ? 1 : 2;
         }
         debug_error("smoke-test: stat failed for %s", path);
         smoke_test_writeDiffImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
@@ -395,20 +703,20 @@ smoke_test_compareFrame(uint64_t frame, const uint8_t *data, int width, int heig
         return 1;
     }
     int fail = 0;
-            if (SDL_MUSTLOCK(converted)) {
-            if (SDL_LockSurface(converted) != 0) {
-                debug_error("smoke-test: SDL_LockSurface failed: %s", SDL_GetError());
-                smoke_test_writeDiffImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
-                smoke_test_writeDiffScript(frame, path, montagePath, sizeof(montagePath));
-                if (smoke_test_openOnFail && montagePath[0]) {
-                    smoke_test_openImage(montagePath);
-                }
-                debug_printf("Smoke test failed at frame #%llu (%s)", (unsigned long long)frame,
-                             montagePath[0] ? montagePath : (diffPath[0] ? diffPath : "diff unavailable"));
-                SDL_FreeSurface(converted);
-                return 1;
+    if (SDL_MUSTLOCK(converted)) {
+        if (SDL_LockSurface(converted) != 0) {
+            debug_error("smoke-test: SDL_LockSurface failed: %s", SDL_GetError());
+            smoke_test_writeDiffImage(frame, data, width, height, pitch, diffPath, sizeof(diffPath));
+            smoke_test_writeDiffScript(frame, path, montagePath, sizeof(montagePath));
+            if (smoke_test_openOnFail && montagePath[0]) {
+                smoke_test_openImage(montagePath);
             }
+            debug_printf("Smoke test failed at frame #%llu (%s)", (unsigned long long)frame,
+                         montagePath[0] ? montagePath : (diffPath[0] ? diffPath : "diff unavailable"));
+            SDL_FreeSurface(converted);
+            return 1;
         }
+    }
     if (converted->w != width || converted->h != height) {
         fail = 1;
     } else {
@@ -437,9 +745,15 @@ smoke_test_compareFrame(uint64_t frame, const uint8_t *data, int width, int heig
         if (smoke_test_openOnFail && montagePath[0]) {
             smoke_test_openImage(montagePath);
         }
-        debug_printf("Smoke test failed at frame #%llu (%s)", (unsigned long long)frame,
+        smoke_test_compareFailures++;
+        debug_printf("Smoke test mismatch at frame #%llu (%s)", (unsigned long long)frame,
                      montagePath[0] ? montagePath : (diffPath[0] ? diffPath : "diff unavailable"));
-        return 1;
+        if (smoke_test_compareFailures >= smoke_test_threshold) {
+            debug_error("smoke-test: screen compare failed with %d mismatched frames (threshold %d)",
+                        smoke_test_compareFailures, smoke_test_threshold);
+            return 1;
+        }
+        return 0;
     }
     return 0;
 }
@@ -447,8 +761,14 @@ smoke_test_compareFrame(uint64_t frame, const uint8_t *data, int width, int heig
 int
 smoke_test_captureFrame(uint64_t frame)
 {
-    if (!smoke_test_enabled) {
+    if (!smoke_test_enabled || !smoke_test_started) {
         return 0;
+    }
+    if (smoke_test_frameBase > 0) {
+        if (frame <= smoke_test_frameBase) {
+            return 0;
+        }
+        frame -= smoke_test_frameBase;
     }
     const uint8_t *data = NULL;
     int width = 0;
@@ -476,5 +796,137 @@ smoke_test_captureFrame(uint64_t frame)
         debug_error("smoke-test: IMG_SavePNG failed: %s", IMG_GetError());
     }
     SDL_FreeSurface(surface);
+    return 0;
+}
+
+void
+smoke_test_setAudioFormat(int sampleRate, int channels)
+{
+    if (sampleRate > 0) {
+        smoke_test_audioSampleRate = sampleRate;
+    }
+    if (channels > 0) {
+        smoke_test_audioChannels = channels;
+    }
+    smoke_test_audioFormatSet = 1;
+    if (smoke_test_mode == SMOKE_TEST_MODE_COMPARE &&
+        smoke_test_audioIn &&
+        smoke_test_audioExpectedBytes > 0) {
+        long cur = ftell(smoke_test_audioIn);
+        if (cur >= SMOKE_TEST_WAV_HEADER_SIZE) {
+            uint8_t header[SMOKE_TEST_WAV_HEADER_SIZE];
+            if (fseek(smoke_test_audioIn, 0, SEEK_SET) == 0 &&
+                fread(header, 1, sizeof(header), smoke_test_audioIn) == sizeof(header)) {
+                uint32_t expectedRate = smoke_test_readLe32(header + 24);
+                if (expectedRate != (uint32_t)smoke_test_audioSampleRate) {
+                    debug_error("smoke-test: expected audio sample rate %u, got %d",
+                                expectedRate, smoke_test_audioSampleRate);
+                    smoke_test_audioFailed = 1;
+                }
+            }
+            fseek(smoke_test_audioIn, cur, SEEK_SET);
+        }
+    }
+}
+
+int
+smoke_test_captureAudio(const int16_t *data, size_t frames)
+{
+    if (!smoke_test_enabled || !smoke_test_started || !data || frames == 0) {
+        return smoke_test_audioFailed ? 1 : 0;
+    }
+    if (frames > SIZE_MAX / (2u * sizeof(int16_t))) {
+        debug_error("smoke-test: audio capture too large");
+        smoke_test_audioFailed = 1;
+        return 1;
+    }
+    size_t bytes = frames * 2u * sizeof(int16_t);
+    if (smoke_test_mode == SMOKE_TEST_MODE_RECORD ||
+        smoke_test_mode == SMOKE_TEST_MODE_REMAKE) {
+        if (!smoke_test_audioOut) {
+            debug_error("smoke-test: audio output is not open");
+            smoke_test_audioFailed = 1;
+            return 1;
+        }
+        if (fwrite(data, 1, bytes, smoke_test_audioOut) != bytes) {
+            debug_error("smoke-test: failed to write audio");
+            smoke_test_audioFailed = 1;
+            return 1;
+        }
+        smoke_test_audioBytesWritten += bytes;
+        return 0;
+    }
+    if (smoke_test_mode != SMOKE_TEST_MODE_COMPARE) {
+        return smoke_test_audioFailed ? 1 : 0;
+    }
+    if (!smoke_test_audioIn) {
+        if (!smoke_test_audioCompareOpened) {
+            return 0;
+        }
+        debug_error("smoke-test: expected audio is not open");
+        smoke_test_audioFailed = 1;
+        return 1;
+    }
+    if (smoke_test_audioBytesRead + bytes > smoke_test_audioExpectedBytes) {
+        if (smoke_test_audioBytesRead >= smoke_test_audioExpectedBytes) {
+            return 0;
+        }
+        bytes = (size_t)(smoke_test_audioExpectedBytes - smoke_test_audioBytesRead);
+    }
+    enum { kCompareBytes = 4096 };
+    uint8_t expected[kCompareBytes];
+    const uint8_t *actual = (const uint8_t *)data;
+    size_t pos = 0;
+    while (pos < bytes) {
+        size_t chunk = bytes - pos;
+        if (chunk > kCompareBytes) {
+            chunk = kCompareBytes;
+        }
+        if (fread(expected, 1, chunk, smoke_test_audioIn) != chunk) {
+            debug_error("smoke-test: failed to read expected audio");
+            smoke_test_audioFailed = 1;
+            return 1;
+        }
+        for (size_t i = 0; i < chunk; ++i) {
+            if (expected[i] != actual[pos + i]) {
+                debug_error("smoke-test: audio mismatch at byte %llu",
+                            (unsigned long long)(smoke_test_audioBytesRead + pos + i));
+                smoke_test_audioFailed = 1;
+                return 1;
+            }
+        }
+        pos += chunk;
+    }
+    smoke_test_audioBytesRead += bytes;
+    return 0;
+}
+
+int
+smoke_test_finishAudioCompare(void)
+{
+    if (!smoke_test_enabled) {
+        return 0;
+    }
+    if (smoke_test_audioFailed) {
+        return 1;
+    }
+    if (smoke_test_mode != SMOKE_TEST_MODE_COMPARE) {
+        return 0;
+    }
+    if (!smoke_test_audioCompareOpened) {
+        return 0;
+    }
+    if (!smoke_test_audioIn) {
+        debug_error("smoke-test: expected audio was not opened");
+        smoke_test_audioFailed = 1;
+        return 1;
+    }
+    if (smoke_test_audioBytesRead != smoke_test_audioExpectedBytes) {
+        debug_error("smoke-test: audio mismatch at byte %llu (expected audio has %llu more bytes)",
+                    (unsigned long long)smoke_test_audioBytesRead,
+                    (unsigned long long)(smoke_test_audioExpectedBytes - smoke_test_audioBytesRead));
+        smoke_test_audioFailed = 1;
+        return 1;
+    }
     return 0;
 }

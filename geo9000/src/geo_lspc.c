@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2022-2025 Rupert Carmichael
+Copyright (c) 2022-2026 Rupert Carmichael
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -30,11 +30,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <stddef.h>
 #include <stdint.h>
-
+#include <string.h>
 #include "geo.h"
+#include "geo_cd.h"
 #include "geo_m68k.h"
 #include "geo_lspc.h"
 #include "geo_serial.h"
+
+void geo_irq2_counterLoadDisplayCounter(void);
+void geo_irq2_processAdvance(uint32_t advance);
+int geo_irq2_processAdvanceToVBlankReload(uint32_t advance);
 
 #define M68K_CYC_PER_LINE 768
 
@@ -46,14 +51,35 @@ static romdata_t *romdata = NULL;
 static uint32_t *vbuf = NULL;
 
 static unsigned sprlimit = 96; // Sprites-per-line limit
+static unsigned skip_render = 0;
 
 static unsigned linebuf[2][LSPC_WIDTH]; // Line buffers for sprite pixels
+static uint8_t geo_lspc_linebufGrayscale[2][LSPC_WIDTH]; // Debug grayscale tags
 static unsigned lbactive = 0; // Active line buffer
+static int geo_lspc_spriteGrayscaleEnabled = 0;
+static int geo_lspc_spriteGrayscaleHighlightChain = 0;
+static int geo_lspc_spriteGrayscaleInvert = 0;
+static int geo_lspc_spriteHideEnabled = 0;
+static uint32_t geo_lspc_spriteSelectionMask[E9K_DEBUG_GEO_SPRITE_SELECTION_MASK_WORDS];
+static e9k_debug_palette_grayscale_mask_t geo_lspc_paletteGrayscaleMask;
+static int geo_lspc_paletteGrayscaleEnabled = 0;
+static e9k_debug_geo_fix_layer_mode_t geo_lspc_fixLayerMode = e9k_debug_geo_fix_layer_mode_normal;
 
 static uint8_t *fixdata = NULL;
+static size_t fixdatasz = 0;
 
 static unsigned fixbanksw = 0;
 static uint32_t crommask = 0;
+
+static inline void geo_lspc_bdsprline(void);
+static inline void geo_lspc_bdsprlineGray(void);
+static inline uint32_t geo_lspc_grayscaleColor(uint32_t color);
+static inline uint32_t geo_lspc_spriteHideBackdrop(unsigned x, unsigned y);
+static inline uint32_t geo_lspc_fixLayerColor(unsigned paletteIndex);
+static int geo_lspc_spriteSelectionMaskHasBits(const uint32_t *mask);
+static int geo_lspc_spriteSelectionMaskHasSprite(unsigned spriteIndex);
+
+static void (*geo_lspc_bdsprlineCurrent)(void) = geo_lspc_bdsprline;
 
 // Dynamic output palette with values converted from palette RAM
 static uint32_t palette_normal[SIZE_8K];
@@ -63,6 +89,10 @@ static uint32_t *palette = palette_normal;
 // Palette lookup tables
 static unsigned lut_normal[64];
 static unsigned lut_shadow[64];
+
+static unsigned reg_disblspr = 0;
+static unsigned reg_disblfix = 0;
+static unsigned reg_envideo = 0;
 
 // Horizontal Shrink LUT -- from neogeodev
 static unsigned lut_hshrink[0x10][0x10] = {
@@ -296,11 +326,25 @@ static inline void geo_lspc_palconv(uint16_t addr, uint16_t data) {
     unsigned b = (((data << 2) & 0x3c) | ((data >> 11) & 0x02) |
         ((data >> 15) & 0x01));
 
-    palette_normal[addr] = 0xff000000 |
+    uint32_t normalColor = 0xff000000 |
         (lut_normal[r] << 16) | (lut_normal[g] << 8) | lut_normal[b];
 
-    palette_shadow[addr] = 0xff000000 |
+    uint32_t shadowColor = 0xff000000 |
         (lut_shadow[r] << 16) | (lut_shadow[g] << 8) | lut_shadow[b];
+
+    if (geo_lspc_paletteGrayscaleEnabled) {
+        unsigned paletteIndex = (unsigned)(addr >> 4);
+        unsigned wordIndex = paletteIndex >> 5;
+        uint32_t bit = 1u << (paletteIndex & 31u);
+        if (wordIndex < E9K_DEBUG_GEO_PALETTE_GRAYSCALE_MASK_WORDS &&
+            (geo_lspc_paletteGrayscaleMask.words[wordIndex] & bit)) {
+            normalColor = geo_lspc_grayscaleColor(normalColor);
+            shadowColor = geo_lspc_grayscaleColor(shadowColor);
+        }
+    }
+
+    palette_normal[addr] = normalColor;
+    palette_shadow[addr] = shadowColor;
 }
 
 // Set the pointer to the video buffer
@@ -317,6 +361,79 @@ unsigned geo_lspc_get_sprlimit(void) {
     return sprlimit;
 }
 
+static int
+geo_lspc_paletteGrayscaleMaskHasBits(const e9k_debug_palette_grayscale_mask_t *mask)
+{
+    if (!mask) {
+        return 0;
+    }
+    for (int i = 0; i < E9K_DEBUG_GEO_PALETTE_GRAYSCALE_MASK_WORDS; ++i) {
+        if (mask->words[i]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void
+geo_lspc_setSpriteGrayscaleSelection(const e9k_debug_sprite_grayscale_selection_t *selection)
+{
+    if (!selection || !selection->enabled ||
+        !geo_lspc_spriteSelectionMaskHasBits(selection->spriteMask)) {
+        geo_lspc_spriteGrayscaleEnabled = 0;
+        geo_lspc_spriteGrayscaleHighlightChain = 0;
+        geo_lspc_spriteGrayscaleInvert = 0;
+        geo_lspc_spriteHideEnabled = 0;
+        memset(geo_lspc_spriteSelectionMask, 0, sizeof(geo_lspc_spriteSelectionMask));
+        geo_lspc_bdsprlineCurrent = geo_lspc_bdsprline;
+        memset(geo_lspc_linebufGrayscale, 0, sizeof(geo_lspc_linebufGrayscale));
+        return;
+    }
+
+    geo_lspc_spriteGrayscaleEnabled = 1;
+    geo_lspc_spriteGrayscaleHighlightChain = selection->highlightChain ? 1 : 0;
+    geo_lspc_spriteGrayscaleInvert = selection->invert ? 1 : 0;
+    geo_lspc_spriteHideEnabled = selection->hide ? 1 : 0;
+    memcpy(geo_lspc_spriteSelectionMask, selection->spriteMask, sizeof(geo_lspc_spriteSelectionMask));
+    geo_lspc_bdsprlineCurrent = geo_lspc_bdsprlineGray;
+    memset(geo_lspc_linebufGrayscale, 0, sizeof(geo_lspc_linebufGrayscale));
+}
+
+void
+geo_lspc_setPaletteGrayscaleMask(const e9k_debug_palette_grayscale_mask_t *mask)
+{
+    if (mask) {
+        geo_lspc_paletteGrayscaleMask = *mask;
+    } else {
+        memset(&geo_lspc_paletteGrayscaleMask, 0, sizeof(geo_lspc_paletteGrayscaleMask));
+    }
+    geo_lspc_paletteGrayscaleEnabled =
+        geo_lspc_paletteGrayscaleMaskHasBits(&geo_lspc_paletteGrayscaleMask);
+    for (unsigned i = 0; i < (SIZE_16K >> 1); ++i) {
+        geo_lspc_palconv(i, lspc.palram[i]);
+    }
+}
+
+size_t
+geo_lspc_getPaletteGrayscaleMask(e9k_debug_palette_grayscale_mask_t *out, size_t cap)
+{
+    if (!out || cap < sizeof(*out)) {
+        return 0u;
+    }
+    *out = geo_lspc_paletteGrayscaleMask;
+    return sizeof(*out);
+}
+
+void
+geo_lspc_setFixLayerMode(e9k_debug_geo_fix_layer_mode_t mode)
+{
+    if (mode < e9k_debug_geo_fix_layer_mode_normal ||
+        mode > e9k_debug_geo_fix_layer_mode_hidden) {
+        mode = e9k_debug_geo_fix_layer_mode_normal;
+    }
+    geo_lspc_fixLayerMode = mode;
+}
+
 void geo_lspc_set_palette(unsigned p) {
     if (p) // Raw
         geo_lspc_palgen_raw();
@@ -326,6 +443,25 @@ void geo_lspc_set_palette(unsigned p) {
     // Set output palette entries to match newly selected palette
     for (unsigned i = 0; i < (SIZE_16K >> 1); ++i)
         geo_lspc_palconv(i, lspc.palram[i]);
+}
+
+void geo_lspc_set_skip_render(unsigned s) {
+    skip_render = s;
+}
+
+// Handle behaviour related to the Neo Geo CD REG_DISBLSPR register
+void geo_lspc_disblspr_wr(unsigned e) {
+    reg_disblspr = e; // Writing non-zero disables sprite layer rendering
+}
+
+// Handle behaviour related to the Neo Geo CD REG_DISBLFIX register
+void geo_lspc_disblfix_wr(unsigned e) {
+    reg_disblfix = e; // Writing non-zero disables FIX layer rendering
+}
+
+// Handle behaviour related to the Neo Geo CD REG_ENVIDEO register
+void geo_lspc_envideo_wr(unsigned e) {
+    reg_envideo = e; // 0 = Disable, 1 = Enable
 }
 
 // Perform post-load operations for C ROM
@@ -374,6 +510,54 @@ static inline void geo_lspc_bdsprline(void) {
     }
 }
 
+static inline uint32_t
+geo_lspc_grayscaleColor(uint32_t color)
+{
+    unsigned red = (color >> 16) & 0xffu;
+    unsigned green = (color >> 8) & 0xffu;
+    unsigned blue = color & 0xffu;
+    unsigned gray = (red * 77u + green * 150u + blue * 29u) >> 8;
+    return (color & 0xff000000u) | (gray << 16) | (gray << 8) | gray;
+}
+
+static inline uint32_t
+geo_lspc_spriteHideBackdrop(unsigned x, unsigned y)
+{
+    return (((x >> 3) ^ (y >> 3)) & 1u) ? 0xffeeeeeeu : 0xffffffffu;
+}
+
+static inline uint32_t
+geo_lspc_fixLayerColor(unsigned paletteIndex)
+{
+    uint32_t color = palette[paletteIndex];
+
+    if (geo_lspc_fixLayerMode == e9k_debug_geo_fix_layer_mode_grayscale) {
+        return geo_lspc_grayscaleColor(color);
+    }
+    return color;
+}
+
+static inline void
+geo_lspc_bdsprlineGray(void)
+{
+    uint32_t bdcol = geo_lspc_backdrop();
+    uint32_t *ptr = vbuf + (lspc.scanline * LSPC_WIDTH);
+    unsigned *lb = linebuf[lbactive];
+    uint8_t *gray = geo_lspc_linebufGrayscale[lbactive];
+
+    for (unsigned p = 0; p < LSPC_WIDTH; ++p) {
+        if (lb[p]) {
+            uint32_t color = palette[lb[p]];
+            ptr[p] = gray[p] ? geo_lspc_grayscaleColor(color) : color;
+        } else {
+            ptr[p] = geo_lspc_spriteHideEnabled ?
+                geo_lspc_spriteHideBackdrop(p, lspc.scanline) : bdcol;
+        }
+        lb[p] = 0;
+        gray[p] = 0;
+    }
+}
+
 // Read half of a a palette RAM entry from the active bank
 uint8_t geo_lspc_palram_rd08(uint32_t addr) {
     uint16_t pval =
@@ -399,7 +583,8 @@ void geo_lspc_palram_wr08(uint32_t addr, uint8_t data) {
         lspc.palram[(addr & 0x0fff) + (lspc.palbank * SIZE_4K)] |= (data << 8);
     }
 
-    geo_lspc_palconv(((addr >> 1) & 0x0fff) + (lspc.palbank * SIZE_4K), data);
+    unsigned idx = (addr & 0x0fff) + (lspc.palbank * SIZE_4K);
+    geo_lspc_palconv(idx, lspc.palram[idx]);
 }
 
 // Write a value to the active bank of palette RAM
@@ -446,14 +631,27 @@ void geo_lspc_vrammod_wr(int16_t mod) {
 }
 
 // Read REG_LSPCMODE
+static unsigned
+geo_lspc_getVpos(void)
+{
+    return (lspc.scanline + LSPC_SCANLINES - LSPC_LINE_BORDER_TOP) %
+        LSPC_SCANLINES;
+}
+
 uint16_t geo_lspc_mode_rd(void) {
     /* Bits 7-15: Raster line counter (with offset of 0xf8)
        Bits 4-6:  000
        Bit 3:     0 = 60Hz, 1 = 50Hz
        Bits 0-2:  Auto animation counter
     */
+    unsigned vCounter = geo_lspc_getVpos() + 0x100;
+
+    if (vCounter >= 0x200) {
+        vCounter -= LSPC_SCANLINES;
+    }
+
     // FIXME - support 50Hz
-    return ((lspc.scanline + 0xf8) << 7) | lspc.aa_counter;
+    return (vCounter << 7) | lspc.aa_counter;
 }
 
 // Write to REG_LSPCMODE
@@ -465,8 +663,31 @@ void geo_lspc_mode_wr(uint16_t data) {
        Bits 0-2:  Unused
     */
     lspc.aa_reload = (data >> 8);
-    ngsys.irq2_ctrl = data & 0xf0;
     lspc.aa_disable = data & 0x08;
+
+    /* When the "Timer IRQ Reload at VBLANK" bit is freshly set during the
+       VBLANK period, reload the counter immediately.
+    */
+    uint8_t prevCtrl = ngsys.irq2_ctrl;
+    ngsys.irq2_ctrl = data & 0xf0;
+
+    if (!(prevCtrl & IRQ_TIMER_RELOAD_VBLANK) &&
+        (ngsys.irq2_ctrl & IRQ_TIMER_RELOAD_VBLANK) &&
+        lspc.scanline >= LSPC_LINE_BORDER_BOTTOM) {
+        geo_irq2_counterLoadDisplayCounter();
+    }
+}
+
+unsigned
+geo_lspc_getAutoAnimationCounter(void)
+{
+    return (unsigned)(lspc.aa_counter & 0x07u);
+}
+
+unsigned
+geo_lspc_getAutoAnimationDisabled(void)
+{
+    return lspc.aa_disable ? 1u : 0u;
 }
 
 // Write to REG_SHADOW
@@ -485,6 +706,11 @@ void geo_lspc_init(void) {
     lspc.aa_timer = 0;
     lspc.scanline = 0;
     lspc.cyc = 0;
+
+    // CD register copies
+    reg_disblspr = 0;
+    reg_disblfix = 0;
+    reg_envideo = 0;
 
     geo_lspc_shadow_wr(0);
 
@@ -553,10 +779,10 @@ static void geo_lspc_fixline_default(void) {
         uint32_t pentry = 0;
         for (unsigned p = 0, f = 0x10; p < 4; ++p, f = (f + 0x08) & 0x18) {
             pentry = tdata[f + row] & 0x0f;
-            if (pentry) voffset[p << 1] = palette[poffset + pentry];
+            if (pentry) voffset[p << 1] = geo_lspc_fixLayerColor(poffset + pentry);
 
             pentry = (tdata[f + row] >> 4) & 0x0f;
-            if (pentry) voffset[(p << 1) + 1] = palette[poffset + pentry];
+            if (pentry) voffset[(p << 1) + 1] = geo_lspc_fixLayerColor(poffset + pentry);
         }
     }
 }
@@ -605,10 +831,10 @@ static void geo_lspc_fixline_line(void) {
         uint32_t pentry = 0;
         for (unsigned p = 0, f = 0x10; p < 4; ++p, f = (f + 0x08) & 0x18) {
             pentry = tdata[f + row] & 0x0f;
-            if (pentry) voffset[p << 1] = palette[poffset + pentry];
+            if (pentry) voffset[p << 1] = geo_lspc_fixLayerColor(poffset + pentry);
 
             pentry = (tdata[f + row] >> 4) & 0x0f;
-            if (pentry) voffset[(p << 1) + 1] = palette[poffset + pentry];
+            if (pentry) voffset[(p << 1) + 1] = geo_lspc_fixLayerColor(poffset + pentry);
         }
     }
 }
@@ -644,23 +870,36 @@ static void geo_lspc_fixline_tile(void) {
         uint32_t pentry = 0;
         for (unsigned p = 0, f = 0x10; p < 4; ++p, f = (f + 0x08) & 0x18) {
             pentry = tdata[f + row] & 0x0f;
-            if (pentry) voffset[p << 1] = palette[poffset + pentry];
+            if (pentry) voffset[p << 1] = geo_lspc_fixLayerColor(poffset + pentry);
 
             pentry = (tdata[f + row] >> 4) & 0x0f;
-            if (pentry) voffset[(p << 1) + 1] = palette[poffset + pentry];
+            if (pentry) voffset[(p << 1) + 1] = geo_lspc_fixLayerColor(poffset + pentry);
         }
     }
 }
 
 // Set the active Fix ROM
 void geo_lspc_set_fix(unsigned f) {
-    if (f) {
-        fixdata = romdata->s;
-        geo_lspc_set_fix_banksw(fixbanksw);
-    }
-    else {
-        fixdata = romdata->sfix;
-        geo_lspc_fixline = &geo_lspc_fixline_default;
+    switch (f) {
+        default:
+        case LSPC_FIX_BOARD: {
+            fixdata = romdata->sfix;
+            fixdatasz = romdata->sfixsz;
+            geo_lspc_fixline = &geo_lspc_fixline_default;
+            break;
+        }
+        case LSPC_FIX_CART: {
+            fixdata = romdata->s;
+            fixdatasz = romdata->ssz;
+            geo_lspc_set_fix_banksw(fixbanksw);
+            break;
+        }
+        case LSPC_FIX_CD: {
+            fixdata = romdata->s;
+            fixdatasz = romdata->ssz;
+            geo_lspc_fixline = &geo_lspc_fixline_default;
+            break;
+        }
     }
 }
 
@@ -710,11 +949,47 @@ static inline unsigned geo_lspc_tpix(unsigned tbase, unsigned x, unsigned y) {
               reverse order from how it is displayed unless horizontal flip
               is enabled for the tile.
     */
-    unsigned v0 = (romdata->c[(tbase + 0) + (y << 2)]) >> (x);
-    unsigned v1 = (romdata->c[(tbase + 2) + (y << 2)]) >> (x);
-    unsigned v2 = (romdata->c[(tbase + 1) + (y << 2)]) >> (x);
-    unsigned v3 = (romdata->c[(tbase + 3) + (y << 2)]) >> (x);
+    unsigned base = tbase + (y << 2);
+    unsigned v0, v1, v2, v3;
+    if (ngsys.cdmode) { // CD SPR DRAM: Non-interleaved byte order [1, 0, 3, 2]
+        v0 = (romdata->c[base + 1]) >> (x);
+        v1 = (romdata->c[base + 0]) >> (x);
+        v2 = (romdata->c[base + 3]) >> (x);
+        v3 = (romdata->c[base + 2]) >> (x);
+    }
+    else { // Cart C ROM: Interleaved odd/even byte order [0, 2, 1, 3]
+        v0 = (romdata->c[base + 0]) >> (x);
+        v1 = (romdata->c[base + 2]) >> (x);
+        v2 = (romdata->c[base + 1]) >> (x);
+        v3 = (romdata->c[base + 3]) >> (x);
+    }
     return (v0 & 0x01) | (v1 & 0x01) << 1 | (v2 & 0x01) << 2 | (v3 & 0x01) << 3;
+}
+
+static int
+geo_lspc_spriteSelectionMaskHasBits(const uint32_t *mask)
+{
+    if (!mask) {
+        return 0;
+    }
+    for (int i = 0; i < E9K_DEBUG_GEO_SPRITE_SELECTION_MASK_WORDS; ++i) {
+        if (mask[i]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+geo_lspc_spriteSelectionMaskHasSprite(unsigned spriteIndex)
+{
+    unsigned wordIndex = spriteIndex >> 5;
+    unsigned bitIndex = spriteIndex & 31u;
+
+    if (wordIndex >= E9K_DEBUG_GEO_SPRITE_SELECTION_MASK_WORDS) {
+        return 0;
+    }
+    return (geo_lspc_spriteSelectionMask[wordIndex] & (1u << bitIndex)) ? 1 : 0;
 }
 
 // Calculate a line of sprite data 2 lines in advance
@@ -727,6 +1002,7 @@ static inline void geo_lspc_sprcalc(void) {
     unsigned sprsize = 0;
     unsigned hshrink = 0x0f; // Start at full width (no shrinking)
     unsigned vshrink = 0xff; // Start at full height (no shrinking)
+    unsigned chainRootIndex = 0;
 
     /*
      * Original code (ENGINE9000 change):
@@ -749,6 +1025,7 @@ static inline void geo_lspc_sprcalc(void) {
             xpos += (hshrink + 1);
         }
         else {
+            chainRootIndex = i;
             xpos = (lspc.vram[0x8400 + i] >> 7) & 0x1ff;
             ypos = (lspc.vram[0x8200 + i] >> 7) & 0x1ff; // 512-Y
             sprsize = lspc.vram[0x8200 + i] & 0x3f; // Height in tiles
@@ -897,14 +1174,38 @@ static inline void geo_lspc_sprcalc(void) {
         // X coordinates in the line buffer
         unsigned xcoord = 0;
 
+        int selectedSprite = 0;
+        int grayscaleSprite = 0;
+        int hideSprite = 0;
+        if (geo_lspc_spriteGrayscaleEnabled) {
+            if (geo_lspc_spriteGrayscaleHighlightChain) {
+                selectedSprite = geo_lspc_spriteSelectionMaskHasSprite(chainRootIndex);
+            } else {
+                selectedSprite = geo_lspc_spriteSelectionMaskHasSprite(i);
+            }
+            grayscaleSprite = selectedSprite;
+            hideSprite = selectedSprite;
+            if (geo_lspc_spriteGrayscaleInvert) {
+                grayscaleSprite = grayscaleSprite ? 0 : 1;
+                hideSprite = hideSprite ? 0 : 1;
+            }
+        }
+
         for (unsigned p = 0; p < 16; ++p) {
             if (lut_hshrink[hshrink][p]) {
                 pentry = geo_lspc_tpix(toffset + (((0x08 & p) ^ ftile) << 3),
                     (p & 0x07) ^ fpix, y);
 
                 xcoord = (xpos + drawpos) & 0x1ff;
-                if (pentry && (xcoord < LSPC_WIDTH))
-                    linebuf[lbactive][xcoord] = poffset + pentry;
+                if (pentry && (xcoord < LSPC_WIDTH)) {
+                    if (!geo_lspc_spriteHideEnabled || !hideSprite) {
+                        linebuf[lbactive][xcoord] = poffset + pentry;
+                        if (geo_lspc_spriteGrayscaleEnabled) {
+                            geo_lspc_linebufGrayscale[lbactive][xcoord] =
+                                grayscaleSprite ? 1u : 0u;
+                        }
+                    }
+                }
 
                 ++drawpos; // Increment for coloured and transparent pixels
             }
@@ -928,15 +1229,26 @@ static inline void geo_lspc_aa(void) {
 }
 
 static void geo_lspc_scanline(void) {
+    if (ngsys.cdmode && (!reg_envideo || skip_render)) {
+        return;
+    }
+
     if (lspc.scanline >= LSPC_LINE_BORDER_TOP &&
         lspc.scanline < LSPC_LINE_BORDER_BOTTOM) {
-        geo_lspc_bdsprline();
-        geo_lspc_sprcalc();
-        geo_lspc_fixline();
+        if (!reg_disblspr) {
+            geo_lspc_bdsprlineCurrent();
+            geo_lspc_sprcalc();
+        }
+        if (!reg_disblfix &&
+            geo_lspc_fixLayerMode != e9k_debug_geo_fix_layer_mode_hidden) {
+            geo_lspc_fixline();
+        }
     }
     else if (lspc.scanline == LSPC_LINE_BUFSTART ||
         lspc.scanline == LSPC_LINE_BUFSTART + 1) {
-        geo_lspc_sprcalc();
+        if (!reg_disblspr) {
+            geo_lspc_sprcalc();
+        }
     }
 }
 
@@ -960,40 +1272,58 @@ void geo_lspc_run(unsigned cycs) {
         unsigned cycsleft = M68K_CYC_PER_LINE - start; // Cycles left for line
         unsigned runcycs = cycs < cycsleft ? cycs : cycsleft;
         unsigned end = start + runcycs;
+        if (start == 0) {
+            if (lspc.scanline == 0)
+                geo_lspc_aa();
+        }
 
         if ((start <= 29) && (end > 29)) {
-            if (lspc.scanline == LSPC_LINE_BORDER_TOP)
-                geo_lspc_aa();
-            else if (lspc.scanline == LSPC_LINE_BORDER_BOTTOM + 1) {
+            if (lspc.scanline == LSPC_LINE_BORDER_BOTTOM) {
                 geo_vblank_notify();
-                geo_m68k_interrupt(IRQ_VBLANK);
+                if (ngsys.cdmode && !geo_cd_vbl_enabled()) {
+                    geo_cd_set_vbl_pending();
+                }
+                else {
+                    geo_m68k_interrupt(irq_vbl_level);
+                }
+            }
+        }
+
+        int vblankReloadTriggeredAtEdge = 0;
+
+        if (start < 573) {
+            unsigned irq2End = end < 573 ? end : 573;
+            if (irq2End > start) {
+                if ((lspc.scanline == LSPC_LINE_VBLANK_RELOAD) &&
+                    (end > 573) &&
+                    (ngsys.irq2_ctrl & IRQ_TIMER_RELOAD_VBLANK)) {
+                    vblankReloadTriggeredAtEdge =
+                        geo_irq2_processAdvanceToVBlankReload(irq2End - start);
+                }
+                else {
+                    geo_irq2_processAdvance(irq2End - start);
+                }
             }
         }
 
         if ((start <= 573) && (end > 573)) {
-            // Arbitrary placement until cycle accuracy is achieved
-            geo_lspc_scanline();
+            if ((lspc.scanline == LSPC_LINE_VBLANK_RELOAD) &&
+                (ngsys.irq2_ctrl & IRQ_TIMER_RELOAD_VBLANK)) {
+                if (!vblankReloadTriggeredAtEdge) {
+                    geo_irq2_counterLoadDisplayCounter();
+                }
+            }
+        }
+        if (end > 573) {
+            unsigned irq2Start = start > 573 ? start : 573;
+            if (end > irq2Start) {
+                geo_irq2_processAdvance(end - irq2Start);
+            }
         }
 
-        /*
-         * Original code (ENGINE9000 change):
-         *
-         * if ((start <= 712) && (end > 712)) { // This is an educated guess
-         *     lspc.scanline = (lspc.scanline + 1) % LSPC_SCANLINES;
-         *     ...
-         * }
-         *
-         * We now advance the scanline at the true end-of-line (768 M68K cycles)
-         * so that IRQ2 timer values expressed in pixels align correctly.
-         */
         if (end == M68K_CYC_PER_LINE) {
+            geo_lspc_scanline();
             lspc.scanline = (lspc.scanline + 1) % LSPC_SCANLINES;
-
-            // Reload IRQ2 (Timer) counter when VBlank is reached
-            if ((lspc.scanline == 0) && (ngsys.irq2_ctrl & IRQ_TIMER_RELOAD_VBLANK)) {
-                ngsys.irq2_counter = ngsys.irq2_reload;
-                ngsys.irq2_frags = 0;
-            }
         }
 
         lspc.cyc = end;
@@ -1047,4 +1377,24 @@ const void* geo_lspc_vram_ptr(void) {
 // Return a pointer to Palette RAM
 const void* geo_lspc_palram_ptr(void) {
     return lspc.palram;
+}
+
+const uint32_t* geo_lspc_palette_ptr(void) {
+    return palette;
+}
+
+const void* geo_lspc_fixdata_ptr(void) {
+    return fixdata;
+}
+
+size_t geo_lspc_fixdata_size(void) {
+    return fixdatasz;
+}
+
+unsigned geo_lspc_active_palette_bank(void) {
+    return (unsigned)lspc.palbank;
+}
+
+unsigned geo_lspc_getScanline(void) {
+    return lspc.scanline;
 }

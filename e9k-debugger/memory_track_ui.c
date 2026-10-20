@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "aux_window.h"
 #include "memory_track_ui.h"
 #include "alloc.h"
 #include "config.h"
@@ -33,9 +34,9 @@
 #include "libretro_host.h"
 #include "protect.h"
 #include "state_buffer.h"
+#include "state_wrap.h"
 #include "trainer.h"
 
-#define MEMORY_TRACK_UI_TITLE "ENGINE9000 DEBUGGER - MEMORY TRACKER"
 #define MEMORY_TRACK_UI_REGION_BASE_NEOGEO 0x00100000u
 #define MEMORY_TRACK_UI_REGION_SIZE_DEFAULT 0x10000u
 #define MEMORY_TRACK_UI_MAX_RANGES 8
@@ -54,6 +55,12 @@ typedef struct memory_track_frame_data {
     size_t entryCount;
 } memory_track_frame_data_t;
 
+typedef struct memory_track_marker_state {
+    uint64_t frameNo;
+    uint8_t *wrappedState;
+    size_t wrappedStateSize;
+} memory_track_marker_state_t;
+
 typedef struct memory_track_ui memory_track_ui_t;
 
 typedef struct memory_track_table_state {
@@ -71,14 +78,9 @@ typedef struct memory_track_ranges {
 } memory_track_ranges_t;
 
 struct memory_track_ui {
-    int open;
-    int alwaysOnTopState;
-    int mainWindowFocused;
-    int memoryTrackWindowFocused;
-    e9ui_window_t *windowHost;
+    e9ui_window_state_t windowState;
     SDL_Window *window;
     SDL_Renderer *renderer;
-    uint32_t windowId;
     e9ui_context_t ctx;
     e9ui_component_t *root;
     e9ui_component_t *overlayBodyHost;
@@ -108,6 +110,8 @@ struct memory_track_ui {
     char **frameTexts;
     size_t frameTextsCap;
     size_t frameTextsCount;
+    memory_track_marker_state_t *markerStates;
+    size_t markerStatesCap;
     e9ui_component_t **filterInputs;
     size_t filterInputsCap;
     size_t filterInputsCount;
@@ -177,7 +181,17 @@ struct memory_track_ui {
     char error[128];
 };
 
-static memory_track_ui_t memory_track_ui_state = {0};
+static memory_track_ui_t memory_track_ui_state = {
+    .windowState.winX = E9UI_WINDOW_COORD_UNSET,
+    .windowState.winY = E9UI_WINDOW_COORD_UNSET,
+    .windowState.openMinWidthPx = 520,
+    .windowState.openMinHeightPx = 420,
+    .windowState.openCenterWhenNoSaved = 1,
+};
+
+static const aux_window_ops_t memory_track_ui_auxWindowOps = {
+    .render = memory_track_ui_render,
+};
 
 static e9ui_window_backend_t
 memory_track_ui_windowBackend(void)
@@ -188,7 +202,7 @@ memory_track_ui_windowBackend(void)
 static int
 memory_track_ui_isOverlayBackend(const memory_track_ui_t *ui)
 {
-    return ui && ui->windowHost ? 1 : 0;
+    return ui && ui->windowState.windowHost ? 1 : 0;
 }
 
 static e9ui_rect_t
@@ -214,6 +228,27 @@ memory_track_ui_clearFrameMarkersInternal(memory_track_ui_t *ui);
 static void
 memory_track_ui_clearFrameMarkers(e9ui_context_t *ctx, void *user);
 
+static int
+memory_track_ui_parseFrameValue(const char *text, uint64_t *outFrame, int *outEmpty);
+
+static int
+memory_track_ui_captureWrappedCurrentState(uint8_t **outState, size_t *outSize);
+
+static int
+memory_track_ui_restoreWrappedState(const uint8_t *wrappedState, size_t wrappedStateSize, uint64_t frameNo);
+
+static int
+memory_track_ui_readRangesFromWrappedState(const uint8_t *wrappedState, size_t wrappedStateSize,
+                                           uint64_t frameNo, const memory_track_ranges_t *ranges,
+                                           uint8_t *out, size_t size);
+
+static int
+memory_track_ui_readFrameRangesAtIndex(memory_track_ui_t *ui, int preferredIndex, uint64_t frameNo,
+                                       const memory_track_ranges_t *ranges, uint8_t *out, size_t size);
+
+static void
+memory_track_ui_sortRanges(memory_track_ranges_t *ranges);
+
 static void
 memory_track_ui_setError(memory_track_ui_t *ui, const char *fmt, ...)
 {
@@ -231,10 +266,40 @@ memory_track_ui_setError(memory_track_ui_t *ui, const char *fmt, ...)
     ui->error[sizeof(ui->error) - 1] = '\0';
 }
 
-static int
-memory_track_ui_parseFrameText(memory_track_ui_t *ui, const char *text, uint64_t *outFrame, int *outEmpty)
+static void
+memory_track_ui_sortRanges(memory_track_ranges_t *ranges)
 {
-    if (!ui || !outFrame) {
+    if (!ranges || ranges->count < 2) {
+        return;
+    }
+    for (size_t i = 1; i < ranges->count; ++i) {
+        target_memory_range_t cur = ranges->ranges[i];
+        size_t j = i;
+        while (j > 0) {
+            target_memory_range_t prev = ranges->ranges[j - 1];
+            if (prev.baseAddr < cur.baseAddr) {
+                break;
+            }
+            if (prev.baseAddr == cur.baseAddr && prev.size <= cur.size) {
+                break;
+            }
+            ranges->ranges[j] = prev;
+            --j;
+        }
+        ranges->ranges[j] = cur;
+    }
+}
+
+static int
+memory_track_ui_parseFrameValue(const char *text, uint64_t *outFrame, int *outEmpty)
+{
+    if (outFrame) {
+        *outFrame = 0;
+    }
+    if (outEmpty) {
+        *outEmpty = 0;
+    }
+    if (!outFrame) {
         return 0;
     }
     if (!text || !*text) {
@@ -243,23 +308,244 @@ memory_track_ui_parseFrameText(memory_track_ui_t *ui, const char *text, uint64_t
         }
         return 1;
     }
-    if (outEmpty) {
-        *outEmpty = 0;
-    }
     char *end = NULL;
     unsigned long long val = strtoull(text, &end, 0);
     if (!end || end == text) {
-        memory_track_ui_setError(ui, "Invalid frame: \"%s\"", text);
         return 0;
     }
     while (*end && isspace((unsigned char)*end)) {
         ++end;
     }
     if (*end) {
-        memory_track_ui_setError(ui, "Invalid frame: \"%s\"", text);
         return 0;
     }
     *outFrame = (uint64_t)val;
+    return 1;
+}
+
+static int
+memory_track_ui_ensureMarkerStateCap(memory_track_ui_t *ui, size_t count)
+{
+    if (!ui) {
+        return 0;
+    }
+    if (count <= ui->markerStatesCap) {
+        return 1;
+    }
+    size_t newCap = ui->markerStatesCap ? ui->markerStatesCap : 4;
+    while (newCap < count) {
+        newCap *= 2;
+    }
+    memory_track_marker_state_t *next =
+        (memory_track_marker_state_t*)alloc_realloc(ui->markerStates, newCap * sizeof(*next));
+    if (!next) {
+        return 0;
+    }
+    for (size_t i = ui->markerStatesCap; i < newCap; ++i) {
+        memset(&next[i], 0, sizeof(next[i]));
+    }
+    ui->markerStates = next;
+    ui->markerStatesCap = newCap;
+    return 1;
+}
+
+static void
+memory_track_ui_clearMarkerStateAtIndex(memory_track_ui_t *ui, size_t index)
+{
+    if (!ui || !ui->markerStates || index >= ui->markerStatesCap) {
+        return;
+    }
+    alloc_free(ui->markerStates[index].wrappedState);
+    ui->markerStates[index].wrappedState = NULL;
+    ui->markerStates[index].wrappedStateSize = 0;
+    ui->markerStates[index].frameNo = 0;
+}
+
+static void
+memory_track_ui_clearAllMarkerStates(memory_track_ui_t *ui)
+{
+    if (!ui || !ui->markerStates) {
+        return;
+    }
+    for (size_t i = 0; i < ui->markerStatesCap; ++i) {
+        memory_track_ui_clearMarkerStateAtIndex(ui, i);
+    }
+    ui->cacheValid = 0;
+}
+
+static int
+memory_track_ui_setMarkerStateAtIndex(memory_track_ui_t *ui, size_t index, uint64_t frameNo,
+                                      uint8_t *wrappedState, size_t wrappedStateSize)
+{
+    if (!ui || !wrappedState || wrappedStateSize == 0) {
+        return 0;
+    }
+    if (!memory_track_ui_ensureMarkerStateCap(ui, index + 1)) {
+        return 0;
+    }
+    memory_track_ui_clearMarkerStateAtIndex(ui, index);
+    ui->markerStates[index].frameNo = frameNo;
+    ui->markerStates[index].wrappedState = wrappedState;
+    ui->markerStates[index].wrappedStateSize = wrappedStateSize;
+    ui->cacheValid = 0;
+    return 1;
+}
+
+static void
+memory_track_ui_syncMarkerStateForText(memory_track_ui_t *ui, size_t index, const char *text)
+{
+    if (!ui || !ui->markerStates || index >= ui->markerStatesCap) {
+        return;
+    }
+    memory_track_marker_state_t *marker = &ui->markerStates[index];
+    if (!marker->wrappedState || marker->wrappedStateSize == 0) {
+        return;
+    }
+    uint64_t frameNo = 0;
+    int empty = 0;
+    if (!memory_track_ui_parseFrameValue(text, &frameNo, &empty) || empty || frameNo != marker->frameNo) {
+        memory_track_ui_clearMarkerStateAtIndex(ui, index);
+        ui->cacheValid = 0;
+    }
+}
+
+static int
+memory_track_ui_findMarkerState(const memory_track_ui_t *ui, int preferredIndex, uint64_t frameNo,
+                                const uint8_t **outState, size_t *outSize)
+{
+    if (outState) {
+        *outState = NULL;
+    }
+    if (outSize) {
+        *outSize = 0;
+    }
+    if (!ui || !ui->markerStates || frameNo == 0) {
+        return 0;
+    }
+    if (preferredIndex >= 0 && (size_t)preferredIndex < ui->markerStatesCap) {
+        const memory_track_marker_state_t *marker = &ui->markerStates[preferredIndex];
+        if (marker->wrappedState && marker->wrappedStateSize > 0 && marker->frameNo == frameNo) {
+            if (outState) {
+                *outState = marker->wrappedState;
+            }
+            if (outSize) {
+                *outSize = marker->wrappedStateSize;
+            }
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < ui->markerStatesCap; ++i) {
+        if ((int)i == preferredIndex) {
+            continue;
+        }
+        const memory_track_marker_state_t *marker = &ui->markerStates[i];
+        if (!marker->wrappedState || marker->wrappedStateSize == 0 || marker->frameNo != frameNo) {
+            continue;
+        }
+        if (outState) {
+            *outState = marker->wrappedState;
+        }
+        if (outSize) {
+            *outSize = marker->wrappedStateSize;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static int
+memory_track_ui_canResolveFrame(const memory_track_ui_t *ui, int preferredIndex, uint64_t frameNo)
+{
+    if (frameNo == 0) {
+        return 0;
+    }
+    if (memory_track_ui_findMarkerState(ui, preferredIndex, frameNo, NULL, NULL)) {
+        return 1;
+    }
+    return state_buffer_hasFrameNo(frameNo);
+}
+
+static int
+memory_track_ui_captureWrappedCurrentState(uint8_t **outState, size_t *outSize)
+{
+    if (outState) {
+        *outState = NULL;
+    }
+    if (outSize) {
+        *outSize = 0;
+    }
+    size_t payloadSize = 0;
+    if (!outState || !outSize || !libretro_host_getSerializeSize(&payloadSize) || payloadSize == 0) {
+        return 0;
+    }
+    size_t wrappedSize = state_wrap_wrappedSize(payloadSize);
+    uint8_t *wrappedState = (uint8_t*)alloc_alloc(wrappedSize);
+    if (!wrappedState) {
+        return 0;
+    }
+    size_t headerSize = state_wrap_headerSize();
+    if (!libretro_host_serializeTo(wrappedState + headerSize, payloadSize) ||
+        !state_wrap_writeHeader(wrappedState, wrappedSize, payloadSize, &debugger.machine)) {
+        alloc_free(wrappedState);
+        return 0;
+    }
+    *outState = wrappedState;
+    *outSize = wrappedSize;
+    return 1;
+}
+
+static int
+memory_track_ui_restoreWrappedState(const uint8_t *wrappedState, size_t wrappedStateSize, uint64_t frameNo)
+{
+    if (!wrappedState || wrappedStateSize == 0) {
+        return 0;
+    }
+    state_wrap_info_t info;
+    if (!state_wrap_parse(wrappedState, wrappedStateSize, &info)) {
+        return 0;
+    }
+    debugger_applyStateWrapBases(&info);
+    if (!libretro_host_unserializeFrom(info.payload, info.payloadSize)) {
+        return 0;
+    }
+    debugger.frameCounter = frameNo;
+    state_buffer_setCurrentFrameNo(frameNo);
+    return 1;
+}
+
+static int
+memory_track_ui_readRangesFromWrappedState(const uint8_t *wrappedState, size_t wrappedStateSize,
+                                           uint64_t frameNo, const memory_track_ranges_t *ranges,
+                                           uint8_t *out, size_t size)
+{
+    if (!ranges || !out || size != ranges->totalSize) {
+        return 0;
+    }
+    if (!memory_track_ui_restoreWrappedState(wrappedState, wrappedStateSize, frameNo)) {
+        return 0;
+    }
+    size_t offset = 0;
+    for (size_t i = 0; i < ranges->count; ++i) {
+        uint32_t base = ranges->ranges[i].baseAddr;
+        size_t rangeSize = (size_t)ranges->ranges[i].size;
+        if (!libretro_host_debugReadMemory(base, out + offset, rangeSize)) {
+            return 0;
+        }
+        offset += rangeSize;
+    }
+    return 1;
+}
+
+static int
+memory_track_ui_parseFrameText(memory_track_ui_t *ui, const char *text, uint64_t *outFrame, int *outEmpty)
+{
+    if (!ui || !outFrame) {
+        return 0;
+    }
+    if (!memory_track_ui_parseFrameValue(text, outFrame, outEmpty)) {
+        memory_track_ui_setError(ui, "Invalid frame: \"%s\"", text);
+        return 0;
+    }
     return 1;
 }
 
@@ -297,6 +583,7 @@ memory_track_ui_getRanges(memory_track_ranges_t *outRanges)
     for (size_t i = 0; i < outRanges->count; ++i) {
         outRanges->totalSize += (size_t)outRanges->ranges[i].size;
     }
+    memory_track_ui_sortRanges(outRanges);
 }
 
 static int
@@ -308,6 +595,8 @@ memory_track_ui_readFrameRanges(uint64_t frameNo, const memory_track_ranges_t *r
     if (!state_buffer_restoreFrameNo(frameNo)) {
         return 0;
     }
+    debugger.frameCounter = frameNo;
+    state_buffer_setCurrentFrameNo(frameNo);
     size_t offset = 0;
     for (size_t i = 0; i < ranges->count; ++i) {
         uint32_t base = ranges->ranges[i].baseAddr;
@@ -318,6 +607,19 @@ memory_track_ui_readFrameRanges(uint64_t frameNo, const memory_track_ranges_t *r
         offset += rangeSize;
     }
     return 1;
+}
+
+static int
+memory_track_ui_readFrameRangesAtIndex(memory_track_ui_t *ui, int preferredIndex, uint64_t frameNo,
+                                       const memory_track_ranges_t *ranges, uint8_t *out, size_t size)
+{
+    const uint8_t *wrappedState = NULL;
+    size_t wrappedStateSize = 0;
+    if (memory_track_ui_findMarkerState(ui, preferredIndex, frameNo, &wrappedState, &wrappedStateSize)) {
+        return memory_track_ui_readRangesFromWrappedState(wrappedState, wrappedStateSize, frameNo,
+                                                          ranges, out, size);
+    }
+    return memory_track_ui_readFrameRanges(frameNo, ranges, out, size);
 }
 
 static int
@@ -646,6 +948,7 @@ memory_track_ui_setStoredFrameText(memory_track_ui_t *ui, size_t index, const ch
         if (text && text[0]) {
             ui->frameTexts[index] = alloc_strdup(text);
         }
+        memory_track_ui_syncMarkerStateForText(ui, index, text);
     }
 }
 
@@ -670,8 +973,7 @@ memory_track_ui_storeFrameTexts(memory_track_ui_t *ui)
     }
     for (size_t textIndex = 0; textIndex < count; ++textIndex) {
         const char *text = e9ui_textbox_getText(ui->frameInputs[textIndex]);
-        alloc_free(ui->frameTexts[textIndex]);
-        ui->frameTexts[textIndex] = text ? alloc_strdup(text) : NULL;
+        memory_track_ui_setStoredFrameText(ui, textIndex, text);
     }
 }
 
@@ -748,6 +1050,7 @@ memory_track_ui_clearFrameMarkersInternal(memory_track_ui_t *ui)
     for (size_t i = 0; i < count; ++i) {
         memory_track_ui_setFrameTextAtIndex(ui, i, "");
     }
+    memory_track_ui_clearAllMarkerStates(ui);
     ui->needsRefresh = 1;
 }
 
@@ -968,9 +1271,6 @@ memory_track_ui_showProtectModal(memory_track_ui_t *ui, uint32_t address)
     ui->protectAddress = address;
     ui->protectAccessSize = ui->accessSize;
     e9ui_component_t *modal = e9ui_modal_make(title, rect, memory_track_ui_protectClosed, ui);
-    if (!modal) {
-        return;
-    }
     ui->protectModal = modal;
     if (ui->root->name && strcmp(ui->root->name, "e9ui_stack") == 0) {
         e9ui_stack_addFixed(ui->root, modal);
@@ -984,38 +1284,24 @@ memory_track_ui_showProtectModal(memory_track_ui_t *ui, uint32_t address)
     ui->protectCbBlock = cb_block;
     ui->protectCbSet = cb_set;
     ui->protectValueBox = value_box;
-    if (value_box) {
-        e9ui_textbox_setPlaceholder(value_box, "Value");
-    }
+    e9ui_textbox_setPlaceholder(value_box, "Value");
     e9ui_component_t *set_row = e9ui_hstack_make();
     int checkboxW = e9ui_scale_px(&ui->ctx, 140);
     int valueW = e9ui_scale_px(&ui->ctx, 140);
     int rowGap = e9ui_scale_px(&ui->ctx, 8);
-    if (set_row) {
-        if (cb_set) {
-            e9ui_hstack_addFixed(set_row, cb_set, checkboxW);
-        }
-        e9ui_hstack_addFixed(set_row, e9ui_spacer_make(rowGap), rowGap);
-        if (value_box) {
-            e9ui_hstack_addFixed(set_row, value_box, valueW);
-        }
-        e9ui_hstack_addFlex(set_row, e9ui_spacer_make(1));
-    }
+    e9ui_hstack_addFixed(set_row, cb_set, checkboxW);
+    e9ui_hstack_addFixed(set_row, e9ui_spacer_make(rowGap), rowGap);
+    e9ui_hstack_addFixed(set_row, value_box, valueW);
+    e9ui_hstack_addFlex(set_row, e9ui_spacer_make(1));
 
     e9ui_component_t *stack = e9ui_stack_makeVertical();
-    if (cb_block) {
-        e9ui_stack_addFixed(stack, cb_block);
-    }
+    e9ui_stack_addFixed(stack, cb_block);
     e9ui_stack_addFixed(stack, e9ui_vspacer_make(8));
-    if (set_row) {
-        e9ui_stack_addFixed(stack, set_row);
-    }
+    e9ui_stack_addFixed(stack, set_row);
     e9ui_component_t *content_box = e9ui_box_make(stack);
     e9ui_box_setPadding(content_box, 12);
     e9ui_component_t *center = e9ui_center_make(content_box);
-    if (center) {
-        e9ui_center_setSize(center, 420, 120);
-    }
+    e9ui_center_setSize(center, 420, 120);
 
     e9ui_component_t *btn_protect = e9ui_button_make("Protect", memory_track_ui_protectApply, ui);
     e9ui_component_t *btn_cancel = e9ui_button_make("Cancel", memory_track_ui_protectCancel, ui);
@@ -1023,16 +1309,12 @@ memory_track_ui_showProtectModal(memory_track_ui_t *ui, uint32_t address)
     e9ui_flow_setPadding(footer, 0);
     e9ui_flow_setSpacing(footer, 8);
     e9ui_flow_setWrap(footer, 0);
-    if (btn_protect) {
-        e9ui_button_setTheme(btn_protect, e9ui_theme_button_preset_green());
-        e9ui_button_setGlowPulse(btn_protect, 1);
-        e9ui_flow_add(footer, btn_protect);
-    }
-    if (btn_cancel) {
-        e9ui_button_setTheme(btn_cancel, e9ui_theme_button_preset_red());
-        e9ui_button_setGlowPulse(btn_cancel, 1);
-        e9ui_flow_add(footer, btn_cancel);
-    }
+    e9ui_button_setTheme(btn_protect, e9ui_theme_button_preset_green());
+    e9ui_button_setGlowPulse(btn_protect, 1);
+    e9ui_flow_add(footer, btn_protect);
+    e9ui_button_setTheme(btn_cancel, e9ui_theme_button_preset_red());
+    e9ui_button_setGlowPulse(btn_cancel, 1);
+    e9ui_flow_add(footer, btn_cancel);
     e9ui_component_t *overlay = e9ui_overlay_make(center, footer);
     e9ui_overlay_setAnchor(overlay, e9ui_anchor_bottom_right);
     e9ui_overlay_setMargin(overlay, 12);
@@ -1109,33 +1391,28 @@ memory_track_ui_addressLinkClicked(e9ui_context_t *ctx, void *user)
 }
 
 static void
+memory_track_ui_updateButtonTheme(e9ui_component_t *button, int active, const e9k_theme_button_t *activeTheme)
+{
+    if (!button) {
+        return;
+    }
+    if (active) {
+        e9ui_button_setTheme(button, activeTheme);
+    } else {
+        e9ui_button_clearTheme(button);
+    }
+}
+
+static void
 memory_track_ui_updateModeButtons(memory_track_ui_t *ui)
 {
     if (!ui) {
         return;
     }
     const e9k_theme_button_t *activeTheme = e9ui_theme_button_preset_profile_active();
-    if (ui->modeBtn8) {
-        if (ui->accessSize == 1) {
-            e9ui_button_setTheme(ui->modeBtn8, activeTheme);
-        } else {
-            e9ui_button_clearTheme(ui->modeBtn8);
-        }
-    }
-    if (ui->modeBtn16) {
-        if (ui->accessSize == 2) {
-            e9ui_button_setTheme(ui->modeBtn16, activeTheme);
-        } else {
-            e9ui_button_clearTheme(ui->modeBtn16);
-        }
-    }
-    if (ui->modeBtn32) {
-        if (ui->accessSize == 4) {
-            e9ui_button_setTheme(ui->modeBtn32, activeTheme);
-        } else {
-            e9ui_button_clearTheme(ui->modeBtn32);
-        }
-    }
+    memory_track_ui_updateButtonTheme(ui->modeBtn8, ui->accessSize == 1, activeTheme);
+    memory_track_ui_updateButtonTheme(ui->modeBtn16, ui->accessSize == 2, activeTheme);
+    memory_track_ui_updateButtonTheme(ui->modeBtn32, ui->accessSize == 4, activeTheme);
 }
 
 static void
@@ -1145,11 +1422,7 @@ memory_track_ui_updateFilterButton(memory_track_ui_t *ui)
         return;
     }
     const e9k_theme_button_t *activeTheme = e9ui_theme_button_preset_profile_active();
-    if (ui->requireAllColumns) {
-        e9ui_button_setTheme(ui->filterBtn, activeTheme);
-    } else {
-        e9ui_button_clearTheme(ui->filterBtn);
-    }
+    memory_track_ui_updateButtonTheme(ui->filterBtn, ui->requireAllColumns, activeTheme);
 }
 
 static void
@@ -1159,27 +1432,9 @@ memory_track_ui_updateTrendButtons(memory_track_ui_t *ui)
         return;
     }
     const e9k_theme_button_t *activeTheme = e9ui_theme_button_preset_profile_active();
-    if (ui->trendBtnAll) {
-        if (ui->trendFilterMode == MEMORY_TRACK_UI_TREND_ALL) {
-            e9ui_button_setTheme(ui->trendBtnAll, activeTheme);
-        } else {
-            e9ui_button_clearTheme(ui->trendBtnAll);
-        }
-    }
-    if (ui->trendBtnInc) {
-        if (ui->trendFilterMode == MEMORY_TRACK_UI_TREND_INC) {
-            e9ui_button_setTheme(ui->trendBtnInc, activeTheme);
-        } else {
-            e9ui_button_clearTheme(ui->trendBtnInc);
-        }
-    }
-    if (ui->trendBtnDec) {
-        if (ui->trendFilterMode == MEMORY_TRACK_UI_TREND_DEC) {
-            e9ui_button_setTheme(ui->trendBtnDec, activeTheme);
-        } else {
-            e9ui_button_clearTheme(ui->trendBtnDec);
-        }
-    }
+    memory_track_ui_updateButtonTheme(ui->trendBtnAll, ui->trendFilterMode == MEMORY_TRACK_UI_TREND_ALL, activeTheme);
+    memory_track_ui_updateButtonTheme(ui->trendBtnInc, ui->trendFilterMode == MEMORY_TRACK_UI_TREND_INC, activeTheme);
+    memory_track_ui_updateButtonTheme(ui->trendBtnDec, ui->trendFilterMode == MEMORY_TRACK_UI_TREND_DEC, activeTheme);
 }
 
 static void
@@ -1383,6 +1638,8 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
 
     uint64_t restoreFrame = state_buffer_getCurrentFrameNo();
     uint64_t currentFrameNo = restoreFrame;
+    uint8_t *restoreState = NULL;
+    size_t restoreStateSize = 0;
     memory_track_ranges_t ranges = {0};
     memory_track_ui_getRanges(&ranges);
     size_t regionSize = ranges.totalSize;
@@ -1432,6 +1689,11 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
         memory_track_ui_clearData(ui);
         return 0;
     }
+    if (!memory_track_ui_captureWrappedCurrentState(&restoreState, &restoreStateSize)) {
+        memory_track_ui_setError(ui, "Failed to capture current state");
+        memory_track_ui_clearData(ui);
+        return 0;
+    }
     memset(frameNos, 0, (size_t)columnCount * sizeof(uint64_t));
     memset(frameActive, 0, (size_t)columnCount * sizeof(int));
 
@@ -1453,8 +1715,8 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
         if (empty) {
             continue;
         }
-        if (!state_buffer_hasFrameNo(frameNo)) {
-            memory_track_ui_setError(ui, "Frame %llu not in state buffer", (unsigned long long)frameNo);
+        if (!memory_track_ui_canResolveFrame(ui, frameIndex, frameNo)) {
+            memory_track_ui_setError(ui, "Frame %llu not available", (unsigned long long)frameNo);
             goto cleanup;
         }
         frameActive[frameIndex] = 1;
@@ -1661,7 +1923,7 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
     }
 
     if (frameActive[0]) {
-        if (!memory_track_ui_readFrameRanges(frameNos[0], &ranges, refBytes, regionSize)) {
+        if (!memory_track_ui_readFrameRangesAtIndex(ui, 0, frameNos[0], &ranges, refBytes, regionSize)) {
             memory_track_ui_setError(ui, "Failed to read frame %llu",
                                      (unsigned long long)frameNos[0]);
             goto cleanup;
@@ -1679,8 +1941,8 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
         if (hasPrevActive) {
             baseFrameNo = prevActiveFrameNo;
         } else {
-            if (frameNo == 0 || !state_buffer_hasFrameNo(frameNo - 1)) {
-                memory_track_ui_setError(ui, "Previous frame %llu not in state buffer",
+            if (frameNo == 0 || !memory_track_ui_canResolveFrame(ui, -1, frameNo - 1)) {
+                memory_track_ui_setError(ui, "Previous frame %llu not available",
                                          (unsigned long long)(frameNo - 1));
                 goto cleanup;
             }
@@ -1694,20 +1956,20 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
             } else if (frameActive[0] && frameNos[0] == prevActiveFrameNo) {
                 memcpy(baseBytes, refBytes, regionSize);
             } else {
-                if (!memory_track_ui_readFrameRanges(baseFrameNo, &ranges, baseBytes, regionSize)) {
+                if (!memory_track_ui_readFrameRangesAtIndex(ui, -1, baseFrameNo, &ranges, baseBytes, regionSize)) {
                     memory_track_ui_setError(ui, "Failed to read frame %llu",
                                              (unsigned long long)baseFrameNo);
                     goto cleanup;
                 }
             }
         } else {
-            if (!memory_track_ui_readFrameRanges(baseFrameNo, &ranges, baseBytes, regionSize)) {
+            if (!memory_track_ui_readFrameRangesAtIndex(ui, -1, baseFrameNo, &ranges, baseBytes, regionSize)) {
                 memory_track_ui_setError(ui, "Failed to read frame %llu",
                                          (unsigned long long)baseFrameNo);
                 goto cleanup;
             }
         }
-        if (!memory_track_ui_readFrameRanges(frameNo, &ranges, curBytes, regionSize)) {
+        if (!memory_track_ui_readFrameRangesAtIndex(ui, frameIndex, frameNo, &ranges, curBytes, regionSize)) {
             memory_track_ui_setError(ui, "Failed to read frame %llu", (unsigned long long)frameNo);
             goto cleanup;
         }
@@ -1848,9 +2110,14 @@ memory_track_ui_collectData(memory_track_ui_t *ui, int columnCount)
     success = 1;
 
 cleanup:
-    (void)state_buffer_restoreFrameNo(restoreFrame);
-    debugger.frameCounter = restoreFrame;
-    state_buffer_setCurrentFrameNo(restoreFrame);
+    if (restoreState && restoreStateSize > 0) {
+        (void)memory_track_ui_restoreWrappedState(restoreState, restoreStateSize, restoreFrame);
+    } else {
+        (void)state_buffer_restoreFrameNo(restoreFrame);
+        debugger.frameCounter = restoreFrame;
+        state_buffer_setCurrentFrameNo(restoreFrame);
+    }
+    alloc_free(restoreState);
     if (!success && !usedCache) {
         memory_track_ui_clearData(ui);
     }
@@ -2188,11 +2455,10 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
     startY += firstVisibleRow * ui->rowHeight;
     for (size_t rowIndex = (size_t)firstVisibleRow; rowIndex < (size_t)lastVisibleRowExclusive; ++rowIndex) {
         uint32_t address = ui->addresses[rowIndex];
+        SDL_Color rowAddrColor = addrColor;
         if (ui->addressLinks && rowIndex < ui->addressLinksCount &&
             rowIndex < ui->addressLinksCap) {
-            char addrText[16];
-            snprintf(addrText, sizeof(addrText), "0x%06X", address & 0x00FFFFFFu);
-            SDL_Color rowAddrColor = addrColorNormal;
+            rowAddrColor = addrColorNormal;
             if (ui->addressLinkProtectState &&
                 rowIndex < ui->addressLinkProtectStateCap) {
                 uint8_t state = ui->addressLinkProtectState[rowIndex];
@@ -2202,25 +2468,16 @@ memory_track_ui_tableRender(e9ui_component_t *self, e9ui_context_t *ctx)
                     rowAddrColor = addrColorProtectedDisabled;
                 }
             }
-            int addrW = 0;
-            int addrH = 0;
-            SDL_Texture *addrTex = e9ui_text_cache_getText(ctx->renderer, font, addrText, rowAddrColor,
-                                                           &addrW, &addrH);
-            if (addrTex) {
-                SDL_Rect tr = { startX, startY, addrW, addrH };
-                SDL_RenderCopy(ctx->renderer, addrTex, NULL, &tr);
-            }
-        } else {
-            char addrText[16];
-            snprintf(addrText, sizeof(addrText), "0x%06X", address & 0x00FFFFFFu);
-            int addrW = 0;
-            int addrH = 0;
-            SDL_Texture *addrTex = e9ui_text_cache_getText(ctx->renderer, font, addrText, addrColor,
-                                                           &addrW, &addrH);
-            if (addrTex) {
-                SDL_Rect tr = { startX, startY, addrW, addrH };
-                SDL_RenderCopy(ctx->renderer, addrTex, NULL, &tr);
-            }
+        }
+        char addrText[16];
+        snprintf(addrText, sizeof(addrText), "0x%06X", address & 0x00FFFFFFu);
+        int addrW = 0;
+        int addrH = 0;
+        SDL_Texture *addrTex = e9ui_text_cache_getText(ctx->renderer, font, addrText, rowAddrColor,
+                                                       &addrW, &addrH);
+        if (addrTex) {
+            SDL_Rect tr = { startX, startY, addrW, addrH };
+            SDL_RenderCopy(ctx->renderer, addrTex, NULL, &tr);
         }
 
         int trendSampleCount = 0;
@@ -2374,18 +2631,11 @@ memory_track_ui_buildFrameRow(memory_track_ui_t *ui)
         return NULL;
     }
     e9ui_component_t *row = e9ui_hstack_make();
-    if (!row) {
-        return NULL;
-    }
     e9ui_component_t *label = e9ui_text_make("Address");
-    if (label) {
-        SDL_Color labelColor = { 200, 200, 200, 255 };
-        e9ui_text_setColor(label, labelColor);
-    }
+    SDL_Color labelColor = { 200, 200, 200, 255 };
+    e9ui_text_setColor(label, labelColor);
     int gap = ui->columnGap;
-    if (label) {
-        e9ui_hstack_addFixed(row, label, ui->addressWidth);
-    }
+    e9ui_hstack_addFixed(row, label, ui->addressWidth);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
 
     if (ui->columnCount > (int)ui->frameInputsCap) {
@@ -2395,10 +2645,6 @@ memory_track_ui_buildFrameRow(memory_track_ui_t *ui)
         }
         e9ui_component_t **next = (e9ui_component_t**)alloc_realloc(ui->frameInputs,
                                                                      newCap * sizeof(e9ui_component_t*));
-        if (!next) {
-            e9ui_childDestroy(row, &ui->ctx);
-            return NULL;
-        }
         ui->frameInputs = next;
         ui->frameInputsCap = newCap;
     }
@@ -2406,19 +2652,13 @@ memory_track_ui_buildFrameRow(memory_track_ui_t *ui)
 
     for (int columnIndex = 0; columnIndex < ui->columnCount; ++columnIndex) {
         e9ui_component_t *textbox = e9ui_textbox_make(16, memory_track_ui_onFrameSubmit, NULL, ui);
-        if (textbox) {
-            e9ui_textbox_setPlaceholder(textbox, "Frame");
-            e9ui_textbox_setNumericOnly(textbox, 1);
-            if (ui->frameTexts && columnIndex < (int)ui->frameTextsCount && ui->frameTexts[columnIndex]) {
-                e9ui_textbox_setText(textbox, ui->frameTexts[columnIndex]);
-            }
+        e9ui_textbox_setPlaceholder(textbox, "Frame");
+        e9ui_textbox_setNumericOnly(textbox, 1);
+        if (ui->frameTexts && columnIndex < (int)ui->frameTextsCount && ui->frameTexts[columnIndex]) {
+            e9ui_textbox_setText(textbox, ui->frameTexts[columnIndex]);
         }
         ui->frameInputs[columnIndex] = textbox;
-        if (textbox) {
-            e9ui_hstack_addFixed(row, textbox, ui->columnWidth);
-        } else {
-            e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->columnWidth), ui->columnWidth);
-        }
+        e9ui_hstack_addFixed(row, textbox, ui->columnWidth);
         if (columnIndex + 1 < ui->columnCount) {
             e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
         }
@@ -2436,9 +2676,6 @@ memory_track_ui_buildControlRow(memory_track_ui_t *ui)
         return NULL;
     }
     e9ui_component_t *row = e9ui_hstack_make();
-    if (!row) {
-        return NULL;
-    }
     int gap = ui->columnGap;
     e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->addressWidth), ui->addressWidth);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
@@ -2446,52 +2683,28 @@ memory_track_ui_buildControlRow(memory_track_ui_t *ui)
     ui->modeBtn8 = e9ui_button_make("8", memory_track_ui_access8, ui);
     ui->modeBtn16 = e9ui_button_make("16", memory_track_ui_access16, ui);
     ui->modeBtn32 = e9ui_button_make("32", memory_track_ui_access32, ui);
-    if (ui->modeBtn8) {
-        e9ui_hstack_addFixed(row, ui->modeBtn8, ui->modeButtonWidth);
-    }
-    if (ui->modeBtn16 || ui->modeBtn32) {
-        e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->modeButtonGap), ui->modeButtonGap);
-    }
-    if (ui->modeBtn16) {
-        e9ui_hstack_addFixed(row, ui->modeBtn16, ui->modeButtonWidth);
-    }
-    if (ui->modeBtn32) {
-        e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->modeButtonGap), ui->modeButtonGap);
-    }
-    if (ui->modeBtn32) {
-        e9ui_hstack_addFixed(row, ui->modeBtn32, ui->modeButtonWidth);
-    }
+    e9ui_hstack_addFixed(row, ui->modeBtn8, ui->modeButtonWidth);
+    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->modeButtonGap), ui->modeButtonGap);
+    e9ui_hstack_addFixed(row, ui->modeBtn16, ui->modeButtonWidth);
+    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->modeButtonGap), ui->modeButtonGap);
+    e9ui_hstack_addFixed(row, ui->modeBtn32, ui->modeButtonWidth);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
 
     ui->filterBtn = e9ui_button_make("Show All", memory_track_ui_toggleRequireAll, ui);
-    if (ui->filterBtn) {
-        e9ui_hstack_addFixed(row, ui->filterBtn, ui->filterButtonWidth);
-    }
+    e9ui_hstack_addFixed(row, ui->filterBtn, ui->filterButtonWidth);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->filterButtonGap), ui->filterButtonGap);
     ui->trendBtnAll = e9ui_button_make("All", memory_track_ui_setTrendAll, ui);
     ui->trendBtnInc = e9ui_button_make("Inc", memory_track_ui_setTrendInc, ui);
     ui->trendBtnDec = e9ui_button_make("Dec", memory_track_ui_setTrendDec, ui);
-    if (ui->trendBtnAll) {
-        e9ui_hstack_addFixed(row, ui->trendBtnAll, ui->trendButtonWidth);
-    }
-    if (ui->trendBtnInc || ui->trendBtnDec) {
-        e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->trendButtonGap), ui->trendButtonGap);
-    }
-    if (ui->trendBtnInc) {
-        e9ui_hstack_addFixed(row, ui->trendBtnInc, ui->trendButtonWidth);
-    }
-    if (ui->trendBtnDec) {
-        e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->trendButtonGap), ui->trendButtonGap);
-    }
-    if (ui->trendBtnDec) {
-        e9ui_hstack_addFixed(row, ui->trendBtnDec, ui->trendButtonWidth);
-    }
+    e9ui_hstack_addFixed(row, ui->trendBtnAll, ui->trendButtonWidth);
+    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->trendButtonGap), ui->trendButtonGap);
+    e9ui_hstack_addFixed(row, ui->trendBtnInc, ui->trendButtonWidth);
+    e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->trendButtonGap), ui->trendButtonGap);
+    e9ui_hstack_addFixed(row, ui->trendBtnDec, ui->trendButtonWidth);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
     e9ui_component_t *btn_reset = e9ui_button_make("Reset", memory_track_ui_clearFrameMarkers, ui);
-    if (btn_reset) {
-        int resetW = e9ui_scale_px(&ui->ctx, 80);
-        e9ui_hstack_addFixed(row, btn_reset, resetW);
-    }
+    int resetW = e9ui_scale_px(&ui->ctx, 80);
+    e9ui_hstack_addFixed(row, btn_reset, resetW);
     e9ui_hstack_addFlex(row, e9ui_spacer_make(1));
     memory_track_ui_updateModeButtons(ui);
     memory_track_ui_updateFilterButton(ui);
@@ -2506,9 +2719,6 @@ memory_track_ui_buildFilterRow(memory_track_ui_t *ui)
         return NULL;
     }
     e9ui_component_t *row = e9ui_hstack_make();
-    if (!row) {
-        return NULL;
-    }
     int gap = ui->columnGap;
     e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->addressWidth), ui->addressWidth);
     e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
@@ -2519,10 +2729,6 @@ memory_track_ui_buildFilterRow(memory_track_ui_t *ui)
         }
         e9ui_component_t **next = (e9ui_component_t**)alloc_realloc(ui->filterInputs,
                                                                      newCap * sizeof(e9ui_component_t*));
-        if (!next) {
-            e9ui_childDestroy(row, &ui->ctx);
-            return NULL;
-        }
         ui->filterInputs = next;
         ui->filterInputsCap = newCap;
     }
@@ -2530,18 +2736,12 @@ memory_track_ui_buildFilterRow(memory_track_ui_t *ui)
 
     for (int columnIndex = 0; columnIndex < ui->columnCount; ++columnIndex) {
         e9ui_component_t *textbox = e9ui_textbox_make(16, memory_track_ui_onFilterSubmit, NULL, ui);
-        if (textbox) {
-            e9ui_textbox_setPlaceholder(textbox, "Filter");
-            if (ui->filterTexts && columnIndex < (int)ui->filterTextsCount && ui->filterTexts[columnIndex]) {
-                e9ui_textbox_setText(textbox, ui->filterTexts[columnIndex]);
-            }
+        e9ui_textbox_setPlaceholder(textbox, "Filter");
+        if (ui->filterTexts && columnIndex < (int)ui->filterTextsCount && ui->filterTexts[columnIndex]) {
+            e9ui_textbox_setText(textbox, ui->filterTexts[columnIndex]);
         }
         ui->filterInputs[columnIndex] = textbox;
-        if (textbox) {
-            e9ui_hstack_addFixed(row, textbox, ui->columnWidth);
-        } else {
-            e9ui_hstack_addFixed(row, e9ui_spacer_make(ui->columnWidth), ui->columnWidth);
-        }
+        e9ui_hstack_addFixed(row, textbox, ui->columnWidth);
         if (columnIndex + 1 < ui->columnCount) {
             e9ui_hstack_addFixed(row, e9ui_spacer_make(gap), gap);
         }
@@ -2554,69 +2754,16 @@ static e9ui_component_t *
 memory_track_ui_buildRoot(memory_track_ui_t *ui)
 {
     e9ui_component_t *root = e9ui_stack_makeVertical();
-    if (!root) {
-        return NULL;
-    }
     e9ui_component_t *stack = e9ui_stack_makeVertical();
-    if (!stack) {
-        e9ui_childDestroy(root, &ui->ctx);
-        return NULL;
-    }
     e9ui_component_t *controls = memory_track_ui_buildControlRow(ui);
-    if (!controls) {
-        e9ui_childDestroy(stack, &ui->ctx);
-        e9ui_childDestroy(root, &ui->ctx);
-        return NULL;
-    }
     e9ui_component_t *controls_box = e9ui_box_make(controls);
     e9ui_box_setPadding(controls_box, ui->padding);
     e9ui_component_t *filters = memory_track_ui_buildFilterRow(ui);
-    if (!filters) {
-        e9ui_childDestroy(controls_box, &ui->ctx);
-        e9ui_childDestroy(stack, &ui->ctx);
-        e9ui_childDestroy(root, &ui->ctx);
-        return NULL;
-    }
     e9ui_component_t *frames = memory_track_ui_buildFrameRow(ui);
-    if (!frames) {
-        e9ui_childDestroy(controls_box, &ui->ctx);
-        e9ui_childDestroy(filters, &ui->ctx);
-        e9ui_childDestroy(stack, &ui->ctx);
-        e9ui_childDestroy(root, &ui->ctx);
-        return NULL;
-    }
-
     e9ui_component_t *table = memory_track_ui_tableMake(ui);
-    if (!table) {
-        e9ui_childDestroy(controls_box, &ui->ctx);
-        e9ui_childDestroy(filters, &ui->ctx);
-        e9ui_childDestroy(frames, &ui->ctx);
-        e9ui_childDestroy(stack, &ui->ctx);
-        e9ui_childDestroy(root, &ui->ctx);
-        return NULL;
-    }
     ui->table = table;
     ui->scroll = e9ui_scroll_make(table);
-    if (!ui->scroll) {
-        e9ui_childDestroy(table, &ui->ctx);
-        e9ui_childDestroy(controls_box, &ui->ctx);
-        e9ui_childDestroy(filters, &ui->ctx);
-        e9ui_childDestroy(frames, &ui->ctx);
-        e9ui_childDestroy(stack, &ui->ctx);
-        e9ui_childDestroy(root, &ui->ctx);
-        return NULL;
-    }
     ui->hscroll = e9ui_scroll_make(stack);
-    if (!ui->hscroll) {
-        e9ui_childDestroy(ui->scroll, &ui->ctx);
-        ui->scroll = NULL;
-        e9ui_childDestroy(controls_box, &ui->ctx);
-        e9ui_childDestroy(filters, &ui->ctx);
-        e9ui_childDestroy(frames, &ui->ctx);
-        e9ui_childDestroy(stack, &ui->ctx);
-        e9ui_childDestroy(root, &ui->ctx);
-        return NULL;
-    }
     e9ui_scroll_setContentWidthPx(ui->hscroll, memory_track_ui_contentWidthPx(ui));
     ui->headerRow = controls_box;
     e9ui_stack_addFixed(stack, controls_box);
@@ -2653,15 +2800,6 @@ memory_track_ui_rebuildRoot(memory_track_ui_t *ui)
     }
     ui->needsRebuild = 0;
     ui->needsRefresh = 1;
-}
-
-static int
-memory_track_ui_overlayBodyPreferredHeight(e9ui_component_t *self, e9ui_context_t *ctx, int availW)
-{
-    (void)self;
-    (void)ctx;
-    (void)availW;
-    return 0;
 }
 
 static void
@@ -2720,7 +2858,7 @@ memory_track_ui_requestClose(memory_track_ui_t *ui, e9ui_context_t *ctx)
     if (!ui) {
         return;
     }
-    (void)e9ui_defer(ctx ? ctx : (e9ui ? &e9ui->ctx : &ui->ctx),
+    (void)e9ui_defer(ctx ? ctx : &e9ui->ctx,
                      memory_track_ui_deferredShutdown,
                      ui);
 }
@@ -2733,7 +2871,7 @@ memory_track_ui_overlayBodyRender(e9ui_component_t *self, e9ui_context_t *ctx)
     }
     memory_track_overlay_body_state_t *st = (memory_track_overlay_body_state_t *)self->state;
     memory_track_ui_t *ui = st ? st->ui : NULL;
-    if (!ui || !ui->open) {
+    if (!ui || !ui->windowState.open) {
         return;
     }
     ui->ctx = *ctx;
@@ -2796,7 +2934,6 @@ memory_track_ui_makeOverlayBodyHost(memory_track_ui_t *ui)
     st->ui = ui;
     host->name = "memory_track_ui_overlay_body";
     host->state = st;
-    host->preferredHeight = memory_track_ui_overlayBodyPreferredHeight;
     host->layout = memory_track_ui_overlayBodyLayout;
     host->render = memory_track_ui_overlayBodyRender;
     host->dtor = memory_track_ui_overlayBodyDtor;
@@ -2819,11 +2956,17 @@ int
 memory_track_ui_init(void)
 {
     memory_track_ui_t *ui = &memory_track_ui_state;
-    if (ui->open) {
+    if (ui->windowState.open) {
         return 1;
     }
-    ui->windowHost = e9ui_windowCreate(memory_track_ui_windowBackend());
-    if (!ui->windowHost) {
+    ui->windowState.winX = e9ui->layout.memTrackWinX;
+    ui->windowState.winY = e9ui->layout.memTrackWinY;
+    ui->windowState.winW = e9ui->layout.memTrackWinW;
+    ui->windowState.winH = e9ui->layout.memTrackWinH;
+    ui->windowState.winHasSaved =
+        e9ui_windowHasSavedPosition(ui->windowState.winX, ui->windowState.winY);
+    ui->windowState.windowHost = e9ui_windowCreate(memory_track_ui_windowBackend());
+    if (!ui->windowState.windowHost) {
         return 0;
     }
     ui->needsRefresh = 1;
@@ -2832,23 +2975,11 @@ memory_track_ui_init(void)
     ui->trendFilterMode = MEMORY_TRACK_UI_TREND_ALL;
     ui->window = NULL;
     ui->renderer = NULL;
-    ui->windowId = 0;
     ui->ctx.font = e9ui->ctx.font;
-    ui->alwaysOnTopState = -1;
-    ui->mainWindowFocused = 0;
-    ui->memoryTrackWindowFocused = 0;
     e9ui_rect_t overlayRect = { 0, 0, 0, 0 };
-    overlayRect = e9ui_windowResolveOpenRect(&e9ui->ctx,
-                                                       memory_track_ui_windowDefaultRect(&e9ui->ctx),
-                                                       520,
-                                                       420,
-                                                       1,
-                                                       (e9ui->layout.memTrackWinX >= 0 && e9ui->layout.memTrackWinY >= 0) ? 1 : 0,
-                                                       (e9ui->layout.memTrackWinW > 0 && e9ui->layout.memTrackWinH > 0) ? 1 : 0,
-                                                       e9ui->layout.memTrackWinX,
-                                                       e9ui->layout.memTrackWinY,
-                                                       e9ui->layout.memTrackWinW,
-                                                       e9ui->layout.memTrackWinH);
+    overlayRect = e9ui_windowResolveStateOpenRect(&e9ui->ctx,
+                                                  memory_track_ui_windowDefaultRect(&e9ui->ctx),
+                                                  &ui->windowState);
     ui->ctx = e9ui->ctx;
     ui->ctx.font = e9ui->ctx.font;
     int estimatedBodyW = overlayRect.w - e9ui_scale_px(&e9ui->ctx, 8);
@@ -2865,30 +2996,21 @@ memory_track_ui_init(void)
     {
         e9ui_rect_t rect = overlayRect;
         ui->overlayBodyHost = memory_track_ui_makeOverlayBodyHost(ui);
-        if (!ui->overlayBodyHost) {
-            memory_track_ui_shutdown();
-            return 0;
-        }
-        if (!e9ui_windowOpen(ui->windowHost,
-                                     MEMORY_TRACK_UI_TITLE,
+        e9ui_windowOpen(ui->windowState.windowHost,
+                                     "MEMORY TRACKER",
                                      rect,
                                      ui->overlayBodyHost,
                                      memory_track_ui_overlayWindowCloseRequested,
                                      ui,
-                                     &e9ui->ctx)) {
-            ui->root = NULL;
-            e9ui_childDestroy(ui->overlayBodyHost, &e9ui->ctx);
-            ui->overlayBodyHost = NULL;
-            memory_track_ui_shutdown();
-            return 0;
-        }
+			             &e9ui->ctx);
         ui->window = e9ui->ctx.window;
         ui->renderer = e9ui->ctx.renderer;
         ui->ctx = e9ui->ctx;
     }
     ui->needsRebuild = 0;
     memory_track_ui_setError(ui, NULL);
-    ui->open = 1;
+    ui->windowState.open = 1;
+    aux_window_register(&memory_track_ui_auxWindowOps, ui);
     return 1;
 }
 
@@ -2896,29 +3018,28 @@ void
 memory_track_ui_shutdown(void)
 {
     memory_track_ui_t *ui = &memory_track_ui_state;
-    if (!ui->open) {
+    if (!ui->windowState.open) {
         return;
     }
+    aux_window_unregister(&memory_track_ui_auxWindowOps, ui);
     if (ui->frameInputs && ui->frameInputsCount) {
         memory_track_ui_storeFrameTexts(ui);
     }
     if (ui->filterInputs && ui->filterInputsCount) {
         memory_track_ui_storeFilterTexts(ui);
     }
-    (void)e9ui_windowCaptureRectSnapshot(ui->windowHost,
-                                            (e9ui ? &e9ui->ctx : &ui->ctx),
-                                            NULL,
-                                            &e9ui->layout.memTrackWinX,
-                                            &e9ui->layout.memTrackWinY,
-                                            &e9ui->layout.memTrackWinW,
-                                            &e9ui->layout.memTrackWinH);
+    (void)e9ui_windowCaptureStateRectSnapshot(&ui->windowState, &e9ui->ctx);
+    e9ui->layout.memTrackWinX = ui->windowState.winX;
+    e9ui->layout.memTrackWinY = ui->windowState.winY;
+    e9ui->layout.memTrackWinW = ui->windowState.winW;
+    e9ui->layout.memTrackWinH = ui->windowState.winH;
     config_saveConfig();
     e9ui_text_cache_clearRenderer(ui->renderer);
     ui->root = NULL;
     ui->overlayBodyHost = NULL;
-    if (ui->windowHost) {
-        e9ui_windowDestroy(ui->windowHost);
-        ui->windowHost = NULL;
+    if (ui->windowState.windowHost) {
+        e9ui_windowDestroy(ui->windowState.windowHost);
+        ui->windowState.windowHost = NULL;
     }
     ui->renderer = NULL;
     ui->window = NULL;
@@ -2976,11 +3097,7 @@ memory_track_ui_shutdown(void)
     ui->cachedFrameActive = NULL;
     ui->cachedFrameCap = 0;
     ui->cachedBuildFrameNo = 0;
-    ui->open = 0;
-    ui->alwaysOnTopState = 0;
-    ui->mainWindowFocused = 0;
-    ui->memoryTrackWindowFocused = 0;
-    ui->windowId = 0;
+    ui->windowState.open = 0;
     ui->headerRow = NULL;
     ui->hscroll = NULL;
     ui->scroll = NULL;
@@ -2994,42 +3111,21 @@ memory_track_ui_shutdown(void)
 int
 memory_track_ui_isOpen(void)
 {
-    return memory_track_ui_state.open ? 1 : 0;
-}
-
-uint32_t
-memory_track_ui_getWindowId(void)
-{
-    return 0;
-}
-
-void
-memory_track_ui_setMainWindowFocused(int focused)
-{
-    memory_track_ui_t *ui = &memory_track_ui_state;
-    ui->mainWindowFocused = focused ? 1 : 0;
-}
-
-void
-memory_track_ui_handleEvent(SDL_Event *ev)
-{
-    (void)ev;
+    return memory_track_ui_state.windowState.open ? 1 : 0;
 }
 
 void
 memory_track_ui_render(void)
 {
     memory_track_ui_t *ui = &memory_track_ui_state;
-    if (!ui->open) {
+    if (!ui->windowState.open) {
         return;
     }
-    if (e9ui_windowCaptureRectChanged(ui->windowHost,
-                                      (e9ui ? &e9ui->ctx : &ui->ctx),
-                                      NULL,
-                                      &e9ui->layout.memTrackWinX,
-                                      &e9ui->layout.memTrackWinY,
-                                      &e9ui->layout.memTrackWinW,
-                                      &e9ui->layout.memTrackWinH)) {
+    if (e9ui_windowCaptureStateRectChanged(&ui->windowState, &e9ui->ctx)) {
+        e9ui->layout.memTrackWinX = ui->windowState.winX;
+        e9ui->layout.memTrackWinY = ui->windowState.winY;
+        e9ui->layout.memTrackWinW = ui->windowState.winW;
+        e9ui->layout.memTrackWinH = ui->windowState.winH;
         config_saveConfig();
     }
 }
@@ -3038,10 +3134,21 @@ void
 memory_track_ui_addFrameMarker(uint64_t frameNo)
 {
     memory_track_ui_t *ui = &memory_track_ui_state;
+    uint8_t *wrappedState = NULL;
+    size_t wrappedStateSize = 0;
     char text[64];
     snprintf(text, sizeof(text), "%llu", (unsigned long long)frameNo);
     size_t index = memory_track_ui_findEmptyFrameIndex(ui);
+    if (!memory_track_ui_captureWrappedCurrentState(&wrappedState, &wrappedStateSize)) {
+        debug_error("memory_track_ui: failed to capture marker state for frame %llu",
+                    (unsigned long long)frameNo);
+    } else if (!memory_track_ui_setMarkerStateAtIndex(ui, index, frameNo, wrappedState, wrappedStateSize)) {
+        debug_error("memory_track_ui: failed to store marker state for frame %llu",
+                    (unsigned long long)frameNo);
+        alloc_free(wrappedState);
+    }
     memory_track_ui_setFrameTextAtIndex(ui, index, text);
+    ui->cacheValid = 0;
     ui->needsRefresh = 1;
 }
 
@@ -3062,21 +3169,9 @@ memory_track_ui_getMarkerCount(void)
     if (ui->frameInputs && ui->frameInputsCount) {
         for (size_t i = 0; i < ui->frameInputsCount; ++i) {
             const char *text = e9ui_textbox_getText(ui->frameInputs[i]);
-            if (!text || !*text) {
-                continue;
-            }
-            char *end = NULL;
-            unsigned long long val = strtoull(text, &end, 0);
-            if (!end || end == text) {
-                continue;
-            }
-            while (*end && isspace((unsigned char)*end)) {
-                ++end;
-            }
-            if (*end) {
-                continue;
-            }
-            if (val > 0) {
+            uint64_t frameNo = 0;
+            int empty = 0;
+            if (memory_track_ui_parseFrameValue(text, &frameNo, &empty) && !empty && frameNo > 0) {
                 count++;
             }
         }
@@ -3084,21 +3179,9 @@ memory_track_ui_getMarkerCount(void)
     }
     for (size_t i = 0; i < ui->frameTextsCount; ++i) {
         const char *text = ui->frameTexts[i];
-        if (!text || !*text) {
-            continue;
-        }
-        char *end = NULL;
-        unsigned long long val = strtoull(text, &end, 0);
-        if (!end || end == text) {
-            continue;
-        }
-        while (*end && isspace((unsigned char)*end)) {
-            ++end;
-        }
-        if (*end) {
-            continue;
-        }
-        if (val > 0) {
+        uint64_t frameNo = 0;
+        int empty = 0;
+        if (memory_track_ui_parseFrameValue(text, &frameNo, &empty) && !empty && frameNo > 0) {
             count++;
         }
     }
